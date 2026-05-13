@@ -22,6 +22,12 @@ export class AiBudgetAlertJob {
 
   @Cron('0 23 * * *', { timeZone: 'UTC' })
   async check(): Promise<void> {
+    // Cron jobs run on the worker container only — the api container loads
+    // ScheduleModule too (it's wired in AppModule) but should not fire any
+    // scheduled work, otherwise tasks double-execute. Single guard, since
+    // these methods can't be split into a separate module without disturbing
+    // the rest of JobsModule.
+    if (process.env.WORKER_MODE !== 'true') return;
     const dateKey = todayUtcDateKey();
     const dailyBudgetUsd = this.config.get<number>('ai.dailyBudgetUsd') ?? 50;
     const raw = await this.redis.get(CacheKeys.aiCostDay(dateKey));

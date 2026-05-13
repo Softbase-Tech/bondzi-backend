@@ -31,9 +31,38 @@ import {
   type Response,
 } from 'express';
 import { AppModule } from './app.module';
+import { WorkerModule } from './worker.module';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 
 async function bootstrap() {
+  // WORKER_MODE=true boots a headless app context that processes BullMQ
+  // queues and runs @Cron-decorated jobs (the cron handlers each guard
+  // themselves with the same env check). No HTTP listener, no Swagger,
+  // no global middleware — just the DI graph.
+  //
+  // The api and worker containers share the same image; the only thing
+  // that changes between them is this env var.
+  if (process.env.WORKER_MODE === 'true') {
+    const workerLogger = new Logger('Worker');
+    const ctx = await NestFactory.createApplicationContext(WorkerModule, {
+      bufferLogs: true,
+    });
+    ctx.enableShutdownHooks();
+    // tini (in the Dockerfile) forwards SIGTERM here; ctx.close() drains
+    // in-flight BullMQ jobs before the process exits.
+    const shutdown = async (signal: string) => {
+      workerLogger.log(`[worker] received ${signal}, draining...`);
+      await ctx.close();
+      process.exit(0);
+    };
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+    workerLogger.log(
+      `🛠️  Worker process running (env=${process.env.NODE_ENV})`,
+    );
+    return;
+  }
+
   const app = await NestFactory.create(AppModule, {
     bufferLogs: true,
     rawBody: true,

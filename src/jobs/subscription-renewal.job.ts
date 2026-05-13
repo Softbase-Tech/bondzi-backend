@@ -32,6 +32,8 @@ export class SubscriptionRenewalJob {
 
   @Cron(CronExpression.EVERY_HOUR)
   async tick(): Promise<void> {
+    // Worker-only — see ai-budget-alert.job.ts for the explanation.
+    if (process.env.WORKER_MODE !== 'true') return;
     const now = new Date();
     const in72h = new Date(now.getTime() + 72 * 3600 * 1000);
 

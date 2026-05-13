@@ -13,9 +13,16 @@ export const TOKEN_ESTIMATES = {
 
 export type ModelChoice = 'claude-haiku' | 'claude-sonnet';
 
+/**
+ * Returns the Bedrock model ID for an admin-facing model choice. The
+ * `anthropic.<name>-v1:0` form is what `BedrockClient.invoke()` and the
+ * `costUsd()` pricing table expect. Update if AWS publishes newer revisions.
+ */
 export function resolveModelId(choice: ModelChoice): string {
-  if (choice === 'claude-sonnet') return 'claude-sonnet-4-6';
-  return 'claude-haiku-4-5-20251001';
+  if (choice === 'claude-sonnet') {
+    return 'anthropic.claude-sonnet-4-5-20250929-v1:0';
+  }
+  return 'anthropic.claude-haiku-4-5-20251001-v1:0';
 }
 
 export interface GenerationEstimate {

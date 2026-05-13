@@ -353,9 +353,9 @@ export class AiGenerationProcessor extends WorkerHost {
 
           try {
             // Spec §4.4: exponential backoff, 3 attempts.
-            const call = await this.callClaudeWithBackoff(
+            const call = await this.callBedrockWithBackoff(
               () =>
-                this.ai.callClaude(prompt, modelId, {
+                this.ai.callBedrock(prompt, modelId, {
                   action: AiAction.QUESTION_GEN,
                   jobId: record.id,
                   maxTokens: 200 + batch.length * 500,
@@ -467,8 +467,10 @@ Format: [{"body":"...","difficulty":"${args.difficulty}","options":[{"label":"A"
   /**
    * Spec §4.4: "On API failure: exponential backoff 3 attempts, then marks
    * batch failed." 3 total attempts with delays 500ms, 1000ms, 2000ms.
+   * Wraps any Bedrock call so transient ThrottlingException / 5xx don't
+   * fail the whole job.
    */
-  private async callClaudeWithBackoff<T>(
+  private async callBedrockWithBackoff<T>(
     call: () => Promise<T>,
     label: string,
   ): Promise<T> {
@@ -532,7 +534,7 @@ Format: [{"body":"...","difficulty":"${args.difficulty}","options":[{"label":"A"
         });
 
         try {
-          const call = await this.ai.callClaude(prompt, modelId, {
+          const call = await this.ai.callBedrock(prompt, modelId, {
             action: AiAction.EXPLANATION,
             jobId: record.id,
             maxTokens: 600,

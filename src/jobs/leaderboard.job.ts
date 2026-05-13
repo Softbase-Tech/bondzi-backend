@@ -15,6 +15,8 @@ export class LeaderboardJob {
   // Every Monday 00:05 Africa/Accra — roll the week.
   @Cron('5 0 * * 1', { timeZone: PASSMASTER_TIMEZONE })
   async snapshot(): Promise<void> {
+    // Worker-only — see ai-budget-alert.job.ts for the explanation.
+    if (process.env.WORKER_MODE !== 'true') return;
     const weekStart = accraMondayIso();
     this.logger.log(`[leaderboard] snapshotting week ${weekStart}`);
     await this.leaderboard.snapshotWeek(weekStart);
@@ -23,6 +25,7 @@ export class LeaderboardJob {
   // Every hour — recompute cached top-100 (Phase 1.1 will back this with a mat view).
   @Cron(CronExpression.EVERY_HOUR)
   async warmCache(): Promise<void> {
+    if (process.env.WORKER_MODE !== 'true') return;
     // no-op for MVP — cache warms naturally on read.
   }
 }

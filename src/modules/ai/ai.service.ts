@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import Anthropic from '@anthropic-ai/sdk';
-import OpenAI from 'openai';
 import { Repository } from 'typeorm';
 import { AiUsageLog } from './entities/ai-usage-log.entity';
 import { PromptTemplate } from './entities/prompt-template.entity';
@@ -12,12 +10,18 @@ import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { costUsd, todayUtcDateKey } from './ai-cost.util';
 import { AiBudgetExceededException } from './ai.exceptions';
 import { sanitizeHtml } from '../../common/utils/sanitize.util';
+import { BedrockClient } from './clients/bedrock.client';
 
 /**
- * v2: AI primitives — Claude + OpenAI clients, prompt-template loader, cost
- * tracking, daily-budget guard. Consumed by the admin-triggered bulk
+ * v2: AI primitives — Bedrock-hosted Claude client, prompt-template loader,
+ * cost tracking, daily-budget guard. Consumed by the admin-triggered bulk
  * generation workers (admin-ai-gen). The v1 on-demand per-question flow is
- * gone: students no longer trigger AI calls.
+ * gone: students never trigger AI calls in the hot path.
+ *
+ * Provider: AWS Bedrock (regional, IAM-based auth) — replaces the direct
+ * Anthropic + OpenAI SDKs that earlier versions used. The body schema is
+ * the same Messages API the Anthropic SDK exposed; only model IDs change
+ * (`anthropic.claude-...-v1:0`) and auth comes from the Bedrock SDK chain.
  */
 
 export interface AiCallResult {
@@ -33,31 +37,16 @@ export interface AiCallResult {
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  private claude: Anthropic | null = null;
-  private openai: OpenAI | null = null;
 
   constructor(
     private readonly config: ConfigService,
     private readonly redis: RedisService,
+    private readonly bedrock: BedrockClient,
     @InjectRepository(AiUsageLog)
     private readonly usageRepo: Repository<AiUsageLog>,
     @InjectRepository(PromptTemplate)
     private readonly promptsRepo: Repository<PromptTemplate>,
   ) {}
-
-  private getClaude(): Anthropic {
-    if (this.claude) return this.claude;
-    const apiKey = this.config.get<string>('ai.anthropicApiKey') as string;
-    this.claude = new Anthropic({ apiKey });
-    return this.claude;
-  }
-
-  private getOpenAI(): OpenAI {
-    if (this.openai) return this.openai;
-    const apiKey = this.config.get<string>('ai.openaiApiKey') as string;
-    this.openai = new OpenAI({ apiKey });
-    return this.openai;
-  }
 
   /**
    * Daily-budget guard. Throws AiBudgetExceededException if either the per-user
@@ -97,8 +86,12 @@ export class AiService {
     return template;
   }
 
-  /** Call Claude with `prompt`, track cost + usage, return normalised result. */
-  async callClaude(
+  /**
+   * Call Bedrock (Claude under the hood) with `prompt`, track cost + usage,
+   * return normalised result. Same call signature the older `callClaude`
+   * had — only the implementation underneath changed.
+   */
+  async callBedrock(
     prompt: string,
     model: string,
     opts: {
@@ -106,23 +99,21 @@ export class AiService {
       action?: AiAction;
       userId?: string;
       jobId?: string;
+      system?: string;
     } = {},
   ): Promise<AiCallResult> {
     const start = Date.now();
-    const res = await this.getClaude().messages.create({
-      model,
-      max_tokens: opts.maxTokens ?? 600,
-      messages: [{ role: 'user', content: prompt }],
+    const res = await this.bedrock.invoke({
+      modelId: model,
+      system: opts.system,
+      userPrompt: prompt,
+      maxTokens: opts.maxTokens ?? 600,
     });
     const latencyMs = Date.now() - start;
 
-    const content = res.content
-      .map((c) => (c.type === 'text' ? c.text : ''))
-      .join('\n')
-      .trim();
-
-    const inputTokens = res.usage?.input_tokens ?? 0;
-    const outputTokens = res.usage?.output_tokens ?? 0;
+    const content = res.text;
+    const inputTokens = res.inputTokens;
+    const outputTokens = res.outputTokens;
     const cost = costUsd(model, inputTokens, outputTokens);
 
     await this.logUsage({
@@ -134,54 +125,6 @@ export class AiService {
       outputTokens,
       costUsd: cost,
       latencyMs,
-    });
-    await this.addCostToDailyBudget(cost);
-
-    return {
-      content,
-      contentHtml: sanitizeHtml(this.markdownToHtml(content)),
-      model,
-      inputTokens,
-      outputTokens,
-      costUsd: cost,
-      latencyMs,
-    };
-  }
-
-  /** Call OpenAI (failover) with identical instrumentation. */
-  async callOpenAI(
-    prompt: string,
-    model: string,
-    opts: {
-      maxTokens?: number;
-      action?: AiAction;
-      userId?: string;
-      jobId?: string;
-    } = {},
-  ): Promise<AiCallResult> {
-    const start = Date.now();
-    const res = await this.getOpenAI().chat.completions.create({
-      model,
-      max_tokens: opts.maxTokens ?? 600,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    const latencyMs = Date.now() - start;
-
-    const content = res.choices[0]?.message?.content?.trim() ?? '';
-    const inputTokens = res.usage?.prompt_tokens ?? 0;
-    const outputTokens = res.usage?.completion_tokens ?? 0;
-    const cost = costUsd(model, inputTokens, outputTokens);
-
-    await this.logUsage({
-      userId: opts.userId,
-      jobId: opts.jobId,
-      action: opts.action ?? AiAction.EXPLANATION,
-      model,
-      inputTokens,
-      outputTokens,
-      costUsd: cost,
-      latencyMs,
-      failoverUsed: true,
     });
     await this.addCostToDailyBudget(cost);
 
