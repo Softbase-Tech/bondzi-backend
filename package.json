@@ -1,8 +1,8 @@
 {
-  "name": "passmaster-backend",
+  "name": "bondzi-backend",
   "version": "1.0.0",
-  "description": "PassMaster Ghana — WASSCE/BECE AI exam-prep backend",
-  "author": "PassMaster Ghana",
+  "description": "Bondzi Ghana — WASSCE/BECE AI exam-prep backend",
+  "author": "Bondzi Ghana",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
