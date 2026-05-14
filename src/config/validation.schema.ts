@@ -39,22 +39,35 @@ export const envValidationSchema = Joi.object({
   PAYSTACK_WEBHOOK_SECRET: Joi.string().required(),
   PAYSTACK_CALLBACK_URL: Joi.string().uri().required(),
 
-  ANTHROPIC_API_KEY: Joi.string().required(),
-  OPENAI_API_KEY: Joi.string().required(),
-  AI_EXPLANATION_MODEL: Joi.string().default('claude-sonnet-4-6'),
-  AI_FAST_MODEL: Joi.string().default('claude-haiku-4-5-20251001'),
-  AI_FAILOVER_MODEL: Joi.string().default('gpt-4o-mini'),
+  // AI — Bedrock-hosted Anthropic Claude. Auth is via the AWS SDK chain
+  // (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY below, or an EC2/Lightsail
+  // IAM role), so there's no per-provider API key to validate any more.
+  // Legacy names AI_EXPLANATION_MODEL / AI_FAST_MODEL are kept as fallbacks
+  // — ai.config.ts prefers AI_QUALITY_MODEL / AI_DEFAULT_MODEL.
+  AI_QUALITY_MODEL: Joi.string().default(
+    'anthropic.claude-sonnet-4-5-20250929-v1:0',
+  ),
+  AI_DEFAULT_MODEL: Joi.string().default(
+    'anthropic.claude-haiku-4-5-20251001-v1:0',
+  ),
+  AI_EXPLANATION_MODEL: Joi.string().allow('').default(''),
+  AI_FAST_MODEL: Joi.string().allow('').default(''),
   AI_DAILY_BUDGET_USD: Joi.number().positive().default(50),
   AI_PER_USER_DAILY_LIMIT: Joi.number().integer().positive().default(50),
+  AI_MAX_JOB_COST_USD: Joi.number().positive().default(500),
+  AI_BEDROCK_MAX_RETRIES: Joi.number().integer().min(0).default(3),
 
   AT_USERNAME: Joi.string().required(),
   AT_API_KEY: Joi.string().required(),
   AT_SENDER_ID: Joi.string().default('PASSMASTER'),
 
+  // AWS — required at boot in production for Bedrock + S3. Left optional in
+  // the schema because dev / CI / Docker layers may not have them set and
+  // the AWS SDK will fail loudly at the point of the first AWS call anyway.
   AWS_S3_BUCKET: Joi.string().allow('').default(''),
   AWS_ACCESS_KEY_ID: Joi.string().allow('').default(''),
   AWS_SECRET_ACCESS_KEY: Joi.string().allow('').default(''),
-  AWS_REGION: Joi.string().default('af-south-1'),
+  AWS_REGION: Joi.string().default('eu-central-1'),
   AWS_S3_PUBLIC_BASE_URL: Joi.string().allow('').default(''),
 
   FIREBASE_PROJECT_ID: Joi.string().allow('').default(''),
