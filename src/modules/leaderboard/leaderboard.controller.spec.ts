@@ -1,10 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { LeaderboardController } from './leaderboard.controller';
 import { LeaderboardService } from './leaderboard.service';
-import {
-  ExamType,
-  LeaderboardPeriodType,
-} from '../../common/types/enums';
+import { ExamType, LeaderboardPeriodType } from '../../common/types/enums';
 
 /**
  * Coverage:

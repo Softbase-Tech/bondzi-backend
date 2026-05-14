@@ -1,8 +1,5 @@
 import { Test } from '@nestjs/testing';
-import {
-  HealthCheckService,
-  TypeOrmHealthIndicator,
-} from '@nestjs/terminus';
+import { HealthCheckService, TypeOrmHealthIndicator } from '@nestjs/terminus';
 import { HealthController } from './health.controller';
 import { RedisService } from '../../common/redis/redis.service';
 
@@ -24,7 +21,9 @@ describe('HealthController', () => {
         return { status: 'ok' };
       }),
     };
-    db = { pingCheck: jest.fn().mockResolvedValue({ database: { status: 'up' } }) };
+    db = {
+      pingCheck: jest.fn().mockResolvedValue({ database: { status: 'up' } }),
+    };
     redis = { ping: jest.fn().mockResolvedValue(true) };
 
     const moduleRef = await Test.createTestingModule({
@@ -47,9 +46,7 @@ describe('HealthController', () => {
   it('emits redis:"up" when ping resolves truthy', async () => {
     let redisResult: { redis?: { status: string } } | undefined;
     health.check.mockImplementationOnce(
-      async (
-        checks: Array<() => Promise<{ redis?: { status: string } }>>,
-      ) => {
+      async (checks: Array<() => Promise<{ redis?: { status: string } }>>) => {
         for (const c of checks) {
           const r = await c();
           if ('redis' in r) redisResult = r;
@@ -65,9 +62,7 @@ describe('HealthController', () => {
     redis.ping.mockResolvedValueOnce(false);
     let redisResult: { redis?: { status: string } } | undefined;
     health.check.mockImplementationOnce(
-      async (
-        checks: Array<() => Promise<{ redis?: { status: string } }>>,
-      ) => {
+      async (checks: Array<() => Promise<{ redis?: { status: string } }>>) => {
         for (const c of checks) {
           const r = await c();
           if ('redis' in r) redisResult = r;

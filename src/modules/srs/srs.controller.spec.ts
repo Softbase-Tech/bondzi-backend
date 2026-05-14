@@ -37,7 +37,9 @@ describe('SrsController', () => {
   });
 
   it('POST /srs/:qid/review forwards user id, question id and quality', () => {
-    controller.review({ id: 'user-1' } as never, 'q-1', { quality: 4 } as never);
+    controller.review({ id: 'user-1' } as never, 'q-1', {
+      quality: 4,
+    } as never);
     expect(srs.review).toHaveBeenCalledWith('user-1', 'q-1', 4);
   });
 

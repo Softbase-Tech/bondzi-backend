@@ -80,7 +80,10 @@ describe('AuthController', () => {
     // pickDeviceId throws synchronously inside the controller method —
     // the rejection happens before the service is touched.
     expect(() =>
-      controller.login({ email: 'a@b.com', password: 'pw' } as never, makeReq()),
+      controller.login(
+        { email: 'a@b.com', password: 'pw' } as never,
+        makeReq(),
+      ),
     ).toThrow(BadRequestException);
     expect(auth.login).not.toHaveBeenCalled();
   });

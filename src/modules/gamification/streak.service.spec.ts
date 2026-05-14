@@ -92,7 +92,11 @@ describe('StreakService', () => {
   it('does not regress longestStreak when the new streak is shorter', async () => {
     jest.spyOn(tz, 'accraDaysBetween').mockReturnValueOnce(5);
     usersRepo.findOne.mockResolvedValueOnce(
-      makeUser({ streakDays: 9, longestStreak: 30, lastStudyDate: '2026-05-09' }),
+      makeUser({
+        streakDays: 9,
+        longestStreak: 30,
+        lastStudyDate: '2026-05-09',
+      }),
     );
     const out = await service.recordStudyDay('user-1');
     expect(out.streakDays).toBe(1);

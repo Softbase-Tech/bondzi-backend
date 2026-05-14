@@ -135,7 +135,10 @@ describe('AiService', () => {
         inputTokens: 1,
         outputTokens: 1,
       });
-      await service.callBedrock('p', 'anthropic.claude-haiku-4-5-20251001-v1:0');
+      await service.callBedrock(
+        'p',
+        'anthropic.claude-haiku-4-5-20251001-v1:0',
+      );
       expect(usage.insert).toHaveBeenCalledWith(
         expect.objectContaining({ action: AiAction.EXPLANATION }),
       );

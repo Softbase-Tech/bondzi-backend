@@ -54,7 +54,9 @@ describe('TokensService', () => {
 
   beforeEach(async () => {
     jwt = {
-      signAsync: jest.fn(async (payload) => `signed:${JSON.stringify(payload)}`),
+      signAsync: jest.fn(
+        async (payload) => `signed:${JSON.stringify(payload)}`,
+      ),
       verifyAsync: jest.fn(),
     };
     usersRepo = { findOne: jest.fn() };

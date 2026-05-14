@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  HttpException,
-  HttpStatus,
-} from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { OtpService } from './otp.service';
 import { RedisService } from '../../common/redis/redis.service';

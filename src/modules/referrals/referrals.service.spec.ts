@@ -23,7 +23,12 @@ import { RedisService } from '../../common/redis/redis.service';
 
 describe('ReferralsService', () => {
   let service: ReferralsService;
-  let eventsRepo: { findOne: jest.Mock; count: jest.Mock; update: jest.Mock; find: jest.Mock };
+  let eventsRepo: {
+    findOne: jest.Mock;
+    count: jest.Mock;
+    update: jest.Mock;
+    find: jest.Mock;
+  };
   let usersRepo: { findOne: jest.Mock };
   let answersRepo: { count: jest.Mock };
   let xpTxRepo: { findOne: jest.Mock };

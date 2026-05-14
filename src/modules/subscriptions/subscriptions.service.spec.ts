@@ -11,10 +11,7 @@ import { User } from '../users/entities/user.entity';
 import { PlansService } from './plans/plans.service';
 import { PaymentProviderRegistry } from '../payments/providers/payment-provider.registry';
 import { RedisService } from '../../common/redis/redis.service';
-import {
-  BillingInterval,
-  SubscriptionStatus,
-} from '../../common/types/enums';
+import { BillingInterval, SubscriptionStatus } from '../../common/types/enums';
 
 /**
  * SubscriptionsService specs. Focus on the call paths that gate revenue

@@ -43,7 +43,10 @@ describe('WebhookController', () => {
     controller = moduleRef.get(WebhookController);
   });
 
-  function makeReq(rawBody: Buffer | undefined, headers: Record<string, string> = {}) {
+  function makeReq(
+    rawBody: Buffer | undefined,
+    headers: Record<string, string> = {},
+  ) {
     return { rawBody, headers } as never;
   }
 

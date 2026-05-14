@@ -24,7 +24,9 @@ import type { NormalizedWebhookEvent } from '../providers/payment-provider.inter
  *   - Unknown event types are no-ops, not errors.
  */
 
-function event(overrides: Partial<NormalizedWebhookEvent> = {}): NormalizedWebhookEvent {
+function event(
+  overrides: Partial<NormalizedWebhookEvent> = {},
+): NormalizedWebhookEvent {
   return {
     eventId: 'evt_1',
     type: 'charge.success',
@@ -171,10 +173,7 @@ describe('WebhookHandlerService', () => {
     const sub = { userId: 'user-1', status: SubscriptionStatus.ACTIVE };
     subs.findLatestBySubscriptionId.mockResolvedValueOnce(sub);
 
-    await service.process(
-      'paystack',
-      event({ type: 'subscription.disable' }),
-    );
+    await service.process('paystack', event({ type: 'subscription.disable' }));
 
     expect(sub.status).toBe(SubscriptionStatus.CANCELLED);
     expect(subs.saveSubscription).toHaveBeenCalledWith(sub);

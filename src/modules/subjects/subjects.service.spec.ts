@@ -87,9 +87,9 @@ describe('SubjectsService', () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
-        getRawMany: jest.fn().mockResolvedValue([
-          { subjectId: 's-1', count: '50' },
-        ]),
+        getRawMany: jest
+          .fn()
+          .mockResolvedValue([{ subjectId: 's-1', count: '50' }]),
       };
       questionsRepo.createQueryBuilder.mockReturnValueOnce(countsQb);
 

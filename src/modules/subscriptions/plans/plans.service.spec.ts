@@ -1,7 +1,4 @@
-import {
-  BadRequestException,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -92,10 +89,9 @@ describe('PlansService', () => {
     it('filters by country code and defaults to active-only', async () => {
       const qb = stubReturns([]);
       await service.list({ countryCode: 'GH' });
-      expect(qb.andWhere).toHaveBeenCalledWith(
-        'p.country_code = :cc',
-        { cc: 'GH' },
-      );
+      expect(qb.andWhere).toHaveBeenCalledWith('p.country_code = :cc', {
+        cc: 'GH',
+      });
       expect(qb.andWhere).toHaveBeenCalledWith('p.is_active = true');
     });
 
@@ -128,9 +124,9 @@ describe('PlansService', () => {
 
   it('getActiveForCheckout rejects an archived plan', async () => {
     plansRepo.findOne.mockResolvedValueOnce(makePlan({ isActive: false }));
-    await expect(
-      service.getActiveForCheckout('plan-1'),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.getActiveForCheckout('plan-1')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('getActiveForCheckout returns active plans', async () => {
@@ -163,14 +159,14 @@ describe('PlansService', () => {
     });
 
     it('maps SIX_MONTH to the six-month columns', () => {
-      expect(
-        service.cadenceFor(makePlan(), BillingInterval.SIX_MONTH),
-      ).toEqual({
-        amountMinor: 25000,
-        amountDisplay: 250,
-        durationDays: 180,
-        providerPlanCode: 'p_six',
-      });
+      expect(service.cadenceFor(makePlan(), BillingInterval.SIX_MONTH)).toEqual(
+        {
+          amountMinor: 25000,
+          amountDisplay: 250,
+          durationDays: 180,
+          providerPlanCode: 'p_six',
+        },
+      );
     });
 
     it('maps ANNUAL to the annual columns', () => {
@@ -187,15 +183,15 @@ describe('PlansService', () => {
 
   it('intervalForProviderPlanCode resolves the matching cadence', () => {
     const plan = makePlan();
-    expect(
-      service.intervalForProviderPlanCode(plan, 'p_monthly'),
-    ).toBe(BillingInterval.MONTHLY);
-    expect(
-      service.intervalForProviderPlanCode(plan, 'p_six'),
-    ).toBe(BillingInterval.SIX_MONTH);
-    expect(
-      service.intervalForProviderPlanCode(plan, 'p_annual'),
-    ).toBe(BillingInterval.ANNUAL);
+    expect(service.intervalForProviderPlanCode(plan, 'p_monthly')).toBe(
+      BillingInterval.MONTHLY,
+    );
+    expect(service.intervalForProviderPlanCode(plan, 'p_six')).toBe(
+      BillingInterval.SIX_MONTH,
+    );
+    expect(service.intervalForProviderPlanCode(plan, 'p_annual')).toBe(
+      BillingInterval.ANNUAL,
+    );
     expect(service.intervalForProviderPlanCode(plan, 'unknown')).toBeNull();
   });
 

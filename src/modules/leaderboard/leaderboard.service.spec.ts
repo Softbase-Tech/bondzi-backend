@@ -3,10 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { LeaderboardService } from './leaderboard.service';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
 import { RedisService } from '../../common/redis/redis.service';
-import {
-  ExamType,
-  LeaderboardPeriodType,
-} from '../../common/types/enums';
+import { ExamType, LeaderboardPeriodType } from '../../common/types/enums';
 
 /**
  *  - topForPeriod: serves the Redis cache when warm; on miss runs the query
@@ -108,9 +105,7 @@ describe('LeaderboardService', () => {
   });
 
   it('returns rank: null when the user has not earned any XP in the period', async () => {
-    rankedQbReturns([
-      { userId: 'other', weeklyXp: '100', rank: '1' },
-    ]);
+    rankedQbReturns([{ userId: 'other', weeklyXp: '100', rank: '1' }]);
     const out = await service.myRank('user-1', '2026-W19', {
       examType: ExamType.WASSCE,
     });

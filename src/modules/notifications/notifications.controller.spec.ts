@@ -1,10 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
-import {
-  DevicePlatform,
-  type UserDevice,
-} from './entities/user-device.entity';
+import { DevicePlatform, type UserDevice } from './entities/user-device.entity';
 import type { Notification as NotificationEntity } from './entities/notification.entity';
 import { NotificationChannel } from '../../common/types/enums';
 

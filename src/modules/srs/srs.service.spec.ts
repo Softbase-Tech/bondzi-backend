@@ -154,10 +154,9 @@ describe('SrsService', () => {
     it('filters by subjectId when provided', async () => {
       const qb = stubQbReturns([]);
       await service.getDue('user-1', 'subj-1');
-      expect(qb.andWhere).toHaveBeenCalledWith(
-        'q.subjectId = :sid',
-        { sid: 'subj-1' },
-      );
+      expect(qb.andWhere).toHaveBeenCalledWith('q.subjectId = :sid', {
+        sid: 'subj-1',
+      });
     });
 
     it('uses an end-of-day window so it agrees with stats.dueToday', async () => {
@@ -219,7 +218,9 @@ describe('SrsService', () => {
 
   describe('upsertFromAnswer', () => {
     it('maps a correct answer to quality 4 and a wrong answer to quality 1', async () => {
-      const spy = jest.spyOn(service, 'review').mockResolvedValue({} as SrsCard);
+      const spy = jest
+        .spyOn(service, 'review')
+        .mockResolvedValue({} as SrsCard);
       await service.upsertFromAnswer('user-1', 'q1', true);
       await service.upsertFromAnswer('user-1', 'q1', false);
       expect(spy.mock.calls[0]).toEqual(['user-1', 'q1', 4]);

@@ -65,10 +65,22 @@ function makeUser(overrides: Partial<User> = {}): User {
 
 describe('AuthService', () => {
   let service: AuthService;
-  let usersRepo: { findOne: jest.Mock; create: jest.Mock; save: jest.Mock; update: jest.Mock; createQueryBuilder: jest.Mock };
+  let usersRepo: {
+    findOne: jest.Mock;
+    create: jest.Mock;
+    save: jest.Mock;
+    update: jest.Mock;
+    createQueryBuilder: jest.Mock;
+  };
   let subsRepo: { findOne: jest.Mock };
   let referralsRepo: { insert: jest.Mock };
-  let tokens: { issuePair: jest.Mock; rotate: jest.Mock; revokeByAccessJti: jest.Mock; logoutUser: jest.Mock; logoutAll: jest.Mock };
+  let tokens: {
+    issuePair: jest.Mock;
+    rotate: jest.Mock;
+    revokeByAccessJti: jest.Mock;
+    logoutUser: jest.Mock;
+    logoutAll: jest.Mock;
+  };
   let otp: { send: jest.Mock; verify: jest.Mock };
   let google: { verify: jest.Mock };
   let redis: { incr: jest.Mock; del: jest.Mock };
@@ -180,7 +192,9 @@ describe('AuthService', () => {
         expect.objectContaining({ deviceId: 'd1', ip: '1.2.3.4' }),
       );
       expect(result.user.email).toBe('jane@example.com');
-      expect((result.user as unknown as { passwordHash?: string }).passwordHash).toBeUndefined();
+      expect(
+        (result.user as unknown as { passwordHash?: string }).passwordHash,
+      ).toBeUndefined();
     });
   });
 
@@ -204,9 +218,9 @@ describe('AuthService', () => {
 
     it('rejects when email is already taken', async () => {
       usersRepo.findOne.mockResolvedValueOnce(makeUser());
-      await expect(service.register(baseDto as never, {})).rejects.toBeInstanceOf(
-        ConflictException,
-      );
+      await expect(
+        service.register(baseDto as never, {}),
+      ).rejects.toBeInstanceOf(ConflictException);
     });
 
     it('rejects when deviceId is missing (belt + braces with controller)', async () => {
@@ -232,14 +246,19 @@ describe('AuthService', () => {
       usersRepo.findOne
         .mockResolvedValueOnce(null) // email check
         .mockResolvedValueOnce(null) // referral-code clash check
-        .mockResolvedValueOnce(makeUser({ id: 'ref-1', referralCode: 'PM-XXXX-MEN' })); // referrer lookup
+        .mockResolvedValueOnce(
+          makeUser({ id: 'ref-1', referralCode: 'PM-XXXX-MEN' }),
+        ); // referrer lookup
       jest.spyOn(passwordUtil, 'hashPassword').mockResolvedValueOnce('hash');
       await service.register(
         { ...baseDto, referralCode: 'PM-XXXX-MEN' } as never,
         {},
       );
       expect(referralsRepo.insert).toHaveBeenCalledWith(
-        expect.objectContaining({ referrerId: 'ref-1', referralCode: 'PM-XXXX-MEN' }),
+        expect.objectContaining({
+          referrerId: 'ref-1',
+          referralCode: 'PM-XXXX-MEN',
+        }),
       );
       expect(referrals.issueSignupRewards).toHaveBeenCalledTimes(1);
     });
@@ -343,7 +362,9 @@ describe('AuthService', () => {
 
     it('checkReferralCode reports valid when the code owner exists', async () => {
       usersRepo.findOne.mockResolvedValueOnce({ id: 'x' });
-      expect(await service.checkReferralCode('PM-ANY')).toEqual({ valid: true });
+      expect(await service.checkReferralCode('PM-ANY')).toEqual({
+        valid: true,
+      });
     });
 
     it('checkReferralCode reports invalid when the code is unknown', async () => {
@@ -354,7 +375,10 @@ describe('AuthService', () => {
     });
 
     it('updateExamType derives schoolLevel from examType', async () => {
-      const user = makeUser({ examType: ExamType.WASSCE, schoolLevel: SchoolLevel.SHS });
+      const user = makeUser({
+        examType: ExamType.WASSCE,
+        schoolLevel: SchoolLevel.SHS,
+      });
       usersRepo.findOne.mockResolvedValueOnce(user);
       const out = await service.updateExamType('user-1', ExamType.BECE, 3);
       expect(out.examType).toBe(ExamType.BECE);
