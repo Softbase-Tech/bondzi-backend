@@ -8,11 +8,11 @@ services:
       POSTGRES_PASSWORD: passmaster
       POSTGRES_DB: passmaster
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
       - passmaster_pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "passmaster"]
+      test: ['CMD', 'pg_isready', '-U', 'passmaster']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -22,11 +22,11 @@ services:
     container_name: passmaster_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - '6379:6379'
     volumes:
       - passmaster_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 5s
       retries: 10

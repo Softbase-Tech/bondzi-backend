@@ -425,7 +425,7 @@ export class QuestionsService {
     }
     // stimulusId is tri-state: undefined (no change), null (detach), uuid
     // (attach). Validate the attach case before we touch the row.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
     const nextStimulusId = dto.stimulusId;
     if (typeof nextStimulusId === 'string') {
       await this.stimuli.assertExists(nextStimulusId);

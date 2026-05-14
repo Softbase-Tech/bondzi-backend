@@ -88,7 +88,9 @@ export class AdminNotificationsService {
     }
   }
 
-  private async activeUserIds(dto: BroadcastNotificationDto): Promise<string[]> {
+  private async activeUserIds(
+    dto: BroadcastNotificationDto,
+  ): Promise<string[]> {
     const qb = this.usersRepo
       .createQueryBuilder('u')
       .select('u.id', 'id')

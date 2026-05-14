@@ -180,8 +180,7 @@ export class ReferralsService {
     const qualified = await this.eventsRepo.count({
       where: { qualifyXpIssued: true },
     });
-    const qualificationRate =
-      totalSignups > 0 ? qualified / totalSignups : 0;
+    const qualificationRate = totalSignups > 0 ? qualified / totalSignups : 0;
 
     const xpSum = await this.xpTxRepo
       .createQueryBuilder('x')
@@ -318,10 +317,7 @@ export class ReferralsService {
     if (!q) return [];
 
     const referrer = await this.usersRepo.findOne({
-      where: [
-        { referralCode: q.toUpperCase() },
-        { fullName: ILike(`%${q}%`) },
-      ],
+      where: [{ referralCode: q.toUpperCase() }, { fullName: ILike(`%${q}%`) }],
     });
     if (!referrer) return [];
 

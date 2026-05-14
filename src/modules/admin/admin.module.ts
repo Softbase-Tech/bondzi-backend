@@ -20,10 +20,7 @@ import { AdminNotificationsService } from './admin-notifications.service';
 import { AdminController } from './admin.controller';
 import { PaymentsModule } from '../payments/payments.module';
 import { NotificationsModule } from '../notifications/notifications.module';
-import {
-  QUEUE_AI_GENERATION,
-  QUEUE_NOTIFICATIONS,
-} from '../ai/ai.queues';
+import { QUEUE_AI_GENERATION, QUEUE_NOTIFICATIONS } from '../ai/ai.queues';
 
 @Module({
   imports: [
