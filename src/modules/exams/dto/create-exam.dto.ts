@@ -11,7 +11,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { ExamMode, Difficulty } from '../../../common/types/enums';
+import { ExamMode } from '../../../common/types/enums';
 
 export enum ExamDifficultyFilter {
   EASY = 'easy',
@@ -86,7 +86,7 @@ export class CreateExamDto {
 
   @ApiPropertyOptional({
     description:
-      'Practice mode only. When true, the server biases selection toward topics the user has a low accuracy on (<50% rolling), falling back to the provided filter if there aren\'t enough weak-topic questions.',
+      "Practice mode only. When true, the server biases selection toward topics the user has a low accuracy on (<50% rolling), falling back to the provided filter if there aren't enough weak-topic questions.",
   })
   @IsOptional()
   @IsBoolean()

@@ -59,7 +59,9 @@ async function main() {
   }
 
   if (args.dryRun || targets.length === 0) {
-    console.log(`\n${args.dryRun ? '[dry-run]' : 'Nothing to do'} — no rows changed.`);
+    console.log(
+      `\n${args.dryRun ? '[dry-run]' : 'Nothing to do'} — no rows changed.`,
+    );
     await dataSource.destroy();
     return;
   }
@@ -72,7 +74,9 @@ async function main() {
     .whereInIds(targets.map((e) => e.id))
     .execute();
 
-  console.log(`\n✓ Marked ${targets.length} exam${targets.length === 1 ? '' : 's'} as ABANDONED.`);
+  console.log(
+    `\n✓ Marked ${targets.length} exam${targets.length === 1 ? '' : 's'} as ABANDONED.`,
+  );
   await dataSource.destroy();
 }
 

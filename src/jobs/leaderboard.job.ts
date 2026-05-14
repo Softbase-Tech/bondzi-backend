@@ -23,8 +23,10 @@ export class LeaderboardJob {
   }
 
   // Every hour — recompute cached top-100 (Phase 1.1 will back this with a mat view).
+  // Not async: the body is currently a no-op + worker gate. Drop `async` to
+  // avoid require-await; promote back when there's real work to await.
   @Cron(CronExpression.EVERY_HOUR)
-  async warmCache(): Promise<void> {
+  warmCache(): void {
     if (process.env.WORKER_MODE !== 'true') return;
     // no-op for MVP — cache warms naturally on read.
   }
