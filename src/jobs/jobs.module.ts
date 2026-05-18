@@ -10,6 +10,7 @@ import { Subject } from '../modules/subjects/entities/subject.entity';
 import { PmTestQuestion } from '../modules/pm-test/entities/pm-test-question.entity';
 import { PmTestOption } from '../modules/pm-test/entities/pm-test-option.entity';
 import { SyllabusTopic } from '../modules/subjects/entities/syllabus-topic.entity';
+import { PaymentEvent } from '../modules/payments/entities/payment-event.entity';
 import { NotificationsProcessor } from './notifications.processor';
 import { AiGenerationProcessor } from './ai-generation.processor';
 import { SubscriptionRenewalJob } from './subscription-renewal.job';
@@ -17,10 +18,12 @@ import { LeaderboardJob } from './leaderboard.job';
 import { LeaderboardWinnerJob } from './leaderboard-winner.job';
 import { ReferralQualifyJob } from './referral-qualify.job';
 import { AiBudgetAlertJob } from './ai-budget-alert.job';
+import { WebhookReconciliationJob } from './webhook-reconciliation.job';
 import { NotificationsModule } from '../modules/notifications/notifications.module';
 import { LeaderboardModule } from '../modules/leaderboard/leaderboard.module';
 import { ReferralsModule } from '../modules/referrals/referrals.module';
 import { AiModule } from '../modules/ai/ai.module';
+import { PaymentsModule } from '../modules/payments/payments.module';
 import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
 
 @Module({
@@ -35,12 +38,14 @@ import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
       PmTestQuestion,
       PmTestOption,
       SyllabusTopic,
+      PaymentEvent,
     ]),
     BullModule.registerQueue({ name: QUEUE_AI_GENERATION }),
     NotificationsModule,
     LeaderboardModule,
     ReferralsModule,
     AiModule,
+    PaymentsModule,
   ],
   providers: [
     NotificationsProcessor,
@@ -50,6 +55,7 @@ import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
     LeaderboardWinnerJob,
     ReferralQualifyJob,
     AiBudgetAlertJob,
+    WebhookReconciliationJob,
   ],
 })
 export class JobsModule {}

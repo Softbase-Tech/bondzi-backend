@@ -89,6 +89,27 @@ export class AdminController {
     return this.payments.listEvents(200);
   }
 
+  @Get('financial-events')
+  listFinancialEvents(
+    @Query('limit') limit?: string,
+    @Query('userId') userId?: string,
+    @Query('eventType') eventType?: string,
+    @Query('source') source?: string,
+    @Query('since') since?: string,
+  ) {
+    const safeLimit = Math.min(
+      Math.max(parseInt(limit ?? '100', 10) || 100, 1),
+      500,
+    );
+    return this.payments.listFinancialEvents({
+      limit: safeLimit,
+      userId,
+      eventType,
+      source,
+      since: since ? new Date(since) : undefined,
+    });
+  }
+
   @Get('subscriptions')
   listSubscriptions(@Query() p: PaginationDto) {
     return this.admin.listSubscriptions(p);

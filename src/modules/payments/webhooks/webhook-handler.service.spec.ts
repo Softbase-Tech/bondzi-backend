@@ -4,6 +4,7 @@ import { WebhookHandlerService } from './webhook-handler.service';
 import { PaymentEvent } from '../entities/payment-event.entity';
 import { SubscriptionsService } from '../../subscriptions/subscriptions.service';
 import { PlansService } from '../../subscriptions/plans/plans.service';
+import { FinancialAuditService } from '../financial-audit.service';
 import {
   BillingInterval,
   SubscriptionStatus,
@@ -44,7 +45,12 @@ function event(
 
 describe('WebhookHandlerService', () => {
   let service: WebhookHandlerService;
-  let eventsRepo: { create: jest.Mock; save: jest.Mock; update: jest.Mock };
+  let eventsRepo: {
+    create: jest.Mock;
+    save: jest.Mock;
+    update: jest.Mock;
+    findOne: jest.Mock;
+  };
   let subs: {
     applyWebhookActivation: jest.Mock;
     findLatestByCustomer: jest.Mock;
@@ -58,12 +64,16 @@ describe('WebhookHandlerService', () => {
     intervalForProviderPlanCode: jest.Mock;
     getById: jest.Mock;
   };
+  let financialAudit: { record: jest.Mock };
 
   beforeEach(async () => {
     eventsRepo = {
       create: jest.fn((o) => o),
       save: jest.fn(),
-      update: jest.fn(),
+      // Returns a resolved Promise so the `.catch(...)` chain in the
+      // service's error path can run without crashing the test mock.
+      update: jest.fn().mockResolvedValue(undefined),
+      findOne: jest.fn(),
     };
     subs = {
       applyWebhookActivation: jest.fn(),
@@ -78,6 +88,7 @@ describe('WebhookHandlerService', () => {
       intervalForProviderPlanCode: jest.fn(),
       getById: jest.fn(),
     };
+    financialAudit = { record: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -85,6 +96,7 @@ describe('WebhookHandlerService', () => {
         { provide: getRepositoryToken(PaymentEvent), useValue: eventsRepo },
         { provide: SubscriptionsService, useValue: subs },
         { provide: PlansService, useValue: plans },
+        { provide: FinancialAuditService, useValue: financialAudit },
       ],
     }).compile();
     service = moduleRef.get(WebhookHandlerService);
@@ -92,15 +104,41 @@ describe('WebhookHandlerService', () => {
 
   // -------------------------- idempotency --------------------------
 
-  it('returns duplicate=true without re-firing side effects on UNIQUE violation', async () => {
+  it('returns duplicate=true without re-firing side effects when the row is already processed', async () => {
     const uniqueErr = Object.assign(new Error('duplicate'), { code: '23505' });
     eventsRepo.save.mockRejectedValueOnce(uniqueErr);
+    // The existing row was already processed successfully — short-circuit.
+    eventsRepo.findOne.mockResolvedValueOnce({ processed: true });
 
     const out = await service.process('paystack', event());
 
     expect(out).toEqual({ duplicate: true, processed: false });
     expect(subs.applyWebhookActivation).not.toHaveBeenCalled();
     expect(eventsRepo.update).not.toHaveBeenCalled();
+  });
+
+  it('re-processes when the existing row is processed=false (provider retry of a previously failed event)', async () => {
+    // First delivery hit a transient error and left processed=false.
+    // The provider retries; same event id arrives again. The unique-key
+    // violation is caught, the existing unprocessed row is detected,
+    // and dispatch is re-attempted (this time successfully).
+    const uniqueErr = Object.assign(new Error('duplicate'), { code: '23505' });
+    eventsRepo.save.mockRejectedValueOnce(uniqueErr);
+    eventsRepo.findOne.mockResolvedValueOnce({ processed: false });
+    subs.findLatestByRef.mockResolvedValueOnce({ userId: 'user-1' });
+    plans.findByProviderPlanCode.mockResolvedValueOnce({ id: 'plan-1' });
+    plans.intervalForProviderPlanCode.mockReturnValueOnce(
+      BillingInterval.MONTHLY,
+    );
+
+    const out = await service.process('paystack', event());
+
+    expect(subs.applyWebhookActivation).toHaveBeenCalled();
+    expect(eventsRepo.update).toHaveBeenCalledWith(
+      { provider: 'paystack', providerEventId: 'evt_1' },
+      expect.objectContaining({ processed: true }),
+    );
+    expect(out.processed).toBe(true);
   });
 
   it('rethrows DB errors that are not unique-key violations', async () => {
@@ -194,7 +232,13 @@ describe('WebhookHandlerService', () => {
 
   // -------------------- error capture --------------------
 
-  it('captures handler errors into payment_events.error and still returns processed=false', async () => {
+  it('throws on dispatch failure so the controller returns 5xx and the provider retries', async () => {
+    // CRITICAL: the previous shape silently returned 200 on processing
+    // failure → Paystack never retried → user paid, no premium granted.
+    // The fix is to record the error on the row AND throw so the HTTP
+    // layer returns 5xx. The provider retries; the unique-key violation
+    // on the second delivery routes through the "retry unprocessed row"
+    // branch above.
     eventsRepo.save.mockResolvedValueOnce({});
     subs.findLatestByRef.mockResolvedValueOnce({ userId: 'user-1' });
     plans.findByProviderPlanCode.mockResolvedValueOnce({ id: 'plan-1' });
@@ -203,9 +247,9 @@ describe('WebhookHandlerService', () => {
     );
     subs.applyWebhookActivation.mockRejectedValueOnce(new Error('db down'));
 
-    const out = await service.process('paystack', event());
-
-    expect(out).toEqual({ duplicate: false, processed: false });
+    await expect(service.process('paystack', event())).rejects.toThrow(
+      /Webhook processing failed/,
+    );
     expect(eventsRepo.update).toHaveBeenCalledWith(
       { provider: 'paystack', providerEventId: 'evt_1' },
       expect.objectContaining({ error: 'db down' }),

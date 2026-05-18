@@ -1,4 +1,9 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { AdsService } from './ads.service';
@@ -26,6 +31,7 @@ describe('AdsService', () => {
   let redis: { get: jest.Mock; incr: jest.Mock };
   let subscriptions: { hasActiveSubscription: jest.Mock };
   let gamification: { awardXpAmount: jest.Mock };
+  let config: { get: jest.Mock };
 
   function stubConfig(over: Partial<Record<string, unknown>> = {}) {
     const qb = {
@@ -54,6 +60,13 @@ describe('AdsService', () => {
     redis = { get: jest.fn(), incr: jest.fn() };
     subscriptions = { hasActiveSubscription: jest.fn() };
     gamification = { awardXpAmount: jest.fn() };
+    // Default the launch-blocking gate ON for the existing happy-path tests
+    // below. The "disabled by default" branch is exercised by its own test.
+    config = {
+      get: jest.fn((key: string) =>
+        key === 'app.adsRewardedXpEnabled' ? true : undefined,
+      ),
+    };
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -62,6 +75,7 @@ describe('AdsService', () => {
         { provide: RedisService, useValue: redis },
         { provide: SubscriptionsService, useValue: subscriptions },
         { provide: GamificationService, useValue: gamification },
+        { provide: ConfigService, useValue: config },
       ],
     }).compile();
     service = moduleRef.get(AdsService);
@@ -100,6 +114,17 @@ describe('AdsService', () => {
   });
 
   // --------------------------- awardRewarded ---------------------------
+
+  it('rejects with 503 when the launch-blocker env flag is off (default)', async () => {
+    // Default-off: no SSV implementation yet, so the endpoint must NOT
+    // mint XP on the client's word alone.
+    config.get.mockReturnValueOnce(false);
+    await expect(service.awardRewarded('user-1')).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    expect(subscriptions.hasActiveSubscription).not.toHaveBeenCalled();
+    expect(gamification.awardXpAmount).not.toHaveBeenCalled();
+  });
 
   it('rejects rewarded XP claims from subscribed users with Forbidden', async () => {
     subscriptions.hasActiveSubscription.mockResolvedValueOnce(true);

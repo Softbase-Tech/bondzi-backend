@@ -70,6 +70,18 @@ export class AdminExplanationsService {
   }
 
   /**
+   * Returns true when the job's estimated cost exceeds the co-sign
+   * threshold and a second admin must approve before processing.
+   * AI_COSIGN_THRESHOLD_USD=0 disables the gate entirely.
+   */
+  private requiresCosign(estimate: GenerationEstimate): boolean {
+    const threshold =
+      this.config.get<number>('ai.cosignThresholdUsd') ??
+      parseFloat(process.env.AI_COSIGN_THRESHOLD_USD ?? '50');
+    return threshold > 0 && estimate.estimatedCostUsd > threshold;
+  }
+
+  /**
    * Count questions matching the filters, estimate cost + duration, and
    * stash the params in Redis keyed by a short-lived confirmation token.
    */
@@ -124,9 +136,11 @@ export class AdminExplanationsService {
 
     await this.redis.del(previewKey(dto.confirmationToken));
 
+    const needsCosign = this.requiresCosign(stashed.estimate);
+
     const job = this.jobsRepo.create({
       jobType: AiJobType.EXPLANATION_BULK,
-      status: AiJobStatus.PENDING,
+      status: needsCosign ? AiJobStatus.PENDING_APPROVAL : AiJobStatus.PENDING,
       triggeredBy: adminId,
       parameters: {
         dto: stashed.dto,
@@ -138,12 +152,102 @@ export class AdminExplanationsService {
     });
     await this.jobsRepo.save(job);
 
-    await this.queue.add(
-      'explanation-bulk',
-      { jobId: job.id },
-      { removeOnComplete: true, attempts: 1 },
+    if (needsCosign) {
+      // Held — second admin must call approve() to enqueue. We DO NOT
+      // enqueue the BullMQ job here. The admin UI surfaces these in a
+      // "Pending approval" tab.
+      this.logger.log(
+        `[ai-cosign] held job=${job.id} cost=$${stashed.estimate.estimatedCostUsd.toFixed(2)} creator=${adminId}`,
+      );
+      return job;
+    }
+
+    await this.enqueue(job.id);
+    return job;
+  }
+
+  /**
+   * Second admin approves a PENDING_APPROVAL job, flips to PENDING, and
+   * enqueues it. The approver MUST differ from the creator — the DB
+   * CHECK constraint enforces this too, but we throw earlier with a
+   * useful message.
+   */
+  async approveCosign(
+    approverId: string,
+    jobId: string,
+  ): Promise<AiGenerationJob> {
+    const job = await this.getJob(jobId);
+    if (job.status !== AiJobStatus.PENDING_APPROVAL) {
+      throw new BadRequestException(
+        `Job ${jobId} is not awaiting approval (status=${job.status}).`,
+      );
+    }
+    if (job.triggeredBy === approverId) {
+      throw new BadRequestException(
+        'Co-sign requires a different admin than the creator.',
+      );
+    }
+    job.status = AiJobStatus.PENDING;
+    job.approvedBy = approverId;
+    job.approvedAt = new Date();
+    await this.jobsRepo.save(job);
+    await this.enqueue(job.id);
+    this.logger.log(
+      `[ai-cosign] approved job=${jobId} approver=${approverId} creator=${job.triggeredBy}`,
     );
     return job;
+  }
+
+  /** Admin rejects a pending-approval job — flips to CANCELLED. */
+  async rejectCosign(
+    approverId: string,
+    jobId: string,
+    reason?: string,
+  ): Promise<AiGenerationJob> {
+    const job = await this.getJob(jobId);
+    if (job.status !== AiJobStatus.PENDING_APPROVAL) {
+      throw new BadRequestException(
+        `Job ${jobId} is not awaiting approval (status=${job.status}).`,
+      );
+    }
+    job.status = AiJobStatus.CANCELLED;
+    job.errorLog = `Rejected by ${approverId}: ${reason ?? 'no reason given'}`;
+    await this.jobsRepo.save(job);
+    this.logger.log(
+      `[ai-cosign] rejected job=${jobId} approver=${approverId}: ${reason ?? 'n/a'}`,
+    );
+    return job;
+  }
+
+  /** Admin UI list of jobs waiting for a second-admin sign-off. */
+  listPendingApproval(): Promise<AiGenerationJob[]> {
+    return this.jobsRepo.find({
+      where: {
+        jobType: AiJobType.EXPLANATION_BULK,
+        status: AiJobStatus.PENDING_APPROVAL,
+      },
+      order: { createdAt: 'DESC' },
+      take: 50,
+    });
+  }
+
+  private async enqueue(jobId: string): Promise<void> {
+    await this.queue.add(
+      'explanation-bulk',
+      { jobId },
+      // attempts=2 gives a single transient Bedrock 503 a second chance
+      // without amplifying a real cost-runaway bug. Per-batch retries
+      // INSIDE the processor (3 attempts, exponential) handle smaller
+      // chunks; this outer retry is only for whole-job crashes.
+      // removeOnFail bounds how many failed jobs accumulate in Redis —
+      // the previous shape (default keep-forever) let them pile up.
+      {
+        removeOnComplete: { age: 24 * 3600, count: 200 },
+        removeOnFail: { age: 7 * 24 * 3600, count: 100 },
+        attempts: 2,
+        backoff: { type: 'exponential', delay: 30_000 },
+      },
+    );
   }
 
   listJobs(): Promise<AiGenerationJob[]> {
@@ -212,6 +316,59 @@ export class AdminExplanationsService {
   }
 
   /**
+   * Surfaces actual token usage from ai_usage_log so admins can compare
+   * the hardcoded TOKEN_ESTIMATES against reality. Used for #83 (token
+   * estimate calibration): after a week of prod data, query the P50 +
+   * P95 of input + output tokens here and bump the constants in
+   * estimates.util.ts.
+   */
+  async calibrationReport(days = 7): Promise<
+    Array<{
+      model: string;
+      action: string;
+      n: number;
+      p50_input: number;
+      p50_output: number;
+      p95_output: number;
+    }>
+  > {
+    interface Row {
+      model: string;
+      action: string;
+      n: string;
+      p50_input: string | null;
+      p50_output: string | null;
+      p95_output: string | null;
+    }
+    const rows: Row[] = await this.jobsRepo.manager.query(
+      `
+      select
+        model,
+        action,
+        count(*)::text as n,
+        percentile_cont(0.5) within group (order by input_tokens) as p50_input,
+        percentile_cont(0.5) within group (order by output_tokens) as p50_output,
+        percentile_cont(0.95) within group (order by output_tokens) as p95_output
+      from ai_usage_log
+      where created_at > now() - ($1::int || ' days')::interval
+        and input_tokens is not null
+        and output_tokens is not null
+      group by model, action
+      order by n desc;
+    `,
+      [days],
+    );
+    return rows.map((r) => ({
+      model: r.model,
+      action: r.action,
+      n: parseInt(r.n, 10),
+      p50_input: Number(r.p50_input ?? 0),
+      p50_output: Number(r.p50_output ?? 0),
+      p95_output: Number(r.p95_output ?? 0),
+    }));
+  }
+
+  /**
    * Paginated list of questions that still need an explanation. Admin UI
    * renders this as a backlog count + a browse view.
    */
@@ -274,7 +431,18 @@ export class AdminExplanationsService {
     await this.queue.add(
       'explanation-bulk',
       { jobId: job.id },
-      { removeOnComplete: true, attempts: 1 },
+      // attempts=2 gives a single transient Bedrock 503 a second chance
+      // without amplifying a real cost-runaway bug. Per-batch retries
+      // INSIDE the processor (3 attempts, exponential) handle smaller
+      // chunks; this outer retry is only for whole-job crashes.
+      // removeOnFail bounds how many failed jobs accumulate in Redis —
+      // the previous shape (default keep-forever) let them pile up.
+      {
+        removeOnComplete: { age: 24 * 3600, count: 200 },
+        removeOnFail: { age: 7 * 24 * 3600, count: 100 },
+        attempts: 2,
+        backoff: { type: 'exponential', delay: 30_000 },
+      },
     );
     return job;
   }

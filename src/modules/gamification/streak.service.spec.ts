@@ -27,11 +27,39 @@ function makeUser(overrides: Partial<User> = {}): User {
 
 describe('StreakService', () => {
   let service: StreakService;
-  let usersRepo: { findOne: jest.Mock; update: jest.Mock };
+  let usersRepo: {
+    findOne: jest.Mock;
+    update: jest.Mock;
+    createQueryBuilder: jest.Mock;
+  };
+  let updateBuilder: {
+    update: jest.Mock;
+    set: jest.Mock;
+    where: jest.Mock;
+    andWhere: jest.Mock;
+    execute: jest.Mock;
+  };
   let gamification: { awardXp: jest.Mock };
 
   beforeEach(async () => {
-    usersRepo = { findOne: jest.fn(), update: jest.fn() };
+    // The new conditional-update path goes through createQueryBuilder
+    // so the "two concurrent exam-completes can't both bump streak XP"
+    // race is closed at the DB level (UPDATE ... WHERE last_study_date
+    // <> today). The default builder reports `affected: 1` so the
+    // happy-path tests still proceed; the "concurrent loser" branch
+    // overrides this per-test.
+    updateBuilder = {
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    usersRepo = {
+      findOne: jest.fn(),
+      update: jest.fn(),
+      createQueryBuilder: jest.fn(() => updateBuilder),
+    };
     gamification = { awardXp: jest.fn().mockResolvedValue(undefined) };
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -63,7 +91,21 @@ describe('StreakService', () => {
     const out = await service.recordStudyDay('user-1');
     expect(out.changed).toBe(false);
     expect(out.streakDays).toBe(4);
-    expect(usersRepo.update).not.toHaveBeenCalled();
+    expect(usersRepo.createQueryBuilder).not.toHaveBeenCalled();
+    expect(gamification.awardXp).not.toHaveBeenCalled();
+  });
+
+  it('aborts the bump when the conditional update affects 0 rows (concurrent winner)', async () => {
+    // Two parallel exam-completes — the loser sees affected=0 because
+    // last_study_date was already advanced by the winner. Without the
+    // gate both would double-award streak_day XP.
+    jest.spyOn(tz, 'accraDaysBetween').mockReturnValueOnce(1);
+    usersRepo.findOne.mockResolvedValueOnce(
+      makeUser({ streakDays: 4, lastStudyDate: '2026-05-13' }),
+    );
+    updateBuilder.execute.mockResolvedValueOnce({ affected: 0 });
+    const out = await service.recordStudyDay('user-1');
+    expect(out.changed).toBe(false);
     expect(gamification.awardXp).not.toHaveBeenCalled();
   });
 

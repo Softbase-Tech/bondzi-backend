@@ -1,10 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { LeaderboardService } from '../modules/leaderboard/leaderboard.service';
-import {
-  PASSMASTER_TIMEZONE,
-  accraMondayIso,
-} from '../common/utils/timezone.util';
+import { BONDZI_TIMEZONE, accraMondayIso } from '../common/utils/timezone.util';
 
 @Injectable()
 export class LeaderboardJob {
@@ -13,7 +10,7 @@ export class LeaderboardJob {
   constructor(private readonly leaderboard: LeaderboardService) {}
 
   // Every Monday 00:05 Africa/Accra — roll the week.
-  @Cron('5 0 * * 1', { timeZone: PASSMASTER_TIMEZONE })
+  @Cron('5 0 * * 1', { timeZone: BONDZI_TIMEZONE })
   async snapshot(): Promise<void> {
     // Worker-only — see ai-budget-alert.job.ts for the explanation.
     if (process.env.WORKER_MODE !== 'true') return;

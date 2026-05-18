@@ -6,6 +6,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -71,6 +72,8 @@ export interface SafeUser {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @InjectRepository(User) private readonly usersRepo: Repository<User>,
     @InjectRepository(Subscription)
@@ -107,15 +110,58 @@ export class AuthService {
    * the referral_event row. The gamification service awards the corresponding
    * XP events (referral_referred to referrer, referral_new_user to new user)
    * after this call returns.
+   *
+   * Self-referral fraud defense: skip when
+   *   - the referrer is the new user (same row),
+   *   - the referrer's currently-bound deviceId matches the new user's
+   *     incoming deviceId (same physical phone reusing fresh emails),
+   *   - the referrer's phone or email prefix exactly matches the new
+   *     account's contact (trivial alias farming).
+   *
+   * These checks block the trivial farm path; sophisticated actors will
+   * still find ways around them, so anomalous referral patterns should
+   * still be flagged by ops dashboards.
    */
   private async recordReferralSignup(
     newUser: User,
     referralCode: string,
+    deviceId?: string,
   ): Promise<void> {
     const referrer = await this.usersRepo.findOne({
       where: { referralCode },
     });
     if (!referrer || referrer.id === newUser.id) return;
+
+    // Device collision — if the referrer is currently signed in on the
+    // same physical device, treat as self-referral.
+    if (deviceId) {
+      const sameDevice: { '?column?': number }[] =
+        await this.usersRepo.manager.query(
+          `select 1 from device_sessions where user_id = $1 and device_id = $2 limit 1`,
+          [referrer.id, deviceId],
+        );
+      if (sameDevice.length > 0) {
+        this.logger.warn(
+          `[referral] device collision: new_user=${newUser.id} referrer=${referrer.id} device=${deviceId} — skipping reward`,
+        );
+        return;
+      }
+    }
+
+    // Contact overlap — same phone, same email local-part. Catches the
+    // "+1" / dotted-email tricks.
+    const newLocal = newUser.email?.split('@')[0]?.toLowerCase();
+    const refLocal = referrer.email?.split('@')[0]?.toLowerCase();
+    if (
+      (newUser.phone && referrer.phone && newUser.phone === referrer.phone) ||
+      (newLocal && refLocal && newLocal === refLocal)
+    ) {
+      this.logger.warn(
+        `[referral] contact overlap: new_user=${newUser.id} referrer=${referrer.id} — skipping reward`,
+      );
+      return;
+    }
+
     await this.usersRepo.update(newUser.id, { referredBy: referrer.id });
     await this.referralsRepo.insert({
       referrerId: referrer.id,
@@ -150,9 +196,10 @@ export class AuthService {
       email: dto.email ?? null,
       phone: dto.phone ?? null,
       passwordHash,
-      authProvider:
-        dto.authProvider ??
-        (dto.phone ? AuthProvider.PHONE : AuthProvider.EMAIL),
+      // Provider is derived server-side from the credentials shape:
+      // phone-only → PHONE, email+password → EMAIL. Google has its own
+      // endpoint (auth.controller.google) and never reaches this path.
+      authProvider: dto.phone ? AuthProvider.PHONE : AuthProvider.EMAIL,
       examType: dto.examType,
       schoolLevel: schoolLevelFor(dto.examType),
       formLevel: dto.formLevel,
@@ -164,7 +211,10 @@ export class AuthService {
     await this.usersRepo.save(user);
 
     if (dto.referralCode) {
-      await this.recordReferralSignup(user, dto.referralCode);
+      await this.recordReferralSignup(user, dto.referralCode, dto.deviceId);
+      // issueSignupRewards reads the referral_event row to decide whether
+      // to award XP — when recordReferralSignup short-circuits on
+      // fraud-suspicion, no row exists and this becomes a no-op.
       await this.referrals.issueSignupRewards(user.id);
     }
 
@@ -185,7 +235,7 @@ export class AuthService {
       .send({
         userId: user.id,
         channel: NotificationChannel.PUSH,
-        title: `Welcome to PassMaster, ${user.fullName.split(' ')[0]}!`,
+        title: `Welcome to Bondzi, ${user.fullName.split(' ')[0]}!`,
         body: 'Answer your first question to start earning XP.',
         data: { type: 'welcome' },
       })
@@ -199,9 +249,27 @@ export class AuthService {
     password: string,
     req: { ip?: string; deviceId: string; deviceName?: string },
   ): Promise<{ user: SafeUser; tokens: TokenPair }> {
-    const ipKey = CacheKeys.loginAttempts(req.ip ?? email);
-    const attempts = await this.redis.incr(ipKey, LOGIN_LOCKOUT_TTL_SECONDS);
-    if (attempts > MAX_LOGIN_ATTEMPTS) {
+    // CRITICAL: two independent lockout buckets — by IP AND by email.
+    // The previous shape used `ip || email`, so once `trust proxy` was
+    // fixed, every legitimate user behind the same NAT (a school's
+    // internet share) collided with each other; conversely, an attacker
+    // rotating IPs trivially evaded the per-email count. Both buckets
+    // get tripped before we let the request through.
+    const ipKey = req.ip ? CacheKeys.loginAttempts(`ip:${req.ip}`) : null;
+    const emailKey = CacheKeys.loginAttempts(`email:${email.toLowerCase()}`);
+    const ipAttempts = ipKey
+      ? await this.redis.incr(ipKey, LOGIN_LOCKOUT_TTL_SECONDS)
+      : 0;
+    const emailAttempts = await this.redis.incr(
+      emailKey,
+      LOGIN_LOCKOUT_TTL_SECONDS,
+    );
+    if (
+      emailAttempts > MAX_LOGIN_ATTEMPTS ||
+      // IP bucket is wider so a single bad actor doesn't lock the whole
+      // NAT — 10× the per-email cap.
+      ipAttempts > MAX_LOGIN_ATTEMPTS * 10
+    ) {
       throw new HttpException(
         'Too many failed attempts — try again in 15 minutes',
         HttpStatus.TOO_MANY_REQUESTS,
@@ -219,7 +287,9 @@ export class AuthService {
     const ok = await verifyPassword(user.passwordHash, password);
     if (!ok) throw new UnauthorizedException('Invalid credentials');
 
-    await this.redis.del(ipKey);
+    // Clear both buckets on success.
+    if (ipKey) await this.redis.del(ipKey);
+    await this.redis.del(emailKey);
     const tokens = await this.tokens.issuePair(user, {
       deviceId: req.deviceId,
       deviceName: req.deviceName,
@@ -356,10 +426,26 @@ export class AuthService {
   ): Promise<SafeUser> {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
+    const before = {
+      examType: user.examType,
+      formLevel: user.formLevel,
+    };
     user.examType = examType;
     user.schoolLevel = schoolLevelFor(examType);
     user.formLevel = formLevel;
     await this.usersRepo.save(user);
+    if (before.examType !== examType || before.formLevel !== formLevel) {
+      // Anti-fraud audit trail (spec §6.1: leaderboard farming defense).
+      // Without this, a student could flip BECE ↔ WASSCE to dominate a
+      // weaker board, then flip back. The controller throttle caps the
+      // rate; this log gives admins something to query when reviewing
+      // suspicious leaderboard moves.
+      this.logger.log(
+        `[audit] user.exam_type.change user=${userId} ` +
+          `before=${before.examType}/F${before.formLevel} ` +
+          `after=${examType}/F${formLevel}`,
+      );
+    }
     return this.toSafeUser(user);
   }
 

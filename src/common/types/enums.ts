@@ -150,6 +150,9 @@ export enum AiJobType {
 }
 
 export enum AiJobStatus {
+  // Held awaiting a second admin's approval because estimated cost
+  // exceeds AI_COSIGN_THRESHOLD_USD. NOT enqueued for processing.
+  PENDING_APPROVAL = 'pending_approval',
   PENDING = 'pending',
   RUNNING = 'running',
   COMPLETED = 'completed',

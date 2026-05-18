@@ -1,8 +1,11 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AdConfig } from './entities/ad-config.entity';
@@ -21,12 +24,15 @@ import { UpdateAdConfigDto } from './dto/update-ad-config.dto';
  */
 @Injectable()
 export class AdsService {
+  private readonly logger = new Logger(AdsService.name);
+
   constructor(
     @InjectRepository(AdConfig)
     private readonly configRepo: Repository<AdConfig>,
     private readonly redis: RedisService,
     private readonly subscriptions: SubscriptionsService,
     private readonly gamification: GamificationService,
+    private readonly config: ConfigService,
   ) {}
 
   /** Admin config. Single-row table — first row is the live config. */
@@ -97,13 +103,32 @@ export class AdsService {
 
   /**
    * Student watched a rewarded ad. Gate with subscription + frequency cap,
-   * then award the configured XP via GamificationService. Client must hit
-   * this AFTER the AdMob SSV callback, not on ad impression.
+   * then award the configured XP via GamificationService.
+   *
+   * CRITICAL: this endpoint accepts the CLIENT's word that an ad was
+   * watched. Without AdMob Server-Side Verification (SSV) — an HTTPS
+   * callback from AdMob's servers carrying a signed payload that the
+   * backend verifies against AdMob's published public keys — a curl
+   * loop can mint XP up to the daily `frequencyCap` and redeem it for
+   * Pro days. The endpoint is therefore gated behind the
+   * `ADS_REWARDED_XP_ENABLED` env flag (defaults to false). Flip it on
+   * ONLY after the AdMob SSV callback path is implemented.
    */
   async awardRewarded(userId: string): Promise<{
     xpAwarded: number;
     rewardedRemainingToday: number;
   }> {
+    const enabled = this.config.get<boolean>('app.adsRewardedXpEnabled');
+    if (!enabled) {
+      this.logger.warn(
+        `[ads] rewarded XP request from user=${userId} rejected — ADS_REWARDED_XP_ENABLED=false`,
+      );
+      throw new ServiceUnavailableException({
+        code: 'REWARDED_XP_DISABLED',
+        message:
+          'Rewarded XP is temporarily unavailable while ad verification is being upgraded.',
+      });
+    }
     const subscribed = await this.subscriptions.hasActiveSubscription(userId);
     if (subscribed) {
       throw new ForbiddenException('Ads are disabled for subscribed users.');

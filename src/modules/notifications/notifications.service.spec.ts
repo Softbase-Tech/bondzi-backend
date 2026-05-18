@@ -107,15 +107,25 @@ describe('NotificationsService', () => {
       );
     });
 
-    it('swallows queue.add failures (row is still persisted, dispatcher will retry)', async () => {
+    it('rethrows queue.add failures so callers see the silent-drop instead of swallowing', async () => {
+      // The previous shape swallowed the enqueue error and returned the
+      // row id as if everything was fine — a Redis blip silently dropped
+      // thousands of pushes. We now persist the row, then THROW so the
+      // caller (gamification, auth, etc.) can decide whether to retry or
+      // wrap in its own try/catch; existing call sites already use
+      // `.catch(() => void 0)` for best-effort sends.
       queue.add.mockRejectedValueOnce(new Error('redis down'));
-      const out = await service.send({
-        userId: 'user-1',
-        channel: NotificationChannel.PUSH,
-        title: 't',
-        body: 'b',
-      });
-      expect(out.id).toBe('n-1');
+      await expect(
+        service.send({
+          userId: 'user-1',
+          channel: NotificationChannel.PUSH,
+          title: 't',
+          body: 'b',
+        }),
+      ).rejects.toThrow('redis down');
+      // Row is still persisted (audit trail) — the dispatcher cron can
+      // pick it up later.
+      expect(notificationsRepo.save).toHaveBeenCalled();
     });
   });
 

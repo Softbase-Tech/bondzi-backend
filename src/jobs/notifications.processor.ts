@@ -52,41 +52,61 @@ export class NotificationsProcessor extends WorkerHost {
     });
     if (!row) return { ok: true };
 
+    // Track whether delivery actually happened before stamping sent_at.
+    // The previous shape stamped sent_at unconditionally — every SMS /
+    // WhatsApp stub was reported as "sent" in the analytics dashboards,
+    // and a failing FCM throw left sent_at=null AND no audit trail of
+    // the attempt.
+    let delivered = false;
+    let attemptedAt = new Date();
+
     switch (job.data.channel) {
       case NotificationChannel.IN_APP:
         // No external send; the row already exists for the inbox.
+        delivered = true;
         break;
-      case NotificationChannel.PUSH:
-        await this.sendPush(row);
+      case NotificationChannel.PUSH: {
+        const result = await this.sendPush(row);
+        delivered = result.delivered;
+        attemptedAt = result.attemptedAt;
         break;
+      }
       case NotificationChannel.SMS:
+        // Stub channels — record the attempt but do NOT stamp sent_at.
+        // Surfacing these as "sent" in dashboards would lie about
+        // delivery before the SMS / WhatsApp providers are wired.
         this.logger.log(
-          `[notify] sms → ${row.userId} "${row.title}" (SMS provider not yet wired)`,
+          `[notify] sms → ${row.userId} "${row.title}" (SMS dispatch not yet wired)`,
         );
         break;
       case NotificationChannel.WHATSAPP:
-        this.logger.log(`[notify] whatsapp → ${row.userId} (P2)`);
+        this.logger.log(`[notify] whatsapp → ${row.userId} (P2 stub)`);
         break;
     }
 
-    row.sentAt = new Date();
-    await this.notificationsRepo.save(row);
-    return { ok: true };
+    if (delivered) {
+      row.sentAt = attemptedAt;
+      await this.notificationsRepo.save(row);
+    }
+    return { ok: delivered };
   }
 
-  private async sendPush(row: Notification): Promise<void> {
+  private async sendPush(
+    row: Notification,
+  ): Promise<{ delivered: boolean; attemptedAt: Date }> {
+    const attemptedAt = new Date();
     if (!this.firebase.configured) {
       this.logger.warn(
         `[notify] push → ${row.userId} "${row.title}" (Firebase not configured; skipping)`,
       );
-      return;
+      return { delivered: false, attemptedAt };
     }
     const tokens = await this.notifications.tokensForUser(row.userId);
     if (tokens.length === 0) {
       this.logger.log(
         `[notify] push → ${row.userId} no FCM tokens registered; skipping`,
       );
-      return;
+      return { delivered: false, attemptedAt };
     }
     const { successCount, invalidTokens } = await this.firebase.sendToTokens(
       tokens,
@@ -105,5 +125,9 @@ export class NotificationsProcessor extends WorkerHost {
     this.logger.log(
       `[notify] push → ${row.userId} delivered=${successCount}/${tokens.length} pruned=${invalidTokens.length}`,
     );
+    // Only count as delivered when at least one token accepted the push.
+    // All-tokens-rejected = "no device received it" = sent_at stays null
+    // and the job is reported as not-ok so BullMQ's retry path engages.
+    return { delivered: successCount > 0, attemptedAt };
   }
 }

@@ -38,16 +38,24 @@ const baseUser = {
 describe('TokensService', () => {
   let service: TokensService;
   let jwt: { signAsync: jest.Mock; verifyAsync: jest.Mock };
+  let insertBuilder: {
+    insert: jest.Mock;
+    into: jest.Mock;
+    values: jest.Mock;
+    orUpdate: jest.Mock;
+    execute: jest.Mock;
+  };
   let sessionsRepo: {
     findOne: jest.Mock;
     delete: jest.Mock;
-    insert: jest.Mock;
+    createQueryBuilder: jest.Mock;
     manager: { getRepository: jest.Mock };
   };
   let subsRepo: { findOne: jest.Mock };
   let redis: {
     getJson: jest.Mock;
     setJson: jest.Mock;
+    del: jest.Mock;
   };
   let config: { get: jest.Mock };
   let usersRepo: { findOne: jest.Mock };
@@ -60,16 +68,28 @@ describe('TokensService', () => {
       verifyAsync: jest.fn(),
     };
     usersRepo = { findOne: jest.fn() };
+    // The new atomic UPSERT path uses a chainable query-builder.
+    insertBuilder = {
+      insert: jest.fn().mockReturnThis(),
+      into: jest.fn().mockReturnThis(),
+      values: jest.fn().mockReturnThis(),
+      orUpdate: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue(undefined),
+    };
     sessionsRepo = {
       findOne: jest.fn(),
       delete: jest.fn(),
-      insert: jest.fn(),
+      createQueryBuilder: jest.fn(() => insertBuilder),
       manager: {
         getRepository: jest.fn(() => usersRepo),
       },
     };
     subsRepo = { findOne: jest.fn() };
-    redis = { getJson: jest.fn(), setJson: jest.fn() };
+    redis = {
+      getJson: jest.fn(),
+      setJson: jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
+    };
     config = {
       get: jest.fn((k: string) => {
         if (k === 'jwt.accessExpiry') return '15m';
@@ -96,18 +116,44 @@ describe('TokensService', () => {
   // ----------------------------- issuePair -----------------------------
 
   describe('issuePair', () => {
-    it('replaces any existing session for the user (single-device enforcement)', async () => {
+    it('upserts the session for the user (atomic, single-device enforcement)', async () => {
+      // The previous shape was a separate `delete` + `insert` that could
+      // race two simultaneous logins. The fix is a single ON CONFLICT
+      // UPSERT keyed by user_id — verify we go through the query-builder
+      // chain rather than the two-call path.
       redis.getJson.mockResolvedValueOnce(null);
       subsRepo.findOne.mockResolvedValueOnce(null);
       await service.issuePair(baseUser, { deviceId: 'd1' });
-      expect(sessionsRepo.delete).toHaveBeenCalledWith({ userId: 'user-1' });
-      expect(sessionsRepo.insert).toHaveBeenCalledWith(
+      expect(sessionsRepo.delete).not.toHaveBeenCalled();
+      expect(sessionsRepo.createQueryBuilder).toHaveBeenCalled();
+      expect(insertBuilder.values).toHaveBeenCalledWith(
         expect.objectContaining({
           userId: 'user-1',
           deviceId: 'd1',
           refreshTokenJti: expect.any(String),
         }),
       );
+      expect(insertBuilder.orUpdate).toHaveBeenCalledWith(
+        expect.arrayContaining(['device_id', 'refresh_token_jti']),
+        ['user_id'],
+      );
+      expect(insertBuilder.execute).toHaveBeenCalled();
+    });
+
+    it('caches the bound deviceId so JwtStrategy can reject mismatched tokens', async () => {
+      redis.getJson.mockResolvedValueOnce(null);
+      subsRepo.findOne.mockResolvedValueOnce(null);
+      await service.issuePair(baseUser, { deviceId: 'd1' });
+      // Two setJson calls: one for the subscription-status cache (warm
+      // path), one for the active-device cache. We only assert the
+      // device-id one is there with a positive TTL.
+      const deviceCacheCall = redis.setJson.mock.calls.find(
+        (call) =>
+          typeof call[0] === 'string' && call[0].startsWith('active_device:'),
+      );
+      expect(deviceCacheCall).toBeDefined();
+      expect(deviceCacheCall![1]).toBe('d1');
+      expect(deviceCacheCall![2]).toBeGreaterThan(0);
     });
 
     it('stamps the access token with the current subscription status', async () => {
@@ -240,10 +286,17 @@ describe('TokensService', () => {
     expect(ttl).toBeLessThanOrEqual(300);
   });
 
-  it('logoutUser and logoutAll both delete the user device session', async () => {
+  it('logoutUser and logoutAll both delete the user device session AND drop the cached deviceId', async () => {
     await service.logoutUser('user-1');
     await service.logoutAll('user-1');
     expect(sessionsRepo.delete).toHaveBeenCalledTimes(2);
     expect(sessionsRepo.delete).toHaveBeenLastCalledWith({ userId: 'user-1' });
+    // The cached deviceId MUST be cleared on logout so any in-flight
+    // access tokens fail the JwtStrategy device-binding check instead
+    // of surviving until the access-token TTL expires.
+    const activeDeviceClears = redis.del.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && c[0].startsWith('active_device:'),
+    );
+    expect(activeDeviceClears.length).toBe(2);
   });
 });

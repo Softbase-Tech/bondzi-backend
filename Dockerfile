@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # =============================================================================
-# PassMaster Backend — production image
+# Bondzi Backend — production image
 # =============================================================================
 
 FROM node:20-alpine AS builder

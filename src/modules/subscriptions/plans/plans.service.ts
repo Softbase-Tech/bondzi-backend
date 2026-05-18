@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { BillingInterval } from '../../../common/types/enums';
@@ -37,6 +38,7 @@ export class PlansService {
     private readonly auditRepo: Repository<AuditLog>,
     private readonly providers: PaymentProviderRegistry,
     private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
   ) {}
 
   // --- Queries ---------------------------------------------------------------
@@ -51,6 +53,12 @@ export class PlansService {
     }
     if (!options?.includeInactive) {
       qb.andWhere('p.is_active = true');
+      // #73: plans in the version-bump grace period stay isActive=true
+      // so the webhook handler can resolve them by code, but they
+      // SHOULD NOT appear in any public listing. Filter them out for
+      // the catalogue path. Admin views (includeInactive=true) still
+      // see them so the price-change UI can show "expiring at X".
+      qb.andWhere('(p.archive_at IS NULL OR p.archive_at > NOW())');
     }
     return qb.orderBy('p.created_at', 'DESC').getMany();
   }
@@ -142,9 +150,9 @@ export class PlansService {
         countryCode: dto.countryCode,
         currency: dto.currency,
         provider: dto.provider,
-        monthlyPrice: dto.monthlyPrice.toFixed(2),
-        sixMonthPrice: dto.sixMonthPrice.toFixed(2),
-        annualPrice: dto.annualPrice.toFixed(2),
+        monthlyPrice: dto.monthlyPrice,
+        sixMonthPrice: dto.sixMonthPrice,
+        annualPrice: dto.annualPrice,
         monthlyDurationDays: dto.monthlyDurationDays ?? 30,
         sixMonthDurationDays: dto.sixMonthDurationDays ?? 180,
         annualDurationDays: dto.annualDurationDays ?? 365,
@@ -247,9 +255,13 @@ export class PlansService {
     dto: UpdatePlanDto,
     changedCadences: ('monthly' | 'six_month' | 'annual')[],
   ): Promise<SubscriptionPlanEntity> {
-    const monthlyPrice = dto.monthlyPrice ?? Number(current.monthlyPrice);
-    const sixMonthPrice = dto.sixMonthPrice ?? Number(current.sixMonthPrice);
-    const annualPrice = dto.annualPrice ?? Number(current.annualPrice);
+    // Plan price columns now flow as JS numbers via the entity-level
+    // NumericColumnTransformer, so no string→number coercion is needed
+    // when falling back to current values. Previously this used
+    // Number(current.X) because TypeORM returned strings.
+    const monthlyPrice = dto.monthlyPrice ?? current.monthlyPrice;
+    const sixMonthPrice = dto.sixMonthPrice ?? current.sixMonthPrice;
+    const annualPrice = dto.annualPrice ?? current.annualPrice;
     const monthlyDurationDays =
       dto.monthlyDurationDays ?? current.monthlyDurationDays;
     const sixMonthDurationDays =
@@ -303,12 +315,25 @@ export class PlansService {
 
     const before = this.snapshot(current);
 
+    const graceHours =
+      this.config.get<number>('paystack.checkoutGraceHours') ??
+      parseInt(process.env.CHECKOUT_GRACE_HOURS ?? '48', 10);
+
     const next = await this.dataSource.transaction(async (trx) => {
-      // Previous row becomes archived history.
+      // Previous row enters a grace period (#73). It keeps isActive=true
+      // so findByProviderPlanCode (called from the webhook handler)
+      // can still resolve it for any Paystack authorizationUrl that
+      // was issued before this bump and is still open. archive_at
+      // marks WHEN the grace period ends; the public list filters
+      // archived plans out so new subscribers only see v2. After
+      // archive_at passes the row stays in the DB for audit but the
+      // app treats it as unreachable.
+      const archiveAt = new Date(Date.now() + graceHours * 60 * 60 * 1000);
       await trx.getRepository(SubscriptionPlanEntity).update(current.id, {
-        isActive: false,
-        // If the old row was the country default, we move the default to
-        // the new version below.
+        archiveAt,
+        // Default flips immediately so the pricing page shows v2 right
+        // away; the grace period is for in-flight checkout completion,
+        // not for keeping the old price visible to new shoppers.
         isDefault: false,
       });
 
@@ -332,9 +357,9 @@ export class PlansService {
         countryCode: current.countryCode,
         currency: current.currency,
         provider: current.provider,
-        monthlyPrice: monthlyPrice.toFixed(2),
-        sixMonthPrice: sixMonthPrice.toFixed(2),
-        annualPrice: annualPrice.toFixed(2),
+        monthlyPrice,
+        sixMonthPrice,
+        annualPrice,
         monthlyDurationDays,
         sixMonthDurationDays,
         annualDurationDays,
@@ -392,7 +417,7 @@ export class PlansService {
       toSync.push({
         cadence: 'monthly',
         interval: BillingInterval.MONTHLY,
-        amountMinor: this.toMinor(Number(plan.monthlyPrice)),
+        amountMinor: this.toMinor(plan.monthlyPrice),
         durationDays: plan.monthlyDurationDays,
       });
     }
@@ -400,7 +425,7 @@ export class PlansService {
       toSync.push({
         cadence: 'six_month',
         interval: BillingInterval.SIX_MONTH,
-        amountMinor: this.toMinor(Number(plan.sixMonthPrice)),
+        amountMinor: this.toMinor(plan.sixMonthPrice),
         durationDays: plan.sixMonthDurationDays,
       });
     }
@@ -408,7 +433,7 @@ export class PlansService {
       toSync.push({
         cadence: 'annual',
         interval: BillingInterval.ANNUAL,
-        amountMinor: this.toMinor(Number(plan.annualPrice)),
+        amountMinor: this.toMinor(plan.annualPrice),
         durationDays: plan.annualDurationDays,
       });
     }
@@ -543,22 +568,22 @@ export class PlansService {
     switch (interval) {
       case BillingInterval.MONTHLY:
         return {
-          amountMinor: this.toMinor(Number(plan.monthlyPrice)),
-          amountDisplay: Number(plan.monthlyPrice),
+          amountMinor: this.toMinor(plan.monthlyPrice),
+          amountDisplay: plan.monthlyPrice,
           durationDays: plan.monthlyDurationDays,
           providerPlanCode: plan.providerPlanMonthly,
         };
       case BillingInterval.SIX_MONTH:
         return {
-          amountMinor: this.toMinor(Number(plan.sixMonthPrice)),
-          amountDisplay: Number(plan.sixMonthPrice),
+          amountMinor: this.toMinor(plan.sixMonthPrice),
+          amountDisplay: plan.sixMonthPrice,
           durationDays: plan.sixMonthDurationDays,
           providerPlanCode: plan.providerPlanSixMonth,
         };
       case BillingInterval.ANNUAL:
         return {
-          amountMinor: this.toMinor(Number(plan.annualPrice)),
-          amountDisplay: Number(plan.annualPrice),
+          amountMinor: this.toMinor(plan.annualPrice),
+          amountDisplay: plan.annualPrice,
           durationDays: plan.annualDurationDays,
           providerPlanCode: plan.providerPlanAnnual,
         };
@@ -599,19 +624,19 @@ export class PlansService {
     const changed: ('monthly' | 'six_month' | 'annual')[] = [];
     if (
       dto.monthlyPrice !== undefined &&
-      Number(current.monthlyPrice) !== dto.monthlyPrice
+      current.monthlyPrice !== dto.monthlyPrice
     ) {
       changed.push('monthly');
     }
     if (
       dto.sixMonthPrice !== undefined &&
-      Number(current.sixMonthPrice) !== dto.sixMonthPrice
+      current.sixMonthPrice !== dto.sixMonthPrice
     ) {
       changed.push('six_month');
     }
     if (
       dto.annualPrice !== undefined &&
-      Number(current.annualPrice) !== dto.annualPrice
+      current.annualPrice !== dto.annualPrice
     ) {
       changed.push('annual');
     }

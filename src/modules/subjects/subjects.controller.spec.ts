@@ -32,22 +32,37 @@ describe('SubjectsController', () => {
 
   it('list normalises ?examType=bece to ExamType.BECE', () => {
     controller.list('bece');
-    expect(subjects.listActive).toHaveBeenCalledWith(ExamType.BECE);
+    expect(subjects.listActive).toHaveBeenCalledWith(ExamType.BECE, {
+      includeInactive: false,
+    });
   });
 
   it('list normalises ?examType=wassce to ExamType.WASSCE', () => {
     controller.list('wassce');
-    expect(subjects.listActive).toHaveBeenCalledWith(ExamType.WASSCE);
+    expect(subjects.listActive).toHaveBeenCalledWith(ExamType.WASSCE, {
+      includeInactive: false,
+    });
   });
 
   it('list collapses an unknown examType to undefined (combined cache)', () => {
     controller.list('alien');
-    expect(subjects.listActive).toHaveBeenCalledWith(undefined);
+    expect(subjects.listActive).toHaveBeenCalledWith(undefined, {
+      includeInactive: false,
+    });
   });
 
   it('list collapses a missing examType to undefined', () => {
     controller.list();
-    expect(subjects.listActive).toHaveBeenCalledWith(undefined);
+    expect(subjects.listActive).toHaveBeenCalledWith(undefined, {
+      includeInactive: false,
+    });
+  });
+
+  it('list passes includeInactive=true through when admin requests it', () => {
+    controller.list('wassce', 'true');
+    expect(subjects.listActive).toHaveBeenCalledWith(ExamType.WASSCE, {
+      includeInactive: true,
+    });
   });
 
   it('createTopic forwards (subjectId, dto)', () => {

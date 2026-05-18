@@ -176,6 +176,31 @@ export class AiGenerationProcessor extends WorkerHost {
       return;
     }
 
+    // CRITICAL #15: enforce the global daily-budget gate at job START.
+    // checkBudget throws AiBudgetExceededException when daily AI spend
+    // is over the cap. The previous shape never called this — the cap
+    // was effectively cosmetic. Per-user limits don't apply to admin
+    // jobs (no `userId`), so only the global $ ceiling is checked here.
+    try {
+      await this.ai.checkBudget();
+    } catch (err) {
+      const message = (err as Error).message;
+      this.logger.error(
+        `[ai-job] daily budget exceeded; refusing job ${record.id}: ${message}`,
+      );
+      await this.jobsRepo.update(record.id, {
+        status: AiJobStatus.FAILED,
+        completedAt: new Date(),
+        errorLog: `Daily AI budget exceeded — ${message}`,
+      });
+      await this.sendJobSummary(
+        record.id,
+        AiJobStatus.FAILED,
+        'Daily AI budget exceeded',
+      );
+      return;
+    }
+
     await this.jobsRepo.update(record.id, {
       status: AiJobStatus.RUNNING,
       startedAt: new Date(),
@@ -204,6 +229,28 @@ export class AiGenerationProcessor extends WorkerHost {
       });
       await this.sendJobSummary(record.id, AiJobStatus.FAILED, message);
     }
+  }
+
+  /**
+   * #16 — per-job runaway-cost circuit breaker. The estimate is based on
+   * fixed 400/200 token guesses, but Sonnet math explanations regularly
+   * run 600–900 output tokens, so actual cost can be 3–5× the estimate.
+   * If the running total exceeds the estimate by `JOB_COST_CAP_MULTIPLIER`
+   * we abort the job mid-flight instead of bleeding budget. The estimate
+   * itself was already capped at AI_MAX_JOB_COST_USD at submit time
+   * (see AdminExplanationsService.assertUnderMaxCost), so the absolute
+   * ceiling here is `cap * multiplier`.
+   */
+  private static readonly JOB_COST_CAP_MULTIPLIER = 1.5;
+  private exceedsJobCostCap(
+    record: AiGenerationJob,
+    runningCost: number,
+  ): boolean {
+    const estimate = parseFloat(record.estimatedCostUsd ?? '0');
+    if (!Number.isFinite(estimate) || estimate <= 0) return false;
+    return (
+      runningCost > estimate * AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER
+    );
   }
 
   /**
@@ -363,6 +410,14 @@ export class AiGenerationProcessor extends WorkerHost {
               `pm-test-batch ${topicTitle}/${diff}`,
             );
             totalCost += call.costUsd;
+            if (this.exceedsJobCostCap(record, totalCost)) {
+              this.logger.error(
+                `[ai-job] aborting pm-test ${record.id}: running cost $${totalCost.toFixed(2)} exceeds ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× estimate ($${record.estimatedCostUsd}).`,
+              );
+              throw new Error(
+                `Job aborted: running cost exceeded ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× the pre-submit estimate.`,
+              );
+            }
             const generated = parseGeneratedBatch(call.content);
 
             for (let j = 0; j < generated.length; j++) {
@@ -540,6 +595,14 @@ Format: [{"body":"...","difficulty":"${args.difficulty}","options":[{"label":"A"
             maxTokens: 600,
           });
           totalCost += call.costUsd;
+          if (this.exceedsJobCostCap(record, totalCost)) {
+            this.logger.error(
+              `[ai-job] aborting explanation ${record.id}: running cost $${totalCost.toFixed(2)} exceeds ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× estimate ($${record.estimatedCostUsd}).`,
+            );
+            throw new Error(
+              `Job aborted: running cost exceeded ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× the pre-submit estimate.`,
+            );
+          }
           await this.questionsRepo.update(q.id, {
             explanation: call.content,
             explanationHtml: sanitizeHtml(call.contentHtml),

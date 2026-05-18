@@ -59,17 +59,17 @@ export class PlansPublicController {
       isDefault: plan.isDefault,
       pricing: {
         monthly: {
-          price: Number(plan.monthlyPrice),
+          price: plan.monthlyPrice,
           durationDays: plan.monthlyDurationDays,
           available: plan.providerPlanMonthly !== null,
         },
         sixMonth: {
-          price: Number(plan.sixMonthPrice),
+          price: plan.sixMonthPrice,
           durationDays: plan.sixMonthDurationDays,
           available: plan.providerPlanSixMonth !== null,
         },
         annual: {
-          price: Number(plan.annualPrice),
+          price: plan.annualPrice,
           durationDays: plan.annualDurationDays,
           available: plan.providerPlanAnnual !== null,
         },

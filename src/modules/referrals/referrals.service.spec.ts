@@ -28,9 +28,19 @@ describe('ReferralsService', () => {
     count: jest.Mock;
     update: jest.Mock;
     find: jest.Mock;
+    // `checkQualification` now SELECT FOR UPDATE-locks the event row
+    // inside the tx (fixes the TOCTOU between count and update that
+    // double-awarded `referral_qualified` XP under concurrent writes).
+    createQueryBuilder: jest.Mock;
   };
   let usersRepo: { findOne: jest.Mock };
-  let answersRepo: { count: jest.Mock };
+  // `checkQualification` now uses `answersRepo.manager.query` for the
+  // count (one SQL round-trip; the previous TypeORM count-with-relations
+  // was an N+1 hot spot fired on every answer submit).
+  let answersRepo: {
+    count: jest.Mock;
+    manager: { query: jest.Mock };
+  };
   let xpTxRepo: { findOne: jest.Mock };
   let gamification: { awardXp: jest.Mock };
   let notifications: { send: jest.Mock };
@@ -43,9 +53,18 @@ describe('ReferralsService', () => {
       count: jest.fn(),
       update: jest.fn(),
       find: jest.fn(),
+      // Default: locked row exists, qualifyXpIssued=false → tx proceeds.
+      createQueryBuilder: jest.fn(() => ({
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ qualifyXpIssued: false }),
+      })),
     };
     usersRepo = { findOne: jest.fn(), update: jest.fn() } as never;
-    answersRepo = { count: jest.fn() };
+    answersRepo = {
+      count: jest.fn(),
+      manager: { query: jest.fn() },
+    };
     xpTxRepo = { findOne: jest.fn() };
     gamification = { awardXp: jest.fn() };
     notifications = { send: jest.fn().mockResolvedValue(undefined) };
@@ -130,7 +149,7 @@ describe('ReferralsService', () => {
         referrerId: 'ref',
         referredId: 'user-1',
       });
-      answersRepo.count.mockResolvedValueOnce(9);
+      answersRepo.manager.query.mockResolvedValueOnce([{ count: 9 }]);
       expect(await service.checkQualification('user-1')).toBe(false);
       expect(gamification.awardXp).not.toHaveBeenCalled();
     });
@@ -141,7 +160,7 @@ describe('ReferralsService', () => {
         referrerId: 'ref',
         referredId: 'user-1',
       });
-      answersRepo.count.mockResolvedValueOnce(10);
+      answersRepo.manager.query.mockResolvedValueOnce([{ count: 10 }]);
       gamification.awardXp.mockResolvedValueOnce({ xpAmount: 100 });
       usersRepo.findOne.mockResolvedValueOnce({ fullName: 'Kofi M.' });
 

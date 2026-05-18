@@ -40,9 +40,9 @@ describe('PlansPublicController', () => {
         countryCode: 'GH',
         currency: 'GHS',
         isDefault: true,
-        monthlyPrice: '30',
-        sixMonthPrice: '150',
-        annualPrice: '270',
+        monthlyPrice: 30,
+        sixMonthPrice: 150,
+        annualPrice: 270,
         monthlyDurationDays: 30,
         sixMonthDurationDays: 180,
         annualDurationDays: 365,
@@ -57,7 +57,10 @@ describe('PlansPublicController', () => {
     expect(out[0].pricing.annual.available).toBe(true);
   });
 
-  it('coerces numeric strings into numbers for pricing', async () => {
+  it('returns pricing as numbers (transformer coerces at the entity layer)', async () => {
+    // The numericTransformer on the entity columns means the values
+    // arrive here already-coerced; this test guarantees the controller
+    // doesn't re-stringify them on the way out.
     plans.list.mockResolvedValueOnce([
       {
         id: 'p-1',
@@ -66,9 +69,9 @@ describe('PlansPublicController', () => {
         countryCode: 'GH',
         currency: 'GHS',
         isDefault: false,
-        monthlyPrice: '30',
-        sixMonthPrice: '150',
-        annualPrice: '270',
+        monthlyPrice: 30,
+        sixMonthPrice: 150,
+        annualPrice: 270,
         monthlyDurationDays: 30,
         sixMonthDurationDays: 180,
         annualDurationDays: 365,

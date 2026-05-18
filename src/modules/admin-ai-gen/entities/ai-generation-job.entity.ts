@@ -81,6 +81,22 @@ export class AiGenerationJob {
   @Column({ name: 'error_log', type: 'text', nullable: true })
   errorLog: string | null;
 
+  /**
+   * Co-sign tracking for jobs whose estimated cost exceeds
+   * AI_COSIGN_THRESHOLD_USD. The creator (triggered_by) writes the
+   * row with status=PENDING_APPROVAL; a SECOND admin (must differ)
+   * sets approved_by + approved_at and flips status to PENDING.
+   */
+  @Column({ name: 'approved_by', type: 'uuid', nullable: true })
+  approvedBy: string | null;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'approved_by' })
+  approvedByUser: User | null;
+
+  @Column({ name: 'approved_at', type: 'timestamptz', nullable: true })
+  approvedAt: Date | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }

@@ -126,6 +126,9 @@ export class AuthController {
   @Public()
   @Post('google')
   @HttpCode(HttpStatus.OK)
+  // Google ID-token verification hits Google's JWKS endpoint per call —
+  // CPU + outbound; cap so a bot can't pin the worker on dud tokens.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Sign in with a Google ID token.' })
   google(@Body() dto: GoogleSignInDto, @Req() req: Request) {
     return this.auth.googleSignIn(dto.idToken, {
@@ -141,6 +144,11 @@ export class AuthController {
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  // Refresh tokens live 30d. Without a throttle, a leaked refresh token
+  // can be rotated at machine speed (and stuffed credential-style
+  // against any user). 30/min is plenty for legit clients that refresh
+  // ~once per access-token-window.
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({
     summary: 'Exchange a refresh token for a new pair (rotates).',
   })
@@ -204,6 +212,12 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Patch('me/exam-type')
+  // Anti-leaderboard-farming: a SHS student could otherwise flip BECE ↔
+  // WASSCE to dominate a less-competitive board, then flip back. Audit
+  // trail is the real defense (see AuthService.updateExamType) but a
+  // hard throttle blunts the abuse window further. 3 changes per hour
+  // is comfortably above any legitimate use.
+  @Throttle({ default: { limit: 3, ttl: 60 * 60_000 } })
   @ApiOperation({
     summary:
       "Change the user's exam type + form level. schoolLevel is derived.",

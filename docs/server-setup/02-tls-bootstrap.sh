@@ -50,6 +50,18 @@ echo "==> Verifying certbot.timer is enabled"
 systemctl enable --now certbot.timer
 systemctl status certbot.timer --no-pager | head -5
 
+# Dry-run the renewal RIGHT NOW so a misconfigured renewal hook /
+# permission issue / firewall change surfaces on day-0 instead of
+# silently failing on day-90 when the cert actually expires.
+# A successful dry-run exercises:
+#   1. ACME challenge path (HTTP-01 via /var/www/certbot)
+#   2. Renewal hook execution (reload nginx)
+#   3. cert + key write permissions
+# certbot exits non-zero on any failure; set -e propagates it.
+echo "==> Dry-run renewal to validate the full pipeline"
+certbot renew --dry-run
+
 echo
 echo "Certificate installed at /etc/letsencrypt/live/${HOST}/"
+echo "Renewal dry-run passed — the cert will auto-renew before expiry."
 echo "Next: cd /opt/bondzi && docker compose -f docker-compose.local.yml up -d --build"

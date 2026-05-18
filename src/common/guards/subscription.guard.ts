@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -32,6 +33,7 @@ export class SubscriptionGuard implements CanActivate {
     @InjectRepository(Subscription)
     private readonly subscriptionsRepo: Repository<Subscription>,
     private readonly redis: RedisService,
+    private readonly cfg: ConfigService,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -68,7 +70,10 @@ export class SubscriptionGuard implements CanActivate {
       status: sub.status,
       expiresAt,
     };
-    await this.redis.setJson(cacheKey, payload, 600);
+    // TTL bounded by SUBSCRIPTION_STATUS_CACHE_TTL — see app.config.ts.
+    // Cancellation impact on free-premium leak is capped at this value.
+    const ttl = this.cfg.get<number>('app.subscriptionStatusCacheTtlSec') ?? 60;
+    await this.redis.setJson(cacheKey, payload, ttl);
 
     if (!this.isActive(sub.status, expiresAt)) {
       throw new ForbiddenException('Active subscription required');

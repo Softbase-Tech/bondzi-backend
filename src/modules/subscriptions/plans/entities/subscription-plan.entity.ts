@@ -1,6 +1,7 @@
 import {
   Column,
   CreateDateColumn,
+  DeleteDateColumn,
   Entity,
   Index,
   JoinColumn,
@@ -9,9 +10,10 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { User } from '../../../users/entities/user.entity';
+import { numericTransformer } from '../../../../common/utils/numeric.transformer';
 
 /**
- * A single subscription product (e.g. "PassMaster Pro GH"). Each row bundles
+ * A single subscription product (e.g. "Bondzi Pro GH"). Each row bundles
  * all three billing cadences (monthly / six-month / annual) with their prices,
  * durations, and provider-side plan codes.
  *
@@ -55,24 +57,27 @@ export class SubscriptionPlanEntity {
     type: 'numeric',
     precision: 10,
     scale: 2,
+    transformer: numericTransformer,
   })
-  monthlyPrice: string;
+  monthlyPrice: number;
 
   @Column({
     name: 'six_month_price',
     type: 'numeric',
     precision: 10,
     scale: 2,
+    transformer: numericTransformer,
   })
-  sixMonthPrice: string;
+  sixMonthPrice: number;
 
   @Column({
     name: 'annual_price',
     type: 'numeric',
     precision: 10,
     scale: 2,
+    transformer: numericTransformer,
   })
-  annualPrice: string;
+  annualPrice: number;
 
   @Column({ name: 'monthly_duration_days', type: 'int', default: 30 })
   monthlyDurationDays: number;
@@ -123,4 +128,27 @@ export class SubscriptionPlanEntity {
 
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
+
+  /**
+   * Version-bump grace period (#73). When a price changes, the previous
+   * plan row gets `archive_at = NOW() + CHECKOUT_GRACE_HOURS`. Effects:
+   *   - Public listing hides plans with archive_at < NOW().
+   *   - Webhook resolution still finds them by provider_plan_code so
+   *     a checkout URL that was created before the bump can still
+   *     complete and process correctly.
+   *   - A scheduled cleanup eventually flips deleted_at to tombstone
+   *     the row.
+   * NULL means "no scheduled archive" — i.e. the plan is current.
+   */
+  @Column({ name: 'archive_at', type: 'timestamptz', nullable: true })
+  archiveAt: Date | null;
+
+  // Hard "archived" timestamp distinct from is_active=false. is_active=false
+  // means "don't surface to new subscribers but the row is still alive
+  // (existing subscribers + open authorizationUrls still resolve)";
+  // deleted_at means "the plan is truly removed and should not appear
+  // anywhere except in audit forensics." See plans.service.ts grace-
+  // period flow for the staged transition.
+  @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz', nullable: true })
+  deletedAt: Date | null;
 }

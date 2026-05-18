@@ -11,7 +11,7 @@ import {
 } from 'class-validator';
 
 export class CreatePlanDto {
-  @ApiProperty({ example: 'PassMaster Pro GH' })
+  @ApiProperty({ example: 'Bondzi Pro GH' })
   @IsString()
   @IsNotEmpty()
   @Length(2, 100)

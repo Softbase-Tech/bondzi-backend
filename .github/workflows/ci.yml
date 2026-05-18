@@ -13,9 +13,9 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_USER: passmaster
-          POSTGRES_PASSWORD: passmaster
-          POSTGRES_DB: passmaster_test
+          POSTGRES_USER: bondzi
+          POSTGRES_PASSWORD: bondzi
+          POSTGRES_DB: bondzi_test
         ports: ['5432:5432']
         options: >-
           --health-cmd pg_isready
@@ -52,10 +52,44 @@ jobs:
         run: npm test -- --passWithNoTests
         env:
           NODE_ENV: test
-          DATABASE_URL: postgres://passmaster:passmaster@localhost:5432/passmaster_test
+          DATABASE_URL: postgres://bondzi:bondzi@localhost:5432/bondzi_test
           REDIS_URL: redis://localhost:6379
           JWT_ACCESS_SECRET: ${{ secrets.CI_JWT_ACCESS_SECRET || 'test-access-secret-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' }}
           JWT_REFRESH_SECRET: ${{ secrets.CI_JWT_REFRESH_SECRET || 'test-refresh-secret-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' }}
 
-      - name: Verify migrations compile
-        run: npx tsc -p tsconfig.json --noEmit
+      # Smoke-check that every migration file:
+      #   1. Exports a class whose name ends in a timestamp (TypeORM's
+      #      naming contract — typeorm:migration:run rejects otherwise).
+      #   2. Implements MigrationInterface (compile-time, already covered
+      #      by Typecheck) AND structurally has up + down methods.
+      # The previous shape ran `tsc --noEmit` a second time which is
+      # identical to the Typecheck step above and gave a false sense of
+      # validation coverage.
+      - name: Verify migrations are well-formed
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const dir = "src/database/migrations";
+            const files = fs.readdirSync(dir).filter(f => f.endsWith(".ts"));
+            if (files.length === 0) {
+              console.error("No migration files found in " + dir);
+              process.exit(1);
+            }
+            const namePattern = /^\d{13}-[A-Za-z0-9]+\.ts$/;
+            let bad = 0;
+            for (const f of files) {
+              if (!namePattern.test(f)) {
+                console.error("Bad migration filename: " + f);
+                bad++;
+                continue;
+              }
+              const src = fs.readFileSync(path.join(dir, f), "utf8");
+              if (!/public\s+async\s+up\s*\(/.test(src) || !/public\s+async\s+down\s*\(/.test(src)) {
+                console.error("Missing up()/down() in " + f);
+                bad++;
+              }
+            }
+            if (bad > 0) process.exit(1);
+            console.log("All " + files.length + " migrations well-formed.");
+          '

@@ -41,7 +41,11 @@ describe('XpEconomyService', () => {
     findOne: jest.Mock;
   };
   let txRedemptionsRepo: { create: jest.Mock; save: jest.Mock };
-  let txSubsRepo: { create: jest.Mock; save: jest.Mock };
+  let txSubsRepo: {
+    create: jest.Mock;
+    save: jest.Mock;
+    createQueryBuilder: jest.Mock;
+  };
   let txXpRepo: { insert: jest.Mock };
 
   beforeEach(async () => {
@@ -70,9 +74,19 @@ describe('XpEconomyService', () => {
       create: jest.fn((o: unknown) => ({ id: 'rd-1', ...(o as object) })),
       save: jest.fn(async (r: unknown) => r),
     };
+    // Default: no existing active subscription so the redeem path falls
+    // through to the "create new XP_CREDITED row" branch. Tests for the
+    // "extend instead of stack" path override this stub.
+    const noExistingActiveQb = {
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(null),
+    };
     txSubsRepo = {
       create: jest.fn((o: unknown) => o),
       save: jest.fn(async (s: unknown) => ({ ...(s as object), id: 'sub-1' })),
+      createQueryBuilder: jest.fn(() => noExistingActiveQb),
     };
     txXpRepo = { insert: jest.fn().mockResolvedValue(undefined) };
 
@@ -151,7 +165,7 @@ describe('XpEconomyService', () => {
       expect(txRedemptionsRepo.save).not.toHaveBeenCalled();
     });
 
-    it('records redemption, grants XP_CREDITED subscription and busts cache', async () => {
+    it('with no active sub: creates a fresh XP_CREDITED row and busts cache', async () => {
       tiersRepo.findOne.mockResolvedValueOnce({
         tierKey: 't-30',
         xpCost: 500,
@@ -186,6 +200,86 @@ describe('XpEconomyService', () => {
           creditDays: 30,
         }),
       );
+    });
+
+    it('with an existing ACTIVE paid sub: extends its expires_at instead of inserting a new row', async () => {
+      // CRITICAL: this is the launch-blocker test. The old shape stacked
+      // an XP_CREDITED row on top of the paid sub, which let a user pay
+      // via Paystack, redeem XP, then chargeback and keep premium via
+      // the XP_CREDITED row.
+      tiersRepo.findOne.mockResolvedValueOnce({
+        tierKey: 't-30',
+        xpCost: 500,
+        creditDays: 30,
+      });
+      const futureExpiry = new Date(Date.now() + 5 * 86400 * 1000); // 5 days
+      const existingPaidSub = {
+        id: 'paid-sub-1',
+        userId: 'user-1',
+        status: SubscriptionStatus.ACTIVE,
+        expiresAt: futureExpiry,
+        xpRedemptionId: null,
+      } as never;
+      txSubsRepo.createQueryBuilder.mockReturnValueOnce({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(existingPaidSub),
+      });
+      await service.redeem('user-1', 't-30');
+      // No new subscription row was created — the existing paid sub was
+      // saved with an extended expires_at instead.
+      expect(txSubsRepo.create).not.toHaveBeenCalled();
+      expect(txSubsRepo.save).toHaveBeenCalledTimes(1);
+      const saved = txSubsRepo.save.mock.calls[0][0] as {
+        id: string;
+        status: SubscriptionStatus;
+        expiresAt: Date;
+        xpRedemptionId: string | null;
+      };
+      expect(saved.id).toBe('paid-sub-1');
+      expect(saved.status).toBe(SubscriptionStatus.ACTIVE); // unchanged
+      expect(saved.expiresAt.getTime()).toBe(
+        futureExpiry.getTime() + 30 * 86400 * 1000,
+      );
+      // Paid sub keeps xp_redemption_id NULL so the audit trail still
+      // points the row at the original purchase, not the redemption.
+      expect(saved.xpRedemptionId).toBeNull();
+    });
+
+    it('with an existing XP_CREDITED sub: extends AND tags the redemption pointer', async () => {
+      tiersRepo.findOne.mockResolvedValueOnce({
+        tierKey: 't-7',
+        xpCost: 100,
+        creditDays: 7,
+      });
+      const futureExpiry = new Date(Date.now() + 2 * 86400 * 1000);
+      const existingXp = {
+        id: 'xp-sub-1',
+        userId: 'user-1',
+        status: SubscriptionStatus.XP_CREDITED,
+        expiresAt: futureExpiry,
+        xpRedemptionId: 'old-rd',
+      } as never;
+      txSubsRepo.createQueryBuilder.mockReturnValueOnce({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(existingXp),
+      });
+      await service.redeem('user-1', 't-7');
+      const saved = txSubsRepo.save.mock.calls[0][0] as {
+        status: SubscriptionStatus;
+        expiresAt: Date;
+        xpRedemptionId: string | null;
+      };
+      expect(saved.status).toBe(SubscriptionStatus.XP_CREDITED);
+      expect(saved.expiresAt.getTime()).toBe(
+        futureExpiry.getTime() + 7 * 86400 * 1000,
+      );
+      // The XP-credit row picks up the new redemption pointer so the
+      // audit chain stays correct.
+      expect(saved.xpRedemptionId).toBe('rd-1');
     });
   });
 });

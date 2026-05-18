@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import { SubscriptionsService } from './subscriptions.service';
 import { Subscription } from './entities/subscription.entity';
 import { User } from '../users/entities/user.entity';
@@ -82,6 +83,14 @@ describe('SubscriptionsService', () => {
     };
     providers = { get: jest.fn(() => provider) };
     redis = { getJson: jest.fn(), setJson: jest.fn(), del: jest.fn() };
+    // DataSource.transaction(fn) runs the callback against a fake entity
+    // manager whose `query` mock pretends `pg_advisory_xact_lock` succeeded
+    // — that's all `applyWebhookActivation` needs from the lock layer.
+    const dataSource = {
+      transaction: jest.fn(async (fn: (em: unknown) => Promise<unknown>) =>
+        fn({ query: jest.fn().mockResolvedValue(undefined) }),
+      ),
+    };
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -91,6 +100,7 @@ describe('SubscriptionsService', () => {
         { provide: PlansService, useValue: plans },
         { provide: PaymentProviderRegistry, useValue: providers },
         { provide: RedisService, useValue: redis },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
     service = moduleRef.get(SubscriptionsService);
@@ -229,11 +239,45 @@ describe('SubscriptionsService', () => {
       subsRepo.findOne.mockResolvedValueOnce({
         userId: 'user-1',
         provider: 'paystack',
+        status: SubscriptionStatus.TRIAL,
       });
       provider.verifyTransaction.mockResolvedValueOnce({ status: 'failed' });
       await expect(service.verify('user-1', 'ref_x')).rejects.toBeInstanceOf(
         ConflictException,
       );
+    });
+
+    it('rejects when Paystack returns success but amount paid is lower than expected', async () => {
+      // amountGhs '50.00' = 5000 pesewas; tampered paid amount = 100p (1 GHS)
+      // is well outside the AMOUNT_MATCH_TOLERANCE_MINOR window.
+      subsRepo.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        userId: 'user-1',
+        provider: 'paystack',
+        status: SubscriptionStatus.TRIAL,
+        amountGhs: '50.00',
+      });
+      provider.verifyTransaction.mockResolvedValueOnce({
+        status: 'success',
+        amountMinor: 100,
+        customerId: 'cus_1',
+      });
+      await expect(service.verify('user-1', 'ref_x')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(subsRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('short-circuits when the subscription is already ACTIVE (no Paystack roundtrip)', async () => {
+      subsRepo.findOne.mockResolvedValueOnce({
+        id: 'sub-1',
+        userId: 'user-1',
+        provider: 'paystack',
+        status: SubscriptionStatus.ACTIVE,
+      });
+      const out = await service.verify('user-1', 'ref_x');
+      expect(out.status).toBe(SubscriptionStatus.ACTIVE);
+      expect(provider.verifyTransaction).not.toHaveBeenCalled();
     });
 
     it('flips status to ACTIVE on success and invalidates the cache', async () => {
@@ -242,10 +286,12 @@ describe('SubscriptionsService', () => {
         userId: 'user-1',
         provider: 'paystack',
         status: SubscriptionStatus.TRIAL,
+        amountGhs: '50.00',
       } as Subscription;
       subsRepo.findOne.mockResolvedValueOnce(sub);
       provider.verifyTransaction.mockResolvedValueOnce({
         status: 'success',
+        amountMinor: 5000,
         customerId: 'cus_1',
       });
       const out = await service.verify('user-1', 'ref_x');
@@ -254,11 +300,61 @@ describe('SubscriptionsService', () => {
     });
   });
 
+  // -------------------------- applyWebhookStatus --------------------------
+
+  describe('applyWebhookStatus', () => {
+    it('scopes the status update to a SINGLE subscription row (by id), not every row for the user', async () => {
+      // The previous shape was `update({ userId }, { status })` — a
+      // `subscription.disable` event would flip every historical row
+      // (active, xp_credited, expired) to CANCELLED. Verify we now
+      // look up by id and only save that one.
+      const targetSub = {
+        id: 'sub-1',
+        userId: 'user-1',
+        status: SubscriptionStatus.ACTIVE,
+      } as Subscription;
+      subsRepo.findOne.mockResolvedValueOnce(targetSub);
+      await service.applyWebhookStatus('sub-1', SubscriptionStatus.CANCELLED);
+      expect(subsRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+      });
+      expect(subsRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'sub-1',
+          status: SubscriptionStatus.CANCELLED,
+        }),
+      );
+      expect(redis.del).toHaveBeenCalled();
+    });
+
+    it('is a no-op when the subscription id is unknown (defensive)', async () => {
+      subsRepo.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.applyWebhookStatus('missing', SubscriptionStatus.CANCELLED),
+      ).resolves.toBeUndefined();
+      expect(subsRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
   // ------------------------------ cancel ------------------------------
 
   describe('cancel', () => {
-    it('rejects when there is no active subscription', async () => {
-      subsRepo.findOne.mockResolvedValueOnce(null);
+    /**
+     * `cancel` now uses createQueryBuilder so it can match any of the
+     * "live" statuses (ACTIVE / TRIAL / XP_CREDITED) — the previous
+     * shape only matched ACTIVE and 404'd for trial/xp_credited users.
+     */
+    function stubLiveSubQb(sub: Subscription | null) {
+      subsRepo.createQueryBuilder.mockReturnValueOnce({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(sub),
+      });
+    }
+
+    it('rejects when there is no live subscription (active/trial/xp_credited)', async () => {
+      stubLiveSubQb(null);
       await expect(service.cancel('user-1')).rejects.toBeInstanceOf(
         NotFoundException,
       );
@@ -272,11 +368,24 @@ describe('SubscriptionsService', () => {
         providerSubscriptionId: 'pst_1',
         status: SubscriptionStatus.ACTIVE,
       } as Subscription;
-      subsRepo.findOne.mockResolvedValueOnce(sub);
+      stubLiveSubQb(sub);
       provider.cancelSubscription.mockRejectedValueOnce(new Error('boom'));
       const out = await service.cancel('user-1');
       expect(out.status).toBe(SubscriptionStatus.CANCELLED);
       expect(redis.del).toHaveBeenCalled();
+    });
+
+    it('also cancels TRIAL and XP_CREDITED subs (audit fix #41)', async () => {
+      const sub = {
+        id: 'sub-2',
+        userId: 'user-1',
+        status: SubscriptionStatus.XP_CREDITED,
+        provider: null,
+        providerSubscriptionId: null,
+      } as Subscription;
+      stubLiveSubQb(sub);
+      const out = await service.cancel('user-1');
+      expect(out.status).toBe(SubscriptionStatus.CANCELLED);
     });
   });
 });
