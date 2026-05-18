@@ -37,11 +37,15 @@ export class DropExamAnswerOptionFk_1840000000000 implements MigrationInterface 
     `);
   }
 
+  // Down is intentionally async-but-empty: the CI migration verifier
+  // requires `public async down(` for consistency with every other
+  // migration, while restoring this FK is unsafe (it would reject every
+  // existing PM-Test answer row whose selected_option_id points at
+  // pm_test_options — a true rollback needs a backfill strategy, which
+  // is product-policy not schema). Disable require-await for this
+  // intentional no-op rather than fake an `await Promise.resolve()`.
+  // eslint-disable-next-line @typescript-eslint/require-await
   public async down(_queryRunner: QueryRunner): Promise<void> {
-    // Restoring the FK would reject every existing PM-Test answer
-    // row whose selected_option_id points at pm_test_options. Down
-    // is a no-op on purpose — a true rollback also needs a backfill
-    // strategy for those rows, which is product-policy not schema.
     void _queryRunner;
   }
 }
