@@ -8,6 +8,7 @@ import { Notification } from '../notifications/entities/notification.entity';
 import { LeaderboardController } from './leaderboard.controller';
 import { WinnersController } from './winners.controller';
 import { AdminLeaderboardController } from './admin-leaderboard.controller';
+import { AdminWinnersController } from './admin-winners.controller';
 import { LeaderboardService } from './leaderboard.service';
 import { WinnerSelectionService } from './winner-selection.service';
 import { GamificationModule } from '../gamification/gamification.module';
@@ -27,6 +28,7 @@ import { GamificationModule } from '../gamification/gamification.module';
     LeaderboardController,
     WinnersController,
     AdminLeaderboardController,
+    AdminWinnersController,
   ],
   providers: [LeaderboardService, WinnerSelectionService],
   exports: [LeaderboardService, WinnerSelectionService, TypeOrmModule],

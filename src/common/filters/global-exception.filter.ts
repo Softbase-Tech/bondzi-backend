@@ -41,8 +41,14 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         error = r.error ?? exception.name;
       }
     } else if (exception instanceof Error) {
-      message = exception.message;
-      error = exception.name;
+      // CRITICAL: NEVER pass a raw Error.message through to the client
+      // on a non-HttpException. TypeORM's QueryFailedError surfaces
+      // table + column names + SQL fragments; bcrypt errors leak the
+      // hash format; AWS SDK errors carry IAM hints. The stack trace
+      // is still logged below for ops; the client only sees a generic
+      // "Internal server error" plus a request id for correlation.
+      message = 'Internal server error';
+      error = 'InternalServerError';
     }
 
     const payload: ErrorPayload = {

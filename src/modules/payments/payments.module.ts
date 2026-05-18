@@ -4,8 +4,10 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { User } from '../users/entities/user.entity';
 import { PaymentEvent } from './entities/payment-event.entity';
+import { FinancialEvent } from './entities/financial-event.entity';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
+import { FinancialAuditService } from './financial-audit.service';
 import { PAYMENT_PROVIDERS } from './providers/payment-provider.interface';
 import { PaymentProviderRegistry } from './providers/payment-provider.registry';
 import { PaystackProvider } from './providers/paystack/paystack.provider';
@@ -21,13 +23,19 @@ import { WebhookHandlerService } from './webhooks/webhook-handler.service';
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([PaymentEvent, Subscription, User]),
+    TypeOrmModule.forFeature([
+      PaymentEvent,
+      FinancialEvent,
+      Subscription,
+      User,
+    ]),
     forwardRef(() => SubscriptionsModule),
   ],
   controllers: [PaymentsController, WebhookController],
   providers: [
     PaymentsService,
     WebhookHandlerService,
+    FinancialAuditService,
     PaystackProvider,
     {
       provide: PAYMENT_PROVIDERS,
@@ -40,6 +48,7 @@ import { WebhookHandlerService } from './webhooks/webhook-handler.service';
     PaymentsService,
     PaymentProviderRegistry,
     WebhookHandlerService,
+    FinancialAuditService,
     PaystackProvider,
   ],
 })

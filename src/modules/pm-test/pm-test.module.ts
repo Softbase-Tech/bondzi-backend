@@ -29,6 +29,8 @@ import { QUEUE_AI_GENERATION } from '../ai/ai.queues';
   ],
   controllers: [PmTestController, AdminPmTestController],
   providers: [PmTestService, AdminPmTestService],
-  exports: [PmTestService, TypeOrmModule],
+  // AdminPmTestService is exported so the unified ai-generation façade
+  // controller (lives in admin-ai-gen.module) can delegate to it.
+  exports: [PmTestService, AdminPmTestService, TypeOrmModule],
 })
 export class PmTestModule {}

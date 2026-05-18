@@ -23,14 +23,31 @@ const PRICING: Record<string, ModelPricing> = {
   },
 };
 
+/**
+ * Highest-known input + output per-million across the table. Used as
+ * the default when an unknown model ID comes through — over-estimate
+ * cost so the daily budget guard never under-counts what we owe AWS.
+ * Recomputed at module load (when PRICING is frozen) so new entries
+ * automatically participate.
+ */
+const FALLBACK_PRICING: ModelPricing = Object.values(PRICING).reduce(
+  (max, p) => ({
+    inputPerM: Math.max(max.inputPerM, p.inputPerM),
+    outputPerM: Math.max(max.outputPerM, p.outputPerM),
+  }),
+  { inputPerM: 0, outputPerM: 0 },
+);
+
 export function costUsd(
   model: string,
   inputTokens: number,
   outputTokens: number,
 ): number {
-  // Default to Sonnet pricing when we encounter an unknown model — we'd
-  // rather over-estimate and under-spend than the inverse.
-  const price = PRICING[model] ?? { inputPerM: 3.0, outputPerM: 15.0 };
+  // Unknown model -> bill against the most expensive known model. A
+  // hardcoded "Sonnet rate" silently bills any future Opus / Claude 5
+  // job at Sonnet rates and underflows the daily budget. Computing
+  // max dynamically removes that footgun.
+  const price = PRICING[model] ?? FALLBACK_PRICING;
   return (
     (inputTokens * price.inputPerM + outputTokens * price.outputPerM) /
     1_000_000

@@ -139,22 +139,59 @@ export class XpEconomyService {
       const creditMs = tier.creditDays * 24 * 60 * 60 * 1000;
       const now = new Date();
 
-      // XP-credited subscription: plan_id / billing_interval / provider all
-      // stay NULL — status=XP_CREDITED is the sole signal this was granted
-      // via redemption rather than a paid plan. We always INSERT a new row;
-      // each redemption keeps its own audit-worthy record pointing at its
-      // xp_redemption_id.
-      const fresh = subsRepo.create({
-        userId,
-        planId: null,
-        billingInterval: null,
-        provider: null,
-        status: SubscriptionStatus.XP_CREDITED,
-        startsAt: now,
-        expiresAt: new Date(now.getTime() + creditMs),
-        xpRedemptionId: redemption.id,
-      });
-      const subscription = await subsRepo.save(fresh);
+      // CRITICAL: do NOT create a stacked row when an active subscription
+      // already exists. The previous shape silently inserted an
+      // XP_CREDITED row on top of a paid ACTIVE one, which let a user
+      // pay via Paystack, redeem XP, then chargeback and still hold
+      // premium via the XP_CREDITED row. We now EXTEND whichever active
+      // sub the user already has by `creditDays`, so a chargeback that
+      // flips the paid row to REFUNDED also removes the extension.
+      //
+      // Selection: take the latest active row (paid ACTIVE, TRIAL, or
+      // existing XP_CREDITED). Fall back to creating a fresh
+      // XP_CREDITED row only when no active sub exists at all.
+      const existingActive = await subsRepo
+        .createQueryBuilder('s')
+        .where('s.user_id = :uid', { uid: userId })
+        .andWhere('s.status IN (:...statuses)', {
+          statuses: [
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.TRIAL,
+            SubscriptionStatus.XP_CREDITED,
+          ],
+        })
+        .andWhere('(s.expires_at IS NULL OR s.expires_at > NOW())')
+        .orderBy('s.expires_at', 'DESC')
+        .getOne();
+
+      let subscription: Subscription;
+      if (existingActive) {
+        // Anchor the extension on the LATER of (now, current expires_at)
+        // so a sub already expiring next year gets +N days from that
+        // future date, not from today. Status stays as-is — a paid
+        // ACTIVE row stays ACTIVE; an XP_CREDITED row picks up the new
+        // redemption pointer for audit lineage.
+        const base = existingActive.expiresAt
+          ? Math.max(existingActive.expiresAt.getTime(), now.getTime())
+          : now.getTime();
+        existingActive.expiresAt = new Date(base + creditMs);
+        if (existingActive.status === SubscriptionStatus.XP_CREDITED) {
+          existingActive.xpRedemptionId = redemption.id;
+        }
+        subscription = await subsRepo.save(existingActive);
+      } else {
+        const fresh = subsRepo.create({
+          userId,
+          planId: null,
+          billingInterval: null,
+          provider: null,
+          status: SubscriptionStatus.XP_CREDITED,
+          startsAt: now,
+          expiresAt: new Date(now.getTime() + creditMs),
+          xpRedemptionId: redemption.id,
+        });
+        subscription = await subsRepo.save(fresh);
+      }
 
       await txRepo.insert({
         userId,

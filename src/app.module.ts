@@ -1,7 +1,7 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 
@@ -16,14 +16,17 @@ import smsConfig from './config/sms.config';
 import mailConfig from './config/mail.config';
 import firebaseConfig from './config/firebase.config';
 import throttleConfig from './config/throttle.config';
+import observabilityConfig from './config/observability.config';
 import { envValidationSchema } from './config/validation.schema';
 
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './common/redis/redis.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
-import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { SubscriptionGuard } from './common/guards/subscription.guard';
+import { RequestContextModule } from './common/observability/request-context';
+import { PinoLoggerModule } from './common/observability/logger.module';
+import { ObservabilityModule } from './common/observability/observability.module';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -71,8 +74,16 @@ import { AdsModule } from './modules/ads/ads.module';
         mailConfig,
         firebaseConfig,
         throttleConfig,
+        observabilityConfig,
       ],
     }),
+
+    // RequestContextModule must come BEFORE PinoLoggerModule — the
+    // pino mixin reads requestId from CLS, which only works if the
+    // CLS middleware has already run.
+    RequestContextModule,
+    PinoLoggerModule,
+    ObservabilityModule,
 
     ScheduleModule.forRoot(),
 
@@ -141,7 +152,8 @@ import { AdsModule } from './modules/ads/ads.module';
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
-    { provide: APP_INTERCEPTOR, useClass: LoggingInterceptor },
+    // pino-http (registered by PinoLoggerModule) replaces the old
+    // LoggingInterceptor — one source of truth for per-request logs.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: SubscriptionGuard },

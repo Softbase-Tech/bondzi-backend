@@ -9,7 +9,7 @@ interface SeedCadence {
 }
 
 /**
- * Seeds the default "PassMaster Pro GH" plan (monthly ₵29, six-month ₵150,
+ * Seeds the default "Bondzi Pro GH" plan (monthly ₵29, six-month ₵150,
  * annual ₵240). Idempotent — skips if any plan row already exists.
  *
  * If PAYSTACK_SECRET_KEY_GH is present the seeder creates the three cadence
@@ -26,14 +26,14 @@ export async function seedSubscriptionPlans(ds: DataSource): Promise<void> {
   }
 
   const plan = repo.create({
-    name: 'PassMaster Pro GH',
-    description: 'Full access to PassMaster Ghana premium features.',
+    name: 'Bondzi Pro GH',
+    description: 'Full access to Bondzi Ghana premium features.',
     countryCode: 'GH',
     currency: 'GHS',
     provider: 'paystack',
-    monthlyPrice: '29.00',
-    sixMonthPrice: '150.00',
-    annualPrice: '240.00',
+    monthlyPrice: 29.0,
+    sixMonthPrice: 150.0,
+    annualPrice: 240.0,
     monthlyDurationDays: 30,
     sixMonthDurationDays: 180,
     annualDurationDays: 365,
@@ -80,7 +80,7 @@ export async function seedSubscriptionPlans(ds: DataSource): Promise<void> {
   for (const c of cadences) {
     try {
       const res = await http.post<{ data: { plan_code: string } }>('/plan', {
-        name: `PassMaster Pro GH • ${c.cadence}`,
+        name: `Bondzi Pro GH • ${c.cadence}`,
         amount: c.amountMinor,
         interval: c.paystackInterval,
         currency: 'GHS',
@@ -100,6 +100,6 @@ export async function seedSubscriptionPlans(ds: DataSource): Promise<void> {
   });
 
   console.log(
-    `[seed] seeded plan "PassMaster Pro GH" (paystack codes: monthly=${codes.monthly ?? 'null'}, six_month=${codes.six_month ?? 'null'}, annual=${codes.annual ?? 'null'})`,
+    `[seed] seeded plan "Bondzi Pro GH" (paystack codes: monthly=${codes.monthly ?? 'null'}, six_month=${codes.six_month ?? 'null'}, annual=${codes.annual ?? 'null'})`,
   );
 }

@@ -13,4 +13,7 @@ export default registerAs('paystack', () => ({
   webhookSecret: process.env.PAYSTACK_WEBHOOK_SECRET as string,
   callbackUrl: process.env.PAYSTACK_CALLBACK_URL as string,
   apiBaseUrl: 'https://api.paystack.co',
+  // Hours an old plan version remains resolvable after a price change
+  // so open authorizationUrls can still finish checkout (#73).
+  checkoutGraceHours: parseInt(process.env.CHECKOUT_GRACE_HOURS ?? '48', 10),
 }));

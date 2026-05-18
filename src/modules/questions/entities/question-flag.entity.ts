@@ -20,8 +20,14 @@ export class QuestionFlag {
   @Column({ name: 'question_id', type: 'uuid' })
   questionId: string;
 
-  // FK is retained to questions only — PM Test flags are validated at app layer.
-  @ManyToOne(() => Question, { onDelete: 'CASCADE' })
+  // CRITICAL: the DB-level FK is dropped because this column also stores
+  // a `pm_test_questions(id)` when `question_pool='pm_test'`. A hard FK
+  // to `questions(id)` would reject every PM-Test flag insert with a FK
+  // violation. Integrity is enforced at the application layer.
+  @ManyToOne(() => Question, {
+    onDelete: 'CASCADE',
+    createForeignKeyConstraints: false,
+  })
   @JoinColumn({ name: 'question_id' })
   question: Question;
 

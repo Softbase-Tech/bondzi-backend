@@ -33,19 +33,45 @@ describe('AfricasTalkingSmsProvider', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('propagates a thrown error from the underlying SDK', async () => {
+  it('propagates the SDK error AFTER the configured retry budget is exhausted', async () => {
     config.get.mockImplementation((k: string) => {
       if (k === 'sms.atUsername') return 'sandbox';
       if (k === 'sms.atApiKey') return 'k';
       return undefined;
     });
-    // Pre-seed the lazy `sms` instance so we don't load the real SDK.
+    // SDK fails on EVERY attempt. The provider tries SEND_MAX_ATTEMPTS=2
+    // times before re-throwing, so we need at least that many rejections
+    // queued.
+    const sdkSend = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('AT 500'))
+      .mockRejectedValueOnce(new Error('AT 500'));
     (service as unknown as { sms: { send: jest.Mock } }).sms = {
-      send: jest.fn().mockRejectedValueOnce(new Error('AT 500')),
+      send: sdkSend,
     };
     await expect(service.send('+233500000000', 'code')).rejects.toThrow(
       'AT 500',
     );
+    expect(sdkSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('succeeds on retry when the first SDK call fails transiently', async () => {
+    config.get.mockImplementation((k: string) => {
+      if (k === 'sms.atUsername') return 'sandbox';
+      if (k === 'sms.atApiKey') return 'k';
+      return undefined;
+    });
+    const sdkSend = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('flaky'))
+      .mockResolvedValueOnce(undefined);
+    (service as unknown as { sms: { send: jest.Mock } }).sms = {
+      send: sdkSend,
+    };
+    await expect(
+      service.send('+233500000000', 'code'),
+    ).resolves.toBeUndefined();
+    expect(sdkSend).toHaveBeenCalledTimes(2);
   });
 
   it('forwards the configured sender id when available', async () => {

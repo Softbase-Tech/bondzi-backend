@@ -53,7 +53,7 @@ export class PmTestService {
   /**
    * Subjects that have at least one active PM Test question for the user's
    * (examType, formLevel) combo. Drives the subject picker on the mobile
-   * PassMaster Test screen.
+   * Bondzi Test screen.
    */
   async listSubjectsForUser(userId: string): Promise<PmTestSubjectRow[]> {
     const user = await this.usersRepo.findOne({ where: { id: userId } });

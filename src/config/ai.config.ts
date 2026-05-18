@@ -28,5 +28,8 @@ export default registerAs('ai', () => ({
   dailyBudgetUsd: parseFloat(process.env.AI_DAILY_BUDGET_USD ?? '50'),
   perUserDailyLimit: parseInt(process.env.AI_PER_USER_DAILY_LIMIT ?? '50', 10),
   maxJobCostUsd: parseFloat(process.env.AI_MAX_JOB_COST_USD ?? '500'),
+  // Jobs over this estimated cost wait in PENDING_APPROVAL for a second
+  // admin's sign-off. 0 disables the gate entirely.
+  cosignThresholdUsd: parseFloat(process.env.AI_COSIGN_THRESHOLD_USD ?? '50'),
   bedrockMaxRetries: parseInt(process.env.AI_BEDROCK_MAX_RETRIES ?? '3', 10),
 }));

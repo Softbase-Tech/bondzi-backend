@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -32,13 +33,13 @@ function makePlan(
     countryCode: 'GH',
     isActive: true,
     isDefault: true,
-    monthlyPrice: '50',
+    monthlyPrice: 50,
     monthlyDurationDays: 30,
     providerPlanMonthly: 'p_monthly',
-    sixMonthPrice: '250',
+    sixMonthPrice: 250,
     sixMonthDurationDays: 180,
     providerPlanSixMonth: 'p_six',
-    annualPrice: '450',
+    annualPrice: 450,
     annualDurationDays: 365,
     providerPlanAnnual: 'p_annual',
     ...overrides,
@@ -58,6 +59,9 @@ describe('PlansService', () => {
       createQueryBuilder: jest.fn(),
     };
     const noop = {} as never;
+    const cfg = {
+      get: jest.fn().mockReturnValue(48),
+    } as unknown as ConfigService;
     const moduleRef = await Test.createTestingModule({
       providers: [
         PlansService,
@@ -68,6 +72,7 @@ describe('PlansService', () => {
         { provide: getRepositoryToken(AuditLog), useValue: noop },
         { provide: PaymentProviderRegistry, useValue: noop },
         { provide: DataSource, useValue: noop },
+        { provide: ConfigService, useValue: cfg },
       ],
     }).compile();
     service = moduleRef.get(PlansService);

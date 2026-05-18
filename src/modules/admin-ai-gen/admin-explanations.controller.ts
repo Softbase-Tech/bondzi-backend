@@ -17,6 +17,7 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -36,6 +37,13 @@ import {
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN, UserRole.SUPERADMIN)
+// Controller-wide throttle. A compromised admin account (or a curious
+// admin) can otherwise burn through AI_DAILY_BUDGET_USD by scripting
+// the preview/generate/regenerate endpoints. 20/min covers normal admin
+// work (preview → generate → poll) with headroom; the per-job cost cap
+// (see AdminExplanationsService.assertUnderMaxCost + the new actualCost
+// abort in the worker) is the load-bearing defense.
+@Throttle({ default: { limit: 20, ttl: 60_000 } })
 @Controller('admin/explanations')
 export class AdminExplanationsController {
   constructor(private readonly service: AdminExplanationsService) {}
@@ -66,6 +74,54 @@ export class AdminExplanationsController {
   @Get('jobs')
   listJobs() {
     return this.service.listJobs();
+  }
+
+  // ============================================================
+  // Co-sign endpoints (high-cost gate, AI_COSIGN_THRESHOLD_USD)
+  // ============================================================
+
+  @Get('pending-approval')
+  @ApiOperation({
+    summary:
+      'List jobs awaiting a second admin sign-off (cost > AI_COSIGN_THRESHOLD_USD).',
+  })
+  listPendingApproval() {
+    return this.service.listPendingApproval();
+  }
+
+  @Post('jobs/:id/approve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Approve a high-cost AI job (must be a DIFFERENT admin than the creator).',
+  })
+  approveCosign(
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.service.approveCosign(admin.id, id);
+  }
+
+  @Post('jobs/:id/reject')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reject a pending-approval AI job.' })
+  rejectCosign(
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: { reason?: string } = {},
+  ) {
+    return this.service.rejectCosign(admin.id, id, body.reason);
+  }
+
+  @Get('calibration')
+  @ApiOperation({
+    summary:
+      'Actual P50/P95 input/output tokens per (model, action) over the last N days. Used to recalibrate TOKEN_ESTIMATES in estimates.util.ts.',
+  })
+  calibration(@Query('days') days?: string) {
+    const n = days ? parseInt(days, 10) : 7;
+    const safe = Number.isFinite(n) && n > 0 ? Math.min(n, 90) : 7;
+    return this.service.calibrationReport(safe);
   }
 
   @Sse('jobs/:id/stream')

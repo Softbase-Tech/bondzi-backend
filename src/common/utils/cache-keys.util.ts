@@ -29,6 +29,13 @@ export const CacheKeys = {
   refreshToken: (jti: string) => `refresh_token:${jti}`,
   revokedJti: (jti: string) => `revoked_jti:${jti}`,
   refreshFamily: (familyId: string) => `refresh_family:${familyId}`,
+  /**
+   * The deviceId currently bound to `device_sessions(user_id)`. Used by
+   * JwtStrategy to reject access tokens whose `did` claim no longer
+   * matches the active session — closes the "DEVICE_KICKED token survives
+   * 15 minutes" hole.
+   */
+  activeDeviceId: (userId: string) => `active_device:${userId}`,
   aiCostDay: (date: string) => `ai_cost:day:${date}`,
   aiCostUserDay: (userId: string, date: string) =>
     `ai_cost:user:${userId}:${date}`,

@@ -1,6 +1,7 @@
 import {
   Column,
   CreateDateColumn,
+  DeleteDateColumn,
   Entity,
   Index,
   OneToMany,
@@ -44,6 +45,13 @@ export class Subject {
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
+
+  // is_active=false was the previous "archive" mechanism; deleted_at
+  // is the typed soft-delete TypeORM understands. New deletes should
+  // set deleted_at; the existing is_active flag remains as a separate
+  // "visible-but-unselectable" signal.
+  @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz', nullable: true })
+  deletedAt: Date | null;
 
   @OneToMany(() => Topic, (t) => t.subject)
   topics: Topic[];

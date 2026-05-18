@@ -14,11 +14,19 @@ import { ExamType, LeaderboardPeriodType } from '../../common/types/enums';
 
 describe('LeaderboardService', () => {
   let service: LeaderboardService;
-  let entriesRepo: { createQueryBuilder: jest.Mock };
+  let entriesRepo: {
+    createQueryBuilder: jest.Mock;
+    manager: { query: jest.Mock };
+  };
   let redis: { getJson: jest.Mock; setJson: jest.Mock };
 
   beforeEach(async () => {
-    entriesRepo = { createQueryBuilder: jest.fn() };
+    entriesRepo = {
+      createQueryBuilder: jest.fn(),
+      // `myRank` now uses a windowed CTE through `manager.query` instead
+      // of stacking a getRawMany onto the createQueryBuilder.
+      manager: { query: jest.fn() },
+    };
     redis = { getJson: jest.fn(), setJson: jest.fn() };
 
     const moduleRef = await Test.createTestingModule({
@@ -47,14 +55,26 @@ describe('LeaderboardService', () => {
     });
   }
 
-  function rankedQbReturns(rows: unknown[]) {
-    entriesRepo.createQueryBuilder.mockReturnValueOnce({
-      select: jest.fn().mockReturnThis(),
-      addSelect: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      getRawMany: jest.fn().mockResolvedValue(rows),
-    });
+  /**
+   * Stub for the windowed-CTE `manager.query` path. First call returns
+   * the rank rows; if those are empty, a second call returns the total
+   * count (caller path).
+   */
+  function mockManagerQuery(
+    rankRows: Array<{
+      user_id: string;
+      weekly_xp: string;
+      rank: string;
+      total: string;
+    }>,
+    totalFallback?: number,
+  ) {
+    entriesRepo.manager.query.mockResolvedValueOnce(rankRows);
+    if (rankRows.length === 0 && totalFallback !== undefined) {
+      entriesRepo.manager.query.mockResolvedValueOnce([
+        { total: totalFallback },
+      ]);
+    }
   }
 
   // ----------------------------- topForPeriod -----------------------------
@@ -87,9 +107,8 @@ describe('LeaderboardService', () => {
   // -------------------------------- myRank --------------------------------
 
   it('returns the rank for a user who appears in the period', async () => {
-    rankedQbReturns([
-      { userId: 'other', weeklyXp: '100', rank: '1' },
-      { userId: 'user-1', weeklyXp: '90', rank: '2' },
+    mockManagerQuery([
+      { user_id: 'user-1', weekly_xp: '90', rank: '2', total: '2' },
     ]);
     const out = await service.myRank('user-1', '2026-W19', {
       examType: ExamType.WASSCE,
@@ -105,7 +124,9 @@ describe('LeaderboardService', () => {
   });
 
   it('returns rank: null when the user has not earned any XP in the period', async () => {
-    rankedQbReturns([{ userId: 'other', weeklyXp: '100', rank: '1' }]);
+    // CTE returns no row for the user; service falls back to a separate
+    // COUNT query (mocked as 1).
+    mockManagerQuery([], 1);
     const out = await service.myRank('user-1', '2026-W19', {
       examType: ExamType.WASSCE,
     });
@@ -115,7 +136,7 @@ describe('LeaderboardService', () => {
   });
 
   it('defaults periodType to WEEKLY and scope to "national"', async () => {
-    rankedQbReturns([]);
+    mockManagerQuery([], 0);
     const out = await service.myRank('user-1', '2026-W19', {
       examType: ExamType.BECE,
     });

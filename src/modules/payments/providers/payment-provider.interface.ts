@@ -94,6 +94,14 @@ export interface NormalizedWebhookEvent {
   amountMinor?: number;
   currency?: string;
   nextPaymentDate?: Date;
+  /**
+   * The provider-claimed event timestamp (paid_at / created_at). The
+   * webhook handler enforces a freshness window against this so a
+   * captured-and-replayed body from a year ago can't pass even if its
+   * HMAC is still valid AND its eventId hasn't been seen yet (e.g.
+   * after a DB wipe). Provider must extract from the signed body.
+   */
+  claimedAt?: Date;
   /** Raw payload kept for audit/debug; never consumed by handlers. */
   raw: Record<string, unknown>;
 }

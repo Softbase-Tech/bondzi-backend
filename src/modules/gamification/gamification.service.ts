@@ -68,8 +68,18 @@ export class GamificationService {
   ) {}
 
   /**
+   * Daily cap on awards per (user, event_key). Without this, a scripted
+   * client could spam POST /exams/:id/answer (each correct answer fires
+   * `correct_past_paper`) or chain `/srs/review` and mint unbounded XP.
+   * The cap is intentionally generous — well above the heaviest legit
+   * day of study — so it's only the runaway-bot ceiling, not a UX limit.
+   */
+  private static readonly EVENT_KEY_DAILY_CAP = 500;
+
+  /**
    * Award XP for `eventKey`. Silently no-ops when the event is disabled in
    * xp_rate_config so admins can instantly suspend rewards without deploys.
+   * Also caps per (user, event_key, UTC day) — see EVENT_KEY_DAILY_CAP.
    */
   async awardXp(
     userId: string,
@@ -96,7 +106,46 @@ export class GamificationService {
       };
     }
 
+    if (await this.exceedsDailyEventCap(userId, eventKey)) {
+      this.logger.warn(
+        `[xp] daily cap reached for user=${userId} event=${eventKey} — refusing award`,
+      );
+      const user = await this.usersRepo.findOne({ where: { id: userId } });
+      const levelXp = Number(user?.levelXp ?? 0);
+      const spendableXp = Number(user?.spendableXp ?? 0);
+      return {
+        awarded: false,
+        eventKey,
+        xpAmount: 0,
+        levelXp,
+        spendableXp,
+        currentLevel: user?.currentLevel ?? 1,
+        xpIntoLevel: xpIntoLevel(levelXp),
+        xpToNextLevel: xpToNextLevel(user?.currentLevel ?? 1),
+        leveledUp: false,
+      };
+    }
+
     return this.applyXp(userId, eventKey, rate.xpAmount, referenceId ?? null);
+  }
+
+  /**
+   * Has this (user, event_key) already hit the per-day count cap? Counts
+   * EVERY call after the rate-config gate passes; the increment runs on
+   * the cap-check path so the counter advances even when the call later
+   * fails inside applyXp. Cap is a per-event ceiling, not a UX limit.
+   */
+  private async exceedsDailyEventCap(
+    userId: string,
+    eventKey: string,
+  ): Promise<boolean> {
+    const dateKey = new Date().toISOString().slice(0, 10);
+    // 25h TTL — covers UTC midnight roll without a gap.
+    const count = await this.redis.incr(
+      `xp_event_cap:${userId}:${eventKey}:${dateKey}`,
+      25 * 60 * 60,
+    );
+    return count > GamificationService.EVENT_KEY_DAILY_CAP;
   }
 
   /**
@@ -122,7 +171,14 @@ export class GamificationService {
     amount: number,
     referenceId: string | null,
   ): Promise<AwardXpResult> {
-    return this.dataSource.transaction(async (em) => {
+    // CRITICAL: only DB writes happen inside the transaction.
+    // Notification enqueue (BullMQ/Redis) and any cross-network I/O
+    // happen AFTER commit. The previous shape held an open Postgres
+    // connection while awaiting BullMQ.add and Redis.del; under 50k
+    // DAU load this starves the 20-slot pool and grinds the API to a
+    // halt during a Redis blip. Leaderboard + level-up DB writes
+    // stay atomic with the user-XP write.
+    const txResult = await this.dataSource.transaction(async (em) => {
       const usersRepo = em.getRepository(User);
       const txRepo = em.getRepository(XpTransaction);
 
@@ -147,10 +203,9 @@ export class GamificationService {
       const reloaded = await usersRepo.findOne({ where: { id: userId } });
       if (!reloaded) throw new Error('User disappeared during XP award');
 
-      // Bump the weekly + monthly leaderboard rows in the same tx so the
-      // public board surfaces this earn within the cache-TTL window.
-      // Without this the leaderboard_entries table is never written to and
-      // every board read returns an empty list.
+      // Leaderboard bump must be atomic with the user XP write so a
+      // crash between them can't leave the board lagging behind the
+      // user's level_xp.
       await this.bumpLeaderboard(em, reloaded.id, reloaded.examType, amount);
 
       const newLevelXpNum = Number(reloaded.levelXp);
@@ -160,42 +215,59 @@ export class GamificationService {
 
       if (leveledUp) {
         await usersRepo.update(userId, { currentLevel: newLevel });
-        // Spec §6.1 step 5: emit level_up → push notification + LevelUpModal.
-        // The push carries `type: 'level_up'` so the mobile client can pop the
-        // in-app modal as well as the OS notification.
-        await this.notifications
-          .send({
-            userId,
-            channel: NotificationChannel.PUSH,
-            title: `Level ${newLevel}! 🎉`,
-            body: `You reached Level ${newLevel}. Keep going to unlock more.`,
-            data: {
-              type: 'level_up',
-              previousLevel,
-              newLevel,
-              eventKey,
-            },
-          })
-          .catch((err) =>
-            this.logger.warn(
-              `level-up notification failed: ${(err as Error).message}`,
-            ),
-          );
       }
 
       return {
-        awarded: true,
-        eventKey,
-        xpAmount: amount,
-        levelXp: newLevelXpNum,
-        spendableXp: Number(reloaded.spendableXp),
-        currentLevel: leveledUp ? newLevel : previousLevel,
-        xpIntoLevel: xpIntoLevel(newLevelXpNum),
-        xpToNextLevel: xpToNextLevel(leveledUp ? newLevel : previousLevel),
+        newLevelXpNum,
+        newSpendableXp: Number(reloaded.spendableXp),
         leveledUp,
-        newLevel: leveledUp ? newLevel : undefined,
+        previousLevel,
+        newLevel,
       };
     });
+
+    // POST-COMMIT side effects. Failures here MUST NOT roll back the XP
+    // grant (which has already committed) — log and continue.
+    if (txResult.leveledUp) {
+      // Spec §6.1 step 5: emit level_up → push notification + LevelUpModal.
+      // The push carries `type: 'level_up'` so the mobile client can pop
+      // the in-app modal as well as the OS notification.
+      await this.notifications
+        .send({
+          userId,
+          channel: NotificationChannel.PUSH,
+          title: `Level ${txResult.newLevel}! 🎉`,
+          body: `You reached Level ${txResult.newLevel}. Keep going to unlock more.`,
+          data: {
+            type: 'level_up',
+            previousLevel: txResult.previousLevel,
+            newLevel: txResult.newLevel,
+            eventKey,
+          },
+        })
+        .catch((err) =>
+          this.logger.warn(
+            `level-up notification failed: ${(err as Error).message}`,
+          ),
+        );
+    }
+
+    return {
+      awarded: true,
+      eventKey,
+      xpAmount: amount,
+      levelXp: txResult.newLevelXpNum,
+      spendableXp: txResult.newSpendableXp,
+      currentLevel: txResult.leveledUp
+        ? txResult.newLevel
+        : txResult.previousLevel,
+      xpIntoLevel: xpIntoLevel(txResult.newLevelXpNum),
+      xpToNextLevel: xpToNextLevel(
+        txResult.leveledUp ? txResult.newLevel : txResult.previousLevel,
+      ),
+      leveledUp: txResult.leveledUp,
+      newLevel: txResult.leveledUp ? txResult.newLevel : undefined,
+    };
   }
 
   /**

@@ -20,6 +20,7 @@ import { Subject } from '../../subjects/entities/subject.entity';
 import { Topic } from '../../subjects/entities/topic.entity';
 import { Option } from './option.entity';
 import { QuestionStimulus } from './question-stimulus.entity';
+import { WorkedExample } from '../types/worked-example';
 
 @Entity({ name: 'questions' })
 @Index('questions_subject_idx', ['subjectId'])
@@ -113,6 +114,16 @@ export class Question {
 
   @Column({ name: 'explanation_html', type: 'text', nullable: true })
   explanationHtml: string | null;
+
+  /**
+   * Optional worked examples that supplement the `explanation`
+   * paragraph. JSONB array of `WorkedExample` objects (see
+   * ../types/worked-example.ts). NULL = render only the paragraph.
+   * Set by manual admin import; the AI explanation generator only
+   * writes the paragraph today.
+   */
+  @Column({ name: 'explanation_examples', type: 'jsonb', nullable: true })
+  explanationExamples: WorkedExample[] | null;
 
   @Column({ name: 'explanation_model', type: 'text', nullable: true })
   explanationModel: string | null;

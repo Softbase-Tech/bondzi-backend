@@ -1,4 +1,4 @@
-# PassMaster Ghana — Backend
+# Bondzi Ghana — Backend
 
 AI-powered WASSCE/BECE exam-prep backend. NestJS 11 · TypeORM 0.3 · PostgreSQL 15 · Redis 7 · BullMQ · Paystack · Anthropic Claude · OpenAI · Africa's Talking.
 
@@ -75,21 +75,21 @@ src/
 
 ## Scripts
 
-| Script | Purpose |
-|---|---|
-| `npm run start:dev` | Watch-mode server with hot reload |
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm run start:prod` | Run compiled output |
-| `npm run migration:run` | Apply pending TypeORM migrations |
-| `npm run migration:generate src/database/migrations/<Name>` | Generate a migration from entity diff |
-| `npm run migration:revert` | Roll back the last migration |
-| `npm run seed:subjects` | Idempotent upsert of canonical 14 WASSCE subjects |
-| `npm run seed:admin` | Upsert the initial superadmin user |
-| `npm run seed:prompts` | Upsert versioned AI prompt templates |
-| `npm test` | Jest unit tests |
-| `npm run test:cov` | Unit tests + coverage report |
-| `npm run test:e2e` | e2e tests (requires Postgres + Redis) |
-| `npm run lint` | ESLint with auto-fix |
+| Script                                                      | Purpose                                           |
+| ----------------------------------------------------------- | ------------------------------------------------- |
+| `npm run start:dev`                                         | Watch-mode server with hot reload                 |
+| `npm run build`                                             | Compile TypeScript to `dist/`                     |
+| `npm run start:prod`                                        | Run compiled output                               |
+| `npm run migration:run`                                     | Apply pending TypeORM migrations                  |
+| `npm run migration:generate src/database/migrations/<Name>` | Generate a migration from entity diff             |
+| `npm run migration:revert`                                  | Roll back the last migration                      |
+| `npm run seed:subjects`                                     | Idempotent upsert of canonical 14 WASSCE subjects |
+| `npm run seed:admin`                                        | Upsert the initial superadmin user                |
+| `npm run seed:prompts`                                      | Upsert versioned AI prompt templates              |
+| `npm test`                                                  | Jest unit tests                                   |
+| `npm run test:cov`                                          | Unit tests + coverage report                      |
+| `npm run test:e2e`                                          | e2e tests (requires Postgres + Redis)             |
+| `npm run lint`                                              | ESLint with auto-fix                              |
 
 ## Key architectural decisions
 

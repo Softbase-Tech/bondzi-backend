@@ -61,8 +61,8 @@ export class NotificationsService {
     });
     await this.notificationsRepo.save(row);
 
-    await this.queue
-      .add(
+    try {
+      await this.queue.add(
         'dispatch',
         { notificationId: row.id, channel: payload.channel },
         {
@@ -71,12 +71,22 @@ export class NotificationsService {
           removeOnComplete: 500,
           removeOnFail: 500,
         },
-      )
-      .catch((err) =>
-        this.logger.warn(
-          `notifications queue enqueue failed: ${(err as Error).message}`,
-        ),
       );
+    } catch (err) {
+      // Previously swallowed — a Redis blip silently dropped thousands
+      // of pushes (level-up, referral qualified, exam reminders) and
+      // the row sat in the DB with sent_at=null. We now throw so the
+      // caller can decide: gamification.applyXp catches and logs
+      // (level-up popup still fires, push just retries later via the
+      // notifications.service `redispatchUnsent` cron); auth flows
+      // (welcome email, etc.) treat it as best-effort with their own
+      // catch. The key is that callers SEE the failure instead of it
+      // disappearing.
+      this.logger.error(
+        `notifications queue enqueue failed for row=${row.id}: ${(err as Error).message}`,
+      );
+      throw err;
+    }
 
     return row;
   }

@@ -13,7 +13,7 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
-import { AuthProvider, ExamType } from '../../../common/types/enums';
+import { ExamType } from '../../../common/types/enums';
 
 export class RegisterDto {
   @ApiProperty()
@@ -32,21 +32,21 @@ export class RegisterDto {
   @IsPhoneNumber('GH')
   phone?: string;
 
+  // authProvider is intentionally NOT accepted from the client. Google
+  // sign-in has its own endpoint (POST /auth/google) which sets the
+  // provider server-side. Accepting it here would let a caller send
+  // `{ authProvider: "GOOGLE", email: "x" }` and skip the password
+  // requirement — any future code that branches on the provider
+  // (e.g. "trust the email is verified for Google users") would then
+  // be subvertible from the registration body.
   @ApiPropertyOptional({ description: 'Required when registering with email.' })
-  @ValidateIf(
-    (o: RegisterDto) => !!o.email && o.authProvider !== AuthProvider.GOOGLE,
-  )
+  @ValidateIf((o: RegisterDto) => !!o.email)
   @IsString()
   @MinLength(8)
   @MaxLength(72)
   @Matches(/[A-Za-z]/, { message: 'password must include a letter' })
   @Matches(/\d/, { message: 'password must include a number' })
   password?: string;
-
-  @ApiPropertyOptional({ enum: AuthProvider, default: AuthProvider.EMAIL })
-  @IsOptional()
-  @IsEnum(AuthProvider)
-  authProvider?: AuthProvider;
 
   @ApiProperty({ enum: ExamType })
   @IsEnum(ExamType)

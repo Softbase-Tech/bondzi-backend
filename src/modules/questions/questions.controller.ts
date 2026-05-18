@@ -30,6 +30,7 @@ import { QuestionQueryDto } from './dto/question-query.dto';
 import { AdaptiveQueryDto, PastPaperQueryDto } from './dto/past-paper.dto';
 import {
   BulkImportDto,
+  BulkImportExplanationsDto,
   CreateQuestionDto,
   UpdateQuestionDto,
 } from './dto/create-question.dto';
@@ -157,6 +158,14 @@ export class QuestionsController {
   @ApiExcludeEndpoint()
   bulkImport(@Body() dto: BulkImportDto) {
     return this.questions.bulkImport(dto);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPERADMIN)
+  @Post('bulk-import-explanations')
+  @ApiExcludeEndpoint()
+  bulkImportExplanations(@Body() dto: BulkImportExplanationsDto) {
+    return this.questions.bulkImportExplanations(dto);
   }
 
   @Post(':id/flag')

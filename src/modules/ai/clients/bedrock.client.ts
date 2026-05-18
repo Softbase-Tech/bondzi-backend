@@ -4,6 +4,7 @@ import {
   InvokeModelCommand,
   ThrottlingException,
 } from '@aws-sdk/client-bedrock-runtime';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 
 /**
  * Thin wrapper around AWS Bedrock's InvokeModel for Anthropic Claude.
@@ -20,12 +21,23 @@ import {
  * and the auth path change. Token counts come back on `usage.input_tokens`
  * / `usage.output_tokens`, same shape as the Anthropic SDK.
  */
+/** Bedrock per-request timeouts. AWS SDK's default socket timeout is */
+/** effectively infinite — a hung Bedrock call would otherwise hold the */
+/** worker (and the BullMQ slot) indefinitely. 30s is a generous ceiling */
+/** even for max_tokens=4096 generations. */
+const BEDROCK_REQUEST_TIMEOUT_MS = 30_000;
+const BEDROCK_CONNECTION_TIMEOUT_MS = 5_000;
+
 @Injectable()
 export class BedrockClient {
   private readonly log = new Logger(BedrockClient.name);
   private readonly client = new BedrockRuntimeClient({
     region: process.env.AWS_REGION,
     maxAttempts: Number(process.env.AI_BEDROCK_MAX_RETRIES ?? 3),
+    requestHandler: new NodeHttpHandler({
+      connectionTimeout: BEDROCK_CONNECTION_TIMEOUT_MS,
+      requestTimeout: BEDROCK_REQUEST_TIMEOUT_MS,
+    }),
   });
 
   async invoke(params: {

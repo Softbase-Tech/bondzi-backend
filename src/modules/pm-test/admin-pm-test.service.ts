@@ -176,7 +176,14 @@ export class AdminPmTestService {
     await this.queue.add(
       'pm-test-generation',
       { jobId: job.id },
-      { removeOnComplete: true, attempts: 1 },
+      // See AdminExplanationsService for the rationale — same backoff
+      // + cleanup contract.
+      {
+        removeOnComplete: { age: 24 * 3600, count: 200 },
+        removeOnFail: { age: 7 * 24 * 3600, count: 100 },
+        attempts: 2,
+        backoff: { type: 'exponential', delay: 30_000 },
+      },
     );
 
     return job;

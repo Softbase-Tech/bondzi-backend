@@ -5,6 +5,11 @@
 # Five containers, one box: postgres, redis, api, worker, nginx.
 # Postgres / Redis data lives on host bind mounts so it survives container
 # restarts and image swaps.
+#
+# Image tag: ${IMAGE_TAG} is set by the deploy script to the immutable
+# git SHA the workflow just pushed. Rolling back is `IMAGE_TAG=<old-sha>
+# docker compose up -d api worker` — no editing this file on the box.
+# Falls back to `:latest` for local dev / first-time bootstrap.
 
 services:
 
@@ -25,6 +30,13 @@ services:
       timeout: 5s
       retries: 5
 
+  # Cache + BullMQ queue. Two policies live in one Redis here for cost
+  # reasons; if either path becomes hot enough to fight the other we
+  # split them. CRITICAL: `noeviction` so BullMQ job keys are NEVER
+  # dropped under memory pressure. The previous `allkeys-lru` policy
+  # silently evicted pending dispatch / payment jobs the moment Redis
+  # hit its 128MB cap, which dropped notifications and stranded
+  # payment_events with no retry.
   redis:
     image: redis:7-alpine
     container_name: bondzi-redis
@@ -33,7 +45,7 @@ services:
       redis-server
       --appendonly yes
       --maxmemory 128mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
       --requirepass ${REDIS_PASSWORD}
     volumes:
       - ./redis-data:/data
@@ -45,7 +57,7 @@ services:
       retries: 5
 
   api:
-    image: ghcr.io/softbase-tech/bondzi-backend:latest
+    image: ghcr.io/softbase-tech/bondzi-backend:${IMAGE_TAG:-latest}
     container_name: bondzi-api
     restart: always
     depends_on:
@@ -73,7 +85,7 @@ services:
       retries: 3
 
   worker:
-    image: ghcr.io/softbase-tech/bondzi-backend:latest
+    image: ghcr.io/softbase-tech/bondzi-backend:${IMAGE_TAG:-latest}
     container_name: bondzi-worker
     restart: always
     depends_on:
@@ -90,6 +102,71 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # The worker has no HTTP listener, so the api's curl-on-3000 check
+    # doesn't apply. Use pgrep against the node process — a hung event
+    # loop or crashed BullMQ supervisor would fail this and trigger a
+    # restart. Previous shape had no healthcheck at all: a wedged
+    # worker would stay "alive" forever from Docker's POV while no
+    # jobs drained.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'node dist/main' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # FUTURE: Prometheus metrics scraping (Grafana Alloy)
+  # ===========================================================================
+  # Logs already ship to Grafana Cloud Loki via pino-loki inside the api +
+  # worker processes (zero extra containers). Metrics are deferred — the
+  # /api/v1/internal/metrics endpoint is wired and ready but nothing pulls
+  # from it yet. Loki + LogQL can derive rates / percentiles from the
+  # structured logs for now.
+  #
+  # When you DO want real Prometheus metrics:
+  #   1. Uncomment the `alloy` service below.
+  #   2. Drop a config file at /opt/bondzi/alloy/config.alloy:
+  #        prometheus.scrape "bondzi_api" {
+  #          targets = [{ __address__ = "api:3000" }]
+  #          metrics_path = "/api/v1/internal/metrics"
+  #          scrape_interval = "60s"
+  #          authorization {
+  #            type        = "Bearer"
+  #            credentials = sys.env("METRICS_BEARER_TOKEN")
+  #          }
+  #          forward_to = [prometheus.remote_write.cloud.receiver]
+  #        }
+  #        prometheus.remote_write "cloud" {
+  #          endpoint {
+  #            url = sys.env("GRAFANA_CLOUD_PROM_URL")
+  #            basic_auth {
+  #              username = sys.env("GRAFANA_CLOUD_PROM_USER")
+  #              password = sys.env("GRAFANA_CLOUD_PROM_KEY")
+  #            }
+  #          }
+  #        }
+  #   3. Add GRAFANA_CLOUD_PROM_* env vars; reload nginx is NOT needed —
+  #      Alloy reaches api directly on the bridge network.
+  #
+  # Memory cost when enabled: ~40–80 MB. Skip until you actually need
+  # sub-minute resolution or proper histograms.
+  #
+  # alloy:
+  #   image: grafana/alloy:latest
+  #   container_name: bondzi-alloy
+  #   restart: always
+  #   depends_on:
+  #     api:
+  #       condition: service_healthy
+  #   env_file: .env
+  #   volumes:
+  #     - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+  #   command:
+  #     - run
+  #     - --server.http.listen-addr=0.0.0.0:12345
+  #     - /etc/alloy/config.alloy
+  #   mem_limit: 128m
 
   nginx:
     image: nginx:alpine

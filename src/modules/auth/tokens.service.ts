@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -38,6 +38,8 @@ interface RefreshPayload {
  */
 @Injectable()
 export class TokensService {
+  private readonly logger = new Logger(TokensService.name);
+
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
@@ -71,10 +73,15 @@ export class TokensService {
     });
     if (!sub) return 'free';
     const expiresAtIso = sub.expiresAt ? sub.expiresAt.toISOString() : null;
+    // Same TTL as SubscriptionGuard — they share the cache key. Lower
+    // TTL = fresher reads, more DB hits. 60s default is the staleness
+    // ceiling after a cancel/refund.
+    const ttl =
+      this.config.get<number>('app.subscriptionStatusCacheTtlSec') ?? 60;
     await this.redis.setJson(
       cacheKey,
       { status: sub.status, expiresAt: expiresAtIso },
-      600,
+      ttl,
     );
     return this.resolveStatus(sub.status, expiresAtIso);
   }
@@ -139,15 +146,55 @@ export class TokensService {
       },
     );
 
-    // Single-device enforcement: replace any existing session for this user.
-    await this.sessionsRepo.delete({ userId: user.id });
-    await this.sessionsRepo.insert({
-      userId: user.id,
-      deviceId: opts.deviceId,
-      deviceName: opts.deviceName ?? null,
-      refreshTokenJti: refreshJti,
-      ipAddress: opts.ip ?? null,
-    });
+    // Single-device enforcement: atomic UPSERT keyed by user_id. Replacing
+    // a separate delete-then-insert closes a race where two simultaneous
+    // logins for the same account could either violate the unique index
+    // `idx_device_sessions_user` or leave inconsistent state (both deletes
+    // succeed, one insert wins, the loser thinks it's the active session).
+    await this.sessionsRepo
+      .createQueryBuilder()
+      .insert()
+      .into(DeviceSession)
+      .values({
+        userId: user.id,
+        deviceId: opts.deviceId,
+        deviceName: opts.deviceName ?? null,
+        refreshTokenJti: refreshJti,
+        ipAddress: opts.ip ?? null,
+      })
+      .orUpdate(
+        ['device_id', 'device_name', 'refresh_token_jti', 'ip_address'],
+        ['user_id'],
+      )
+      .execute();
+
+    // Cache the currently-bound deviceId so JwtStrategy can reject access
+    // tokens whose `did` claim no longer matches the active session —
+    // closes the "DEVICE_KICKED access-token survives 15 min" hole.
+    // TTL matches the access-token window; after that the token has
+    // expired anyway.
+    await this.redis.setJson(
+      CacheKeys.activeDeviceId(user.id),
+      opts.deviceId,
+      Math.floor(accessExpiryMs / 1000),
+    );
+
+    // Stamp the canonical "last active" timestamp. issuePair is the
+    // single chokepoint for every auth artifact issuance (login, OTP
+    // verify, Google sign-in, registration, refresh-token rotation),
+    // so this one update covers all paths — admins get an accurate
+    // "user last seen" column on the /admin/users list and detail
+    // views. Best-effort: a write failure logs and continues; we do
+    // not refuse a token over an audit-trail blip.
+    try {
+      await this.sessionsRepo.manager
+        .getRepository(User)
+        .update({ id: user.id }, { lastActiveAt: new Date() });
+    } catch (err) {
+      this.logger.warn(
+        `[auth] last_active_at stamp failed user=${user.id}: ${(err as Error).message}`,
+      );
+    }
 
     return { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt };
   }
@@ -186,6 +233,39 @@ export class TokensService {
       throw new UnauthorizedException('User inactive');
     }
 
+    // Rotation forensics (#98). Stamp this rotation onto the session
+    // BEFORE issuing the new pair so the audit trail exists even if
+    // issuePair fails partway through. The bump is best-effort —
+    // a write failure shouldn't deny a legitimate user their token.
+    //
+    // Warn on suspicious patterns. The mobile app refreshes from a
+    // ~stable IP per session; an IP CHANGE on rotation isn't proof of
+    // theft (cellular ↔ wifi flip changes IPs too), but combined with
+    // a high rotation rate it's the signal a forensic review needs.
+    const previousIp = session.lastRotationIp ?? session.ipAddress;
+    if (previousIp && opts.ip && previousIp !== opts.ip) {
+      this.logger.warn(
+        `[auth] refresh-rotation IP change user=${user.id} prev=${previousIp} new=${opts.ip} rotation_count=${session.rotationCount}`,
+      );
+    }
+    try {
+      await this.sessionsRepo.update(
+        { id: session.id },
+        {
+          rotationCount: session.rotationCount + 1,
+          lastRotatedAt: new Date(),
+          lastRotationIp: opts.ip ?? null,
+        },
+      );
+    } catch (err) {
+      // Audit-trail write failed — log and continue. Refusing the
+      // token here would lock out a legitimate user whose only
+      // problem is a transient DB blip.
+      this.logger.warn(
+        `[auth] rotation audit update failed user=${user.id}: ${(err as Error).message}`,
+      );
+    }
+
     return this.issuePair(user, {
       deviceId: session.deviceId,
       deviceName: session.deviceName ?? undefined,
@@ -202,10 +282,15 @@ export class TokensService {
   /** Logout — delete the user's current device session. */
   async logoutUser(userId: string): Promise<void> {
     await this.sessionsRepo.delete({ userId });
+    // Drop the cached deviceId so any in-flight access tokens with the
+    // old `did` fail their JwtStrategy device-binding check immediately
+    // (no need to wait the 15-min access-token TTL).
+    await this.redis.del(CacheKeys.activeDeviceId(userId));
   }
 
   /** Logout from all devices — same action because only one session exists. */
   async logoutAll(userId: string): Promise<void> {
     await this.sessionsRepo.delete({ userId });
+    await this.redis.del(CacheKeys.activeDeviceId(userId));
   }
 }

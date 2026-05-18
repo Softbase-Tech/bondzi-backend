@@ -91,14 +91,42 @@ export class ReferralsService {
     });
     if (!event) return false;
 
-    const count = await this.answersRepo.count({
-      where: { exam: { userId } },
-      relations: { exam: true },
-    });
+    // Previously `count({ where: { exam: { userId } }, relations: { exam: true }})`
+    // — TypeORM emits a join + subquery for that shape, and this method
+    // fires on every answer submit + every exam complete, so the cost
+    // multiplies with traffic. Drop to a single SQL count via the
+    // existing index on (exam_id) and the cached (user_id) on exams.
+    const countRows: { count: number }[] = await this.answersRepo.manager.query(
+      `
+        select count(*)::int as count
+        from exam_answers a
+        inner join exams e on e.id = a.exam_id
+        where e.user_id = $1;
+      `,
+      [userId],
+    );
+    const count = countRows[0]?.count ?? 0;
     if (count < QUALIFY_THRESHOLD) return false;
 
+    // CRITICAL: lock the referral_event row inside the tx so two
+    // concurrent answer-complete handlers can't both pass the `count`
+    // gate and both award `referral_qualified` XP to the referrer. The
+    // SELECT FOR UPDATE on the qualifyXpIssued=false row forces them to
+    // serialise; the second tx sees qualifyXpIssued=true and exits via
+    // the early-return below.
+    let alreadyQualified = false;
     try {
       await this.dataSource.transaction(async (em) => {
+        const locked = await em
+          .getRepository(ReferralEvent)
+          .createQueryBuilder('e')
+          .setLock('pessimistic_write')
+          .where('e.id = :id', { id: event.id })
+          .getOne();
+        if (!locked || locked.qualifyXpIssued) {
+          alreadyQualified = true;
+          return;
+        }
         await em.getRepository(ReferralEvent).update(event.id, {
           qualifyXpIssued: true,
           qualifiedAt: new Date(),
@@ -107,6 +135,7 @@ export class ReferralsService {
           .getRepository(User)
           .update(userId, { referralQualified: true });
       });
+      if (alreadyQualified) return false;
       const award = await this.gamification.awardXp(
         event.referrerId,
         'referral_qualified',
@@ -351,7 +380,7 @@ export class ReferralsService {
   // platform default if the admin hasn't customised it.
   private readonly SHARE_TEMPLATE_KEY = 'referral:share-template';
   private readonly DEFAULT_SHARE_TEMPLATE =
-    'Join me on PassMaster Ghana and ace your exams. Use my code {code} when you sign up — we both earn XP. https://passmaster.gh';
+    'Join me on Bondzi Ghana and ace your exams. Use my code {code} when you sign up — we both earn XP. https://bondzi.online';
 
   async getShareTemplate(): Promise<{ template: string }> {
     const cached = await this.redis.getString(this.SHARE_TEMPLATE_KEY);

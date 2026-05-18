@@ -30,7 +30,7 @@ describe('GamificationService', () => {
   let ratesRepo: { findOne: jest.Mock };
   let txRepo: { find: jest.Mock };
   let notifications: { send: jest.Mock };
-  let redis: { del: jest.Mock };
+  let redis: { del: jest.Mock; incr: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
   // Per-call EntityManager doubles — fresh between each test.
@@ -47,7 +47,13 @@ describe('GamificationService', () => {
     ratesRepo = { findOne: jest.fn() };
     txRepo = { find: jest.fn() };
     notifications = { send: jest.fn().mockResolvedValue(undefined) };
-    redis = { del: jest.fn().mockResolvedValue(undefined) };
+    // `incr` is used by the new per-event-key daily cap check; default
+    // to a low value so the cap is never tripped in the existing tests.
+    // A dedicated test below exercises the cap path.
+    redis = {
+      del: jest.fn().mockResolvedValue(undefined),
+      incr: jest.fn().mockResolvedValue(1),
+    };
 
     txUsersRepo = {
       createQueryBuilder: jest.fn(() => {

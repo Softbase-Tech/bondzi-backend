@@ -9,6 +9,7 @@ import { AiUsageLog } from '../ai/entities/ai-usage-log.entity';
 import { QuestionFlag } from '../questions/entities/question-flag.entity';
 import { Question } from '../questions/entities/question.entity';
 import { AuditLog } from './entities/audit-log.entity';
+import { redactPii } from '../../common/utils/redact-pii.util';
 import {
   ExamStatus,
   ExamType,
@@ -434,13 +435,22 @@ export class AdminService {
     newValue: Record<string, unknown> | null,
     ip?: string,
   ) {
+    // Scrub PII from the delta before persisting. Audit rows are kept
+    // for years; passing through raw email / phone / password_hash
+    // would create a long-lived PII trove indistinguishable from the
+    // users table itself. We keep entity ids and non-PII fields, so
+    // forensics still tell the "who-did-what" story.
     const row = this.auditRepo.create({
       adminId,
       action,
       entityType,
       entityId,
-      oldValue,
-      newValue,
+      oldValue: oldValue
+        ? (redactPii(oldValue) as Record<string, unknown>)
+        : null,
+      newValue: newValue
+        ? (redactPii(newValue) as Record<string, unknown>)
+        : null,
       ipAddress: ip ?? null,
     });
     await this.auditRepo.save(row);

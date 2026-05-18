@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -11,6 +12,7 @@ import { Exam } from './entities/exam.entity';
 import { ExamAnswer } from './entities/exam-answer.entity';
 import { Question } from '../questions/entities/question.entity';
 import { Option } from '../questions/entities/option.entity';
+import { PmTestOption } from '../pm-test/entities/pm-test-option.entity';
 import { Subject } from '../subjects/entities/subject.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
 import { User } from '../users/entities/user.entity';
@@ -48,6 +50,8 @@ import {
 
 @Injectable()
 export class ExamsService {
+  private readonly logger = new Logger(ExamsService.name);
+
   constructor(
     @InjectRepository(Exam) private readonly examsRepo: Repository<Exam>,
     @InjectRepository(ExamAnswer)
@@ -251,11 +255,69 @@ export class ExamsService {
             'Answer already submitted for this question',
           );
 
-        const correctOption = await optionsRepo.findOne({
-          where: { questionId: dto.questionId, isCorrect: true },
-        });
-        if (!correctOption)
+        // Resolve the option set for this question. exam_answers is
+        // shared between past-paper exams (options in `options`) and
+        // PM-Test exams (options in `pm_test_options`), discriminated
+        // by exam.question_pool. The FK on selected_option_id is
+        // dropped so the app layer is the gatekeeper.
+        //
+        // Defensive fallback: if the primary table for the declared
+        // pool returns ZERO rows for this question, try the other
+        // table. Covers the case where an exam was created with the
+        // wrong question_pool flag (e.g. mixed-source exam, legacy
+        // row) — without this, the admin sees "No correct option
+        // defined" with no way forward.
+        const pmTestRepo = em.getRepository(PmTestOption);
+        type OptLite = { id: string; isCorrect: boolean };
+        const fetchPast = (): Promise<OptLite[]> =>
+          optionsRepo.find({
+            where: { questionId: dto.questionId },
+            select: { id: true, isCorrect: true },
+          });
+        const fetchPm = (): Promise<OptLite[]> =>
+          pmTestRepo.find({
+            where: { questionId: dto.questionId },
+            select: { id: true, isCorrect: true },
+          });
+        const declaredPool = exam.questionPool;
+        let allOptions: OptLite[] =
+          declaredPool === QuestionPool.PM_TEST
+            ? await fetchPm()
+            : await fetchPast();
+        if (allOptions.length === 0) {
+          const fallback =
+            declaredPool === QuestionPool.PM_TEST
+              ? await fetchPast()
+              : await fetchPm();
+          if (fallback.length > 0) {
+            this.logger.warn(
+              `[exam.submit] exam=${examId} q=${dto.questionId} declared pool=${declaredPool} but options found in the OTHER table — using fallback.`,
+            );
+            allOptions = fallback;
+          }
+        }
+        const correctOption = allOptions.find((o) => o.isCorrect);
+        if (!correctOption) {
+          this.logger.warn(
+            `[exam.submit] exam=${examId} q=${dto.questionId}: no options found in either table.`,
+          );
           throw new NotFoundException('No correct option defined');
+        }
+
+        if (dto.selectedOptionId) {
+          const valid = allOptions.some((o) => o.id === dto.selectedOptionId);
+          if (!valid) {
+            // Log the mismatch so admins can diagnose stale-cache /
+            // race conditions without having to attach a debugger.
+            const validIds = allOptions.map((o) => o.id).join(',');
+            this.logger.warn(
+              `[exam.submit] mismatch exam=${examId} q=${dto.questionId} pool=${declaredPool} sent=${dto.selectedOptionId} valid=[${validIds}]`,
+            );
+            throw new BadRequestException(
+              'selectedOptionId does not belong to this question',
+            );
+          }
+        }
 
         const isCorrect = dto.selectedOptionId
           ? dto.selectedOptionId === correctOption.id
@@ -315,11 +377,17 @@ export class ExamsService {
       });
   }
 
-  async complete(userId: string, examId: string): Promise<Exam> {
+  async complete(userId: string, examId: string): Promise<ExamResultResponse> {
     const exam = await this.examsRepo.findOne({ where: { id: examId } });
     if (!exam) throw new NotFoundException('Exam not found');
     if (exam.userId !== userId) throw new ForbiddenException('Not your exam');
-    if (exam.status === ExamStatus.COMPLETED) return exam;
+    // Idempotent: if the exam was already completed (double-tap on
+    // submit, mobile re-completing after a previous transient 5xx),
+    // return the same result shape — never the raw Exam — so the
+    // mobile's Zod strict-parse always sees the same fields.
+    if (exam.status === ExamStatus.COMPLETED) {
+      return this.getResult(userId, examId);
+    }
 
     const answers = await this.answersRepo.find({ where: { examId } });
     const correct = answers.filter((a) => a.isCorrect).length;
@@ -352,7 +420,48 @@ export class ExamsService {
     await this.referrals.checkQualification(userId).catch(() => void 0);
 
     await this.updateSubjectProgress(userId, exam, answers);
-    return exam;
+
+    // Build the result-page payload (same shape GET /exams/:id/result
+    // returns) so the mobile can render the score screen directly
+    // off the complete response without an extra round trip.
+    return this.buildResultPayload(exam, answers);
+  }
+
+  /**
+   * Hydrate the answers' question/option relations + look up topics
+   * for the byTopic breakdown, then defer to the shared serializer.
+   * Extracted so both `complete` and `getResult` produce identical
+   * shapes and the Zod schema on the mobile parses both cleanly.
+   */
+  private async buildResultPayload(
+    exam: Exam,
+    answers: ExamAnswer[],
+  ): Promise<ExamResultResponse> {
+    // `answers` was loaded without relations in `complete()`; reload
+    // with question + selectedOption joins so wrongAnswers can show
+    // the body / correct option text.
+    const hydrated = await this.answersRepo.find({
+      where: { examId: exam.id },
+      relations: ['question', 'question.options', 'selectedOption'],
+    });
+    const topicIds = Array.from(
+      new Set(
+        hydrated
+          .map((a) => a.question?.topicId)
+          .filter((id): id is string => typeof id === 'string'),
+      ),
+    );
+    const topics = topicIds.length
+      ? await this.dataSource
+          .getRepository(Topic)
+          .find({ where: { id: In(topicIds) } })
+      : [];
+    // Mark the unused parameter as intentionally consumed — `answers`
+    // is the pre-hydration list used elsewhere in `complete()` for
+    // streak/XP/progress; we re-fetch with relations here for the
+    // serializer.
+    void answers;
+    return toExamResultResponse(exam, hydrated, topics);
   }
 
   async abandon(userId: string, examId: string): Promise<void> {
@@ -507,15 +616,32 @@ export class ExamsService {
       bySubject.set(q.subjectId, bucket);
     }
 
+    // Load every existing progress row for the touched subjects in ONE
+    // query (previous shape did N findOne calls — 4-subject exam = 4
+    // round trips just to read). After in-memory merge, bulk-save: a
+    // single transaction with one insert + one update per subject.
+    const subjectIds = Array.from(bySubject.keys());
+    if (subjectIds.length === 0) return;
+    const existing = await this.progressRepo.find({
+      where: subjectIds.map((subjectId) => ({ userId, subjectId })),
+    });
+    const byId = new Map(existing.map((p) => [p.subjectId, p]));
+
+    const toSave = [];
     for (const [subjectId, bucket] of bySubject) {
-      let progress = await this.progressRepo.findOne({
-        where: { userId, subjectId },
-      });
-      if (!progress) {
-        progress = this.progressRepo.create({ userId, subjectId });
-      }
-      progress.questionsSeen += bucket.seen;
-      progress.questionsCorrect += bucket.correct;
+      const progress =
+        byId.get(subjectId) ?? this.progressRepo.create({ userId, subjectId });
+      // CRITICAL: `repository.create()` does NOT apply column defaults
+      // — `@Column({ default: 0 })` only kicks in at INSERT time on
+      // the DB side. So a freshly-created row has questionsSeen /
+      // questionsCorrect = undefined; `undefined += n` is NaN, which
+      // Postgres rejects with `invalid input syntax for type integer:
+      // "NaN"` when TypeORM serialises the row at save. Coerce
+      // nullish → 0 before the increment so a brand-new subject row
+      // inserts cleanly with the exam's contribution.
+      progress.questionsSeen = (progress.questionsSeen ?? 0) + bucket.seen;
+      progress.questionsCorrect =
+        (progress.questionsCorrect ?? 0) + bucket.correct;
       progress.totalTimeMs = String(
         BigInt(progress.totalTimeMs ?? '0') + BigInt(bucket.time),
       );
@@ -529,7 +655,9 @@ export class ExamsService {
         };
       }
       progress.topicAccuracy = nextTopicAcc;
-      await this.progressRepo.save(progress);
+      toSave.push(progress);
     }
+    // TypeORM batches the save into a single chunk-and-go round trip.
+    await this.progressRepo.save(toSave, { chunk: 50 });
   }
 }

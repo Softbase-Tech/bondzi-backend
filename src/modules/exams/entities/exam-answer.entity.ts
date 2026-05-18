@@ -37,9 +37,17 @@ export class ExamAnswer {
   @Column({ name: 'question_id', type: 'uuid' })
   questionId: string;
 
-  // The join is retained for past-paper questions only. Services must check
-  // questionPool before relying on `question`.
-  @ManyToOne(() => Question, { onDelete: 'RESTRICT' })
+  // The join is retained for past-paper questions only — services must
+  // check `questionPool` before relying on `question`. CRITICAL: the real
+  // FK constraint is dropped (`createForeignKeyConstraints: false`)
+  // because this column doubles as a `pm_test_questions(id)` when
+  // `question_pool='pm_test'`. Without this, Postgres rejects every PM-Test
+  // answer insert with a FK violation against `questions(id)`. Integrity
+  // is enforced at the application layer (see ExamsService.submitAnswer).
+  @ManyToOne(() => Question, {
+    onDelete: 'RESTRICT',
+    createForeignKeyConstraints: false,
+  })
   @JoinColumn({ name: 'question_id' })
   question: Question;
 
@@ -54,7 +62,19 @@ export class ExamAnswer {
   @Column({ name: 'selected_option_id', type: 'uuid', nullable: true })
   selectedOptionId: string | null;
 
-  @ManyToOne(() => Option, { nullable: true, onDelete: 'SET NULL' })
+  // CRITICAL: FK to options(id) is intentionally dropped. The column
+  // doubles as a `pm_test_options(id)` when `question_pool='pm_test'`
+  // — same dual-target situation as `question_id` above. Without
+  // `createForeignKeyConstraints: false`, every PM-Test answer
+  // insert fails at the DB level (selected_option_id is valid in
+  // pm_test_options but the FK points at options). Integrity is
+  // enforced at the application layer: ExamsService.submitAnswer
+  // validates against the correct table before insert.
+  @ManyToOne(() => Option, {
+    nullable: true,
+    onDelete: 'SET NULL',
+    createForeignKeyConstraints: false,
+  })
   @JoinColumn({ name: 'selected_option_id' })
   selectedOption: Option | null;
 

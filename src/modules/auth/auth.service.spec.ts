@@ -71,6 +71,7 @@ describe('AuthService', () => {
     save: jest.Mock;
     update: jest.Mock;
     createQueryBuilder: jest.Mock;
+    manager: { query: jest.Mock };
   };
   let subsRepo: { findOne: jest.Mock };
   let referralsRepo: { insert: jest.Mock };
@@ -94,6 +95,10 @@ describe('AuthService', () => {
       save: jest.fn(async (u) => u),
       update: jest.fn(),
       createQueryBuilder: jest.fn(),
+      // Used by `recordReferralSignup` for the device-collision check —
+      // default to "no overlap" so existing tests behave as before. The
+      // referral-fraud test below overrides this to assert short-circuit.
+      manager: { query: jest.fn().mockResolvedValue([]) },
     };
     subsRepo = { findOne: jest.fn() };
     referralsRepo = { insert: jest.fn() };
@@ -179,14 +184,18 @@ describe('AuthService', () => {
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
 
-    it('clears the lockout counter on success and issues tokens', async () => {
+    it('clears BOTH lockout counters (per-IP and per-email) on success', async () => {
+      // The lockout buckets are split — per-IP AND per-email — so an
+      // attacker rotating IPs can't evade the per-email count and a
+      // shared NAT can't lock out an entire school. Both must clear
+      // on a successful login.
       stubFindUserByEmail(makeUser());
       jest.spyOn(passwordUtil, 'verifyPassword').mockResolvedValueOnce(true);
       const result = await service.login('jane@example.com', 'pw', {
         deviceId: 'd1',
         ip: '1.2.3.4',
       });
-      expect(redis.del).toHaveBeenCalledTimes(1);
+      expect(redis.del).toHaveBeenCalledTimes(2);
       expect(tokens.issuePair).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'user-1' }),
         expect.objectContaining({ deviceId: 'd1', ip: '1.2.3.4' }),

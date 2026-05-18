@@ -52,8 +52,14 @@ export class XpEconomyController {
     @CurrentUser() user: AuthenticatedUser,
     @Query('limit') limit?: string,
   ) {
+    // Bound the limit on BOTH ends: a negative or NaN value silently
+    // turning into MIN_SAFE_INTEGER would make the underlying query
+    // either empty or scan the full table; an unbounded high value
+    // (?limit=999999) lets a caller load every XP transaction in
+    // memory in one shot. The historical spec is 50 default / 200 max.
     const parsed = limit ? parseInt(limit, 10) : 50;
-    return this.xp.history(user.id, Number.isFinite(parsed) ? parsed : 50);
+    const safe = Number.isFinite(parsed) && parsed > 0 ? parsed : 50;
+    return this.xp.history(user.id, Math.min(safe, 200));
   }
 
   @Post('redeem')
