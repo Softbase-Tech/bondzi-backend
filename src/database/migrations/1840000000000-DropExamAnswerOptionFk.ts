@@ -37,12 +37,11 @@ export class DropExamAnswerOptionFk_1840000000000 implements MigrationInterface 
     `);
   }
 
-  public down(_queryRunner: QueryRunner): Promise<void> {
+  public async down(_queryRunner: QueryRunner): Promise<void> {
     // Restoring the FK would reject every existing PM-Test answer
     // row whose selected_option_id points at pm_test_options. Down
     // is a no-op on purpose — a true rollback also needs a backfill
     // strategy for those rows, which is product-policy not schema.
     void _queryRunner;
-    return Promise.resolve();
   }
 }
