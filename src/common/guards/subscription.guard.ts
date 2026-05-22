@@ -57,10 +57,22 @@ export class SubscriptionGuard implements CanActivate {
       throw new ForbiddenException('Active subscription required');
     }
 
-    const sub = await this.subscriptionsRepo.findOne({
-      where: { userId },
-      order: { createdAt: 'DESC' },
-    });
+    // CRITICAL: filter to access-eligible statuses BEFORE ordering by
+    // createdAt. Without this, a recent PAST_DUE row (every "tap Start
+    // with X but didn't pay" creates one — see SubscriptionsService.
+    // initiate) becomes the newest sub for the user and would poison the
+    // guard: it'd see a PAST_DUE row, declare "not active", and 403
+    // every paywalled endpoint even if the user has a VALID, ACTIVE row
+    // sitting one createdAt-position behind it. Restricting to the three
+    // grant statuses + the future-expiry predicate keeps PAST_DUE /
+    // CANCELLED / EXPIRED rows from clobbering the lookup.
+    const sub = await this.subscriptionsRepo
+      .createQueryBuilder('s')
+      .where('s.user_id = :uid', { uid: userId })
+      .andWhere("s.status IN ('active','trial','xp_credited')")
+      .andWhere('(s.expires_at IS NULL OR s.expires_at > NOW())')
+      .orderBy('s.expires_at', 'DESC')
+      .getOne();
 
     if (!sub) throw new ForbiddenException('Active subscription required');
 

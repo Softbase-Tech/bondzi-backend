@@ -186,7 +186,13 @@ describe('SubscriptionsService', () => {
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
-    it('happy path: persists a pending TRIAL row and returns the auth URL', async () => {
+    it('happy path: persists a pending PAST_DUE row and returns the auth URL', async () => {
+      // Pre-payment rows MUST be PAST_DUE (NOT TRIAL). TRIAL is in the
+      // active-grant set used by SubscriptionGuard + getActiveSubscription;
+      // a TRIAL row with a future expires_at would unlock Pro for the full
+      // plan window with no payment. PAST_DUE sits outside every isActive()
+      // check, so the row stays dormant until verify() or the Paystack
+      // webhook flips it to ACTIVE.
       plans.getActiveForCheckout.mockResolvedValueOnce(basePlan);
       plans.cadenceFor.mockReturnValueOnce({
         providerPlanCode: 'p_monthly',
@@ -208,7 +214,7 @@ describe('SubscriptionsService', () => {
       expect(subsRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           userId: 'user-1',
-          status: SubscriptionStatus.TRIAL,
+          status: SubscriptionStatus.PAST_DUE,
           providerReference: 'ref_1',
         }),
       );
@@ -239,7 +245,7 @@ describe('SubscriptionsService', () => {
       subsRepo.findOne.mockResolvedValueOnce({
         userId: 'user-1',
         provider: 'paystack',
-        status: SubscriptionStatus.TRIAL,
+        status: SubscriptionStatus.PAST_DUE,
       });
       provider.verifyTransaction.mockResolvedValueOnce({ status: 'failed' });
       await expect(service.verify('user-1', 'ref_x')).rejects.toBeInstanceOf(
@@ -254,7 +260,7 @@ describe('SubscriptionsService', () => {
         id: 'sub-1',
         userId: 'user-1',
         provider: 'paystack',
-        status: SubscriptionStatus.TRIAL,
+        status: SubscriptionStatus.PAST_DUE,
         amountGhs: '50.00',
       });
       provider.verifyTransaction.mockResolvedValueOnce({
@@ -285,7 +291,7 @@ describe('SubscriptionsService', () => {
         id: 'sub-1',
         userId: 'user-1',
         provider: 'paystack',
-        status: SubscriptionStatus.TRIAL,
+        status: SubscriptionStatus.PAST_DUE,
         amountGhs: '50.00',
       } as Subscription;
       subsRepo.findOne.mockResolvedValueOnce(sub);
