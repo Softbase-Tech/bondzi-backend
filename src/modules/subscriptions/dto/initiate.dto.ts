@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsUUID } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsString, IsUUID } from 'class-validator';
 import { BillingInterval } from '../../../common/types/enums';
 
 export class InitiateSubscriptionDto {
@@ -16,6 +16,15 @@ export class InitiateSubscriptionDto {
 }
 
 export class VerifySubscriptionDto {
-  @ApiProperty()
+  /**
+   * The Paystack reference issued by POST /subscriptions/initiate.
+   * MUST carry a class-validator decorator — the global ValidationPipe
+   * has `whitelist: true, forbidNonWhitelisted: true`, so a property
+   * without a decorator gets stripped from the body AND triggers a
+   * 400 "property reference should not exist". That was the bug.
+   */
+  @ApiProperty({ description: 'Server-issued Paystack reference' })
+  @IsString()
+  @IsNotEmpty()
   reference!: string;
 }

@@ -105,6 +105,18 @@ export class SubscriptionsService {
   }
 
   async getMine(userId: string): Promise<Subscription | null> {
+    // Prefer the active grant (ACTIVE / TRIAL / XP_CREDITED with a
+    // future expires_at) if one exists. Falling back to the latest
+    // row "by createdAt" used to mean a recent PAST_DUE row from a
+    // "tapped Start, didn't pay" attempt would shadow the user's
+    // genuinely-active subscription — the mobile auth store would
+    // then derive `status='past_due'` and lock every Pro gate even
+    // though the user IS paid up. If no active grant is found, fall
+    // back to the most recent row so the UI can still show "your
+    // last subscription was cancelled / expired" instead of "no
+    // subscription found".
+    const active = await this.getActiveSubscription(userId);
+    if (active) return active;
     return this.subsRepo.findOne({
       where: { userId },
       order: { createdAt: 'DESC' },
@@ -148,12 +160,26 @@ export class SubscriptionsService {
       },
     });
 
+    // CRITICAL: the pre-payment row must NOT be in any status that the
+    // active-status checks treat as Pro. `TRIAL` + a future `expires_at`
+    // is treated as fully active by both `getActiveSubscription` and
+    // SubscriptionGuard — meaning the row created here would unlock the
+    // full plan duration the instant `initiate` returns, with no
+    // payment, just by tapping "Start with <plan>".
+    //
+    // `PAST_DUE` is in the enum already, sits outside the "active" set
+    // in both the guard and the service query, and is the closest
+    // existing status for "we owe a payment on this row before it
+    // counts". Verify (below) or the webhook flips it to ACTIVE on
+    // successful charge. `expires_at` stays at the would-be expiry so
+    // the row is informational; nothing keys access off it while in
+    // PAST_DUE.
     const pending = this.subsRepo.create({
       userId: user.id,
       planId: plan.id,
       billingInterval: interval,
       provider: plan.provider,
-      status: SubscriptionStatus.TRIAL,
+      status: SubscriptionStatus.PAST_DUE,
       providerReference: session.reference,
       amountGhs: cadence.amountDisplay.toFixed(2),
       startsAt: new Date(),
@@ -224,6 +250,30 @@ export class SubscriptionsService {
         );
         throw new ConflictException(
           'Amount paid does not match the subscription price.',
+        );
+      }
+    }
+
+    // Reset the clock to NOW on successful payment so the user gets the
+    // full cadence duration starting from when they actually paid, not
+    // from when they tapped "Start" (which could have been hours ago if
+    // they backgrounded the app mid-checkout). Re-fetching the plan +
+    // cadence is one extra query, which is fine — verify runs at most
+    // once per checkout.
+    if (sub.planId && sub.billingInterval) {
+      try {
+        const plan = await this.plans.getActiveForCheckout(sub.planId);
+        const cadence = this.plans.cadenceFor(plan, sub.billingInterval);
+        sub.startsAt = new Date();
+        sub.expiresAt = new Date(
+          Date.now() + cadence.durationDays * 86400 * 1000,
+        );
+      } catch (err) {
+        // Plan was archived between initiate and verify? Honour the
+        // already-stamped expires_at rather than refusing access to a
+        // legitimately-paid user. Log so we can spot the edge case.
+        this.logger.warn(
+          `[verify] plan ${sub.planId} not resolvable for cadence reset (${(err as Error).message}); keeping initiate-time expiry`,
         );
       }
     }
