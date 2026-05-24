@@ -82,26 +82,34 @@ export class ExamsService {
 
     const desiredCount =
       dto.questionCount ?? (dto.mode === ExamMode.PAST_PAPER ? 50 : 20);
-    const qb = this.questionsRepo
+
+    // Two-step selection:
+    //   1. Resolve a list of question IDs that match the filter, ordered
+    //      and limited as required.
+    //   2. Load the full Question entities (with options + stimulus relations)
+    //      for those IDs and reattach in the original order.
+    //
+    // Why not a single query with `leftJoinAndSelect(...).take()`? TypeORM
+    // rewrites that as an ID subquery with `SELECT DISTINCT q.id ... ORDER BY
+    // <criteria> LIMIT N`. PostgreSQL rejects `ORDER BY random()` in that
+    // shape ("for SELECT DISTINCT, ORDER BY expressions must appear in select
+    // list"), which 500s practice mode. Splitting the queries also means we
+    // get a deterministic `LIMIT N` on entities without any join-row math.
+    const idQb = this.questionsRepo
       .createQueryBuilder('q')
-      .leftJoinAndSelect('q.options', 'o')
-      // Stimulus is the shared passage some questions hang off (reading
-      // comprehension, source-analysis, etc.). Without joining it here the
-      // serializer emits `stimulus: null` and the mobile renders questions
-      // missing the passage they refer to.
-      .leftJoinAndSelect('q.stimulus', 'stim')
+      .select('q.id', 'id')
       .where("q.status = 'active'")
       .andWhere('q.examType = :et', { et: user.examType });
 
     const filter = dto.subjectFilter ?? {};
     if (filter.subjectIds?.length)
-      qb.andWhere('q.subjectId IN (:...sids)', { sids: filter.subjectIds });
+      idQb.andWhere('q.subjectId IN (:...sids)', { sids: filter.subjectIds });
     if (filter.topicIds?.length)
-      qb.andWhere('q.topicId IN (:...tids)', { tids: filter.topicIds });
+      idQb.andWhere('q.topicId IN (:...tids)', { tids: filter.topicIds });
     if (filter.years?.length)
-      qb.andWhere('q.year IN (:...years)', { years: filter.years });
+      idQb.andWhere('q.year IN (:...years)', { years: filter.years });
     if (filter.wassecPaper)
-      qb.andWhere('q.wassecPaper = :paper', { paper: filter.wassecPaper });
+      idQb.andWhere('q.wassecPaper = :paper', { paper: filter.wassecPaper });
 
     // Difficulty filter applies to practice/drill modes only. Past papers are
     // canonical — we never filter their questions by difficulty.
@@ -116,7 +124,7 @@ export class ExamsService {
           : dto.difficulty === ExamDifficultyFilter.HARD
             ? Difficulty.HARD
             : Difficulty.MEDIUM;
-      qb.andWhere('q.difficulty = :diff', { diff: difficultyEnum });
+      idQb.andWhere('q.difficulty = :diff', { diff: difficultyEnum });
     }
 
     // focusWeak biases practice selection toward subjects the user has <50%
@@ -137,7 +145,7 @@ export class ExamsService {
           ? weakIds.filter((id) => filter.subjectIds!.includes(id))
           : weakIds;
         if (intersect.length > 0) {
-          qb.andWhere('q.subjectId IN (:...weakSids)', {
+          idQb.andWhere('q.subjectId IN (:...weakSids)', {
             weakSids: intersect,
           });
         }
@@ -146,22 +154,28 @@ export class ExamsService {
 
     // Past papers follow canonical order; practice/drill randomises.
     if (dto.mode === ExamMode.PAST_PAPER) {
-      qb.orderBy('q.wassecPaper', 'ASC')
+      idQb
+        .orderBy('q.wassecPaper', 'ASC')
         .addOrderBy('q.section', 'ASC')
         .addOrderBy('q.createdAt', 'ASC');
     } else {
-      qb.orderBy('random()');
+      idQb.orderBy('RANDOM()');
     }
-    // `.take()` (not `.limit()`) — TypeORM with `leftJoinAndSelect` returns
-    // (question × option) joined rows, so a raw SQL `LIMIT 50` would cap at
-    // 50 *rows*, deduping to ~12 unique questions. `.take()` rewrites the
-    // query as `IN (SELECT id FROM questions ... LIMIT N)` so the cap
-    // applies to entities. See https://github.com/typeorm/typeorm/issues/4742.
-    qb.take(desiredCount);
+    idQb.limit(desiredCount);
 
-    const questions = await qb.getMany();
-    if (questions.length === 0)
+    const idRows = await idQb.getRawMany<{ id: string }>();
+    if (idRows.length === 0)
       throw new BadRequestException('No questions match this filter');
+    const orderedIds = idRows.map((r) => r.id);
+
+    const loaded = await this.questionsRepo.find({
+      where: { id: In(orderedIds) },
+      relations: ['options', 'stimulus'],
+    });
+    const byId = new Map(loaded.map((q) => [q.id, q] as const));
+    const questions = orderedIds
+      .map((id) => byId.get(id))
+      .filter((q): q is Question => Boolean(q));
 
     const exam = this.examsRepo.create({
       userId,
