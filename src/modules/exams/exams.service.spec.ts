@@ -104,14 +104,14 @@ describe('ExamsService', () => {
   let examsRepo: { findOne: jest.Mock };
   let answersRepo: { find: jest.Mock };
   let questionsRepo: { find: jest.Mock };
-  let subscriptions: { hasActiveSubscription: jest.Mock };
+  let subscriptions: { hasEntitlement: jest.Mock };
 
   beforeEach(async () => {
     examsRepo = { findOne: jest.fn() };
     answersRepo = { find: jest.fn() };
     questionsRepo = { find: jest.fn() };
     subscriptions = {
-      hasActiveSubscription: jest.fn().mockResolvedValue(false),
+      hasEntitlement: jest.fn().mockResolvedValue(false),
     };
 
     const noop = {} as never;

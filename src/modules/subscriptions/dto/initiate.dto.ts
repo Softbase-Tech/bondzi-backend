@@ -1,5 +1,11 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsString, IsUUID } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+} from 'class-validator';
 import { BillingInterval } from '../../../common/types/enums';
 
 export class InitiateSubscriptionDto {
@@ -7,12 +13,35 @@ export class InitiateSubscriptionDto {
   @IsUUID()
   planId!: string;
 
-  @ApiProperty({
+  /**
+   * Required for recurring (Pro) plans; MUST be omitted for one-time
+   * (Plus) plans. The service validates the combination against the
+   * plan's `payment_kind` and returns 400 on mismatch.
+   */
+  @ApiPropertyOptional({
     enum: BillingInterval,
-    description: 'Which cadence within the plan to purchase.',
+    description:
+      'Billing cadence for recurring plans. Omit for one-time (Plus) plans.',
   })
+  @IsOptional()
   @IsEnum(BillingInterval)
-  interval!: BillingInterval;
+  interval?: BillingInterval;
+
+  /**
+   * Optional promo code applied at checkout. Validated server-side via
+   * PromoCodesService.quote — invalid / scoped-out / exhausted codes
+   * yield 400 with a precise reason. Stored on the subscription row
+   * (`promo_code_id`) and the redemption ledger (`promo_redemptions`)
+   * after `verify()` confirms the charge.
+   */
+  @ApiPropertyOptional({
+    description:
+      'Discount code (case-insensitive). Validated against PromoCodesService at initiate time.',
+    maxLength: 32,
+  })
+  @IsOptional()
+  @IsString()
+  promoCode?: string;
 }
 
 export class VerifySubscriptionDto {

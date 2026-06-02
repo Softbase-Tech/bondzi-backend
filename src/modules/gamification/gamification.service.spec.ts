@@ -84,6 +84,8 @@ describe('GamificationService', () => {
       ),
     };
 
+    const mail = { send: jest.fn().mockResolvedValue(undefined) };
+    const { MailService } = await import('../mail/mail.service');
     const moduleRef = await Test.createTestingModule({
       providers: [
         GamificationService,
@@ -93,6 +95,7 @@ describe('GamificationService', () => {
         { provide: NotificationsService, useValue: notifications },
         { provide: DataSource, useValue: dataSource },
         { provide: RedisService, useValue: redis },
+        { provide: MailService, useValue: mail },
       ],
     }).compile();
     service = moduleRef.get(GamificationService);

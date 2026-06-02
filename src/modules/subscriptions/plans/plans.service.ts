@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
-import { BillingInterval } from '../../../common/types/enums';
+import { BillingInterval, PaymentKind } from '../../../common/types/enums';
 import { AuditLog } from '../../admin/entities/audit-log.entity';
 import { PaymentProviderRegistry } from '../../payments/providers/payment-provider.registry';
 import { CreatePlanDto } from './dto/create-plan.dto';
@@ -102,7 +102,32 @@ export class PlansService {
       );
     }
 
-    const shouldSync = dto.syncProvider !== false;
+    const isOneTime = dto.paymentKind === PaymentKind.ONE_TIME;
+    // One-time (Plus) plans must not carry cadence prices — they have a
+    // single headline price stored in `monthlyPrice`. Reject early so a
+    // typo in the admin form doesn't quietly create a malformed plan
+    // with both lifetime semantics AND a non-zero 6-month price.
+    if (isOneTime && (dto.sixMonthPrice ?? 0) > 0) {
+      throw new BadRequestException(
+        'One-time (Plus) plans cannot define sixMonthPrice — leave it at 0 or omit.',
+      );
+    }
+    if (isOneTime && (dto.annualPrice ?? 0) > 0) {
+      throw new BadRequestException(
+        'One-time (Plus) plans cannot define annualPrice — leave it at 0 or omit.',
+      );
+    }
+    if (!isOneTime && (!dto.sixMonthPrice || !dto.annualPrice)) {
+      throw new BadRequestException(
+        'Recurring (Pro) plans require monthlyPrice, sixMonthPrice and annualPrice.',
+      );
+    }
+
+    // One-time plans do not need provider plan codes (Paystack charges
+    // them as single transactions). Recurring plans always sync unless
+    // explicitly opted out — admin can still sync later via the
+    // /admin/plans/:id/sync endpoint.
+    const shouldSync = !isOneTime && dto.syncProvider !== false;
     let codes: {
       monthly: string | null;
       sixMonth: string | null;
@@ -120,13 +145,13 @@ export class PlansService {
         {
           cadence: 'six_month',
           interval: BillingInterval.SIX_MONTH,
-          amountMinor: this.toMinor(dto.sixMonthPrice),
+          amountMinor: this.toMinor(dto.sixMonthPrice ?? 0),
           durationDays: dto.sixMonthDurationDays ?? 180,
         },
         {
           cadence: 'annual',
           interval: BillingInterval.ANNUAL,
-          amountMinor: this.toMinor(dto.annualPrice),
+          amountMinor: this.toMinor(dto.annualPrice ?? 0),
           durationDays: dto.annualDurationDays ?? 365,
         },
       ]);
@@ -134,13 +159,27 @@ export class PlansService {
 
     const created = await this.dataSource.transaction(async (trx) => {
       if (dto.isDefault) {
+        // Scope the demotion to the SAME (account, level) slot. The
+        // catalogue holds one default per (country, account, level)
+        // slot — six slots per country — so a blanket "demote every
+        // default in this country" would clobber the other five
+        // unrelated defaults. The partial unique index
+        // `subscription_plans_default_per_slot_uq` enforces at most one
+        // default per slot, but this scoped update is what keeps the
+        // OTHER slots' defaults intact when a new default is created
+        // for one of them.
         await trx
           .createQueryBuilder()
           .update(SubscriptionPlanEntity)
           .set({ isDefault: false })
-          .where('country_code = :cc AND is_default = true', {
-            cc: dto.countryCode,
-          })
+          .where(
+            'country_code = :cc AND account = :account AND level = :level AND is_default = true',
+            {
+              cc: dto.countryCode,
+              account: dto.account,
+              level: dto.level,
+            },
+          )
           .execute();
       }
 
@@ -150,9 +189,16 @@ export class PlansService {
         countryCode: dto.countryCode,
         currency: dto.currency,
         provider: dto.provider,
+        account: dto.account,
+        level: dto.level,
+        paymentKind: dto.paymentKind,
+        vatRatePct: dto.vatRatePct ?? 0,
         monthlyPrice: dto.monthlyPrice,
-        sixMonthPrice: dto.sixMonthPrice,
-        annualPrice: dto.annualPrice,
+        // Catalogue invariant: one-time plans store 0 for cadence prices
+        // they don't use, never NULL — keeps numeric math on listing
+        // queries safe.
+        sixMonthPrice: isOneTime ? 0 : (dto.sixMonthPrice as number),
+        annualPrice: isOneTime ? 0 : (dto.annualPrice as number),
         monthlyDurationDays: dto.monthlyDurationDays ?? 30,
         sixMonthDurationDays: dto.sixMonthDurationDays ?? 180,
         annualDurationDays: dto.annualDurationDays ?? 365,
@@ -211,14 +257,23 @@ export class PlansService {
 
     const updated = await this.dataSource.transaction(async (trx) => {
       if (dto.isDefault === true) {
+        // Slot-scoped: only demote OTHER defaults in the same
+        // (country, account, level) trio — leave the five other slots'
+        // defaults alone. See `versionBump` / `create` for the same
+        // pattern.
         await trx
           .createQueryBuilder()
           .update(SubscriptionPlanEntity)
           .set({ isDefault: false })
-          .where('country_code = :cc AND id != :id AND is_default = true', {
-            cc: current.countryCode,
-            id: current.id,
-          })
+          .where(
+            'country_code = :cc AND account = :account AND level = :level AND id != :id AND is_default = true',
+            {
+              cc: current.countryCode,
+              account: current.account,
+              level: current.level,
+              id: current.id,
+            },
+          )
           .execute();
       }
       await trx.getRepository(SubscriptionPlanEntity).update(current.id, {
@@ -228,6 +283,11 @@ export class PlansService {
           : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.isDefault !== undefined ? { isDefault: dto.isDefault } : {}),
+        // VAT rate is a display-only attribute (drives how the receipt
+        // PDF breaks the gross price into net + tax). Adjusting it does
+        // NOT need a version bump because no charged amount or contract
+        // term is changing — only how the existing gross is annotated.
+        ...(dto.vatRatePct !== undefined ? { vatRatePct: dto.vatRatePct } : {}),
       });
       return trx
         .getRepository(SubscriptionPlanEntity)
@@ -340,13 +400,27 @@ export class PlansService {
       const promoted =
         dto.isDefault !== undefined ? dto.isDefault : current.isDefault;
       if (promoted) {
+        // Demote ONLY the prior default in the same (account, level)
+        // slot. The catalogue now has six default slots per country
+        // (Plus × {BECE,WASSCE,NOVDEC} + Pro × {BECE,WASSCE,NOVDEC});
+        // a blanket "demote every default in this country" would have
+        // wiped out five unrelated defaults whenever an admin bumped a
+        // single plan's price. The partial unique index
+        // `subscription_plans_default_per_slot_uq` still guarantees at
+        // most one default per slot — this scoped update keeps the
+        // other slots untouched.
         await trx
           .createQueryBuilder()
           .update(SubscriptionPlanEntity)
           .set({ isDefault: false })
-          .where('country_code = :cc AND is_default = true', {
-            cc: current.countryCode,
-          })
+          .where(
+            'country_code = :cc AND account = :account AND level = :level AND is_default = true',
+            {
+              cc: current.countryCode,
+              account: current.account,
+              level: current.level,
+            },
+          )
           .execute();
       }
 
@@ -357,6 +431,15 @@ export class PlansService {
         countryCode: current.countryCode,
         currency: current.currency,
         provider: current.provider,
+        // Carry forward the account / level / payment_kind invariants —
+        // a version bump never changes the slot a plan occupies. To move
+        // a plan to a different (account, level) slot, admin must create
+        // a new plan from scratch.
+        account: current.account,
+        level: current.level,
+        paymentKind: current.paymentKind,
+        vatRatePct:
+          dto.vatRatePct !== undefined ? dto.vatRatePct : current.vatRatePct,
         monthlyPrice,
         sixMonthPrice,
         annualPrice,
@@ -480,14 +563,23 @@ export class PlansService {
     }
 
     const updated = await this.dataSource.transaction(async (trx) => {
+      // Slot-scoped: demote any other default in the same
+      // (country, account, level) trio, NOT all defaults in the country.
+      // The catalogue has six slots per country and each can have one
+      // default — this row owns its slot.
       await trx
         .createQueryBuilder()
         .update(SubscriptionPlanEntity)
         .set({ isDefault: false })
-        .where('country_code = :cc AND is_default = true AND id != :id', {
-          cc: plan.countryCode,
-          id: plan.id,
-        })
+        .where(
+          'country_code = :cc AND account = :account AND level = :level AND is_default = true AND id != :id',
+          {
+            cc: plan.countryCode,
+            account: plan.account,
+            level: plan.level,
+            id: plan.id,
+          },
+        )
         .execute();
       await trx
         .getRepository(SubscriptionPlanEntity)
@@ -517,26 +609,40 @@ export class PlansService {
     if (target.isActive) {
       throw new ConflictException('Plan is already active.');
     }
-    if (
-      !target.providerPlanMonthly ||
-      !target.providerPlanSixMonth ||
-      !target.providerPlanAnnual
-    ) {
-      throw new BadRequestException(
-        'This version is missing provider plan codes. Run sync first.',
-      );
+    // Recurring (Pro) plans need ALL three Paystack codes so the checkout
+    // cadence selector works. One-time (Plus) plans NEVER have codes —
+    // they charge a single transaction at checkout, so requiring codes
+    // here would make Plus rollback always fail. Branch on payment_kind.
+    if (target.paymentKind === PaymentKind.RECURRING) {
+      if (
+        !target.providerPlanMonthly ||
+        !target.providerPlanSixMonth ||
+        !target.providerPlanAnnual
+      ) {
+        throw new BadRequestException(
+          'This version is missing provider plan codes. Run sync first.',
+        );
+      }
     }
 
     const updated = await this.dataSource.transaction(async (trx) => {
-      // Deactivate any currently-active sibling in the same country.
+      // Deactivate the currently-active sibling in the SAME slot
+      // (country, account, level). A blanket "deactivate every active
+      // plan in this country" would have wiped out the other five slots'
+      // active plans when rolling back any single slot.
       await trx
         .createQueryBuilder()
         .update(SubscriptionPlanEntity)
         .set({ isActive: false, isDefault: false })
-        .where('country_code = :cc AND is_active = true AND id != :id', {
-          cc: target.countryCode,
-          id: target.id,
-        })
+        .where(
+          'country_code = :cc AND account = :account AND level = :level AND is_active = true AND id != :id',
+          {
+            cc: target.countryCode,
+            account: target.account,
+            level: target.level,
+            id: target.id,
+          },
+        )
         .execute();
       await trx.getRepository(SubscriptionPlanEntity).update(target.id, {
         isActive: true,

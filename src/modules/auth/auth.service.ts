@@ -30,6 +30,8 @@ import { GoogleOAuthService } from './google-oauth.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationChannel } from '../../common/types/enums';
+import { MailService } from '../mail/mail.service';
+import { MailEvent } from '../mail/mail.types';
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_TTL_SECONDS = 15 * 60;
@@ -54,7 +56,9 @@ export interface SafeUser {
   role: UserRole;
   examType: ExamType;
   schoolLevel: SchoolLevel;
-  formLevel: number;
+  // NULL for remedial (NOVDEC) users — they aren't enrolled in a school
+  // cohort so form-level is meaningless.
+  formLevel: number | null;
   schoolName: string | null;
   region: string | null;
   avatarUrl: string | null;
@@ -68,6 +72,34 @@ export interface SafeUser {
   countryCode: string;
   isActive: boolean;
   createdAt: Date;
+}
+
+/**
+ * Flattened subscription shape returned alongside the SafeUser on
+ * GET /auth/me. Mirrors `MeSubscriptionView` in SubscriptionsService —
+ * kept separate to avoid an auth → subscriptions service import (which
+ * would re-export through the module barrel and risk a circular).
+ */
+export interface AuthMeSubscriptionView {
+  id: string;
+  userId: string;
+  planId: string | null;
+  billingInterval: 'monthly' | 'six_month' | 'annual' | null;
+  provider: string | null;
+  providerReference: string | null;
+  providerSubscriptionId: string | null;
+  providerCustomerId: string | null;
+  xpRedemptionId: string | null;
+  amountGhs: string | null;
+  countryCode: string;
+  status: string;
+  startsAt: string | null;
+  expiresAt: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  account: 'free' | 'plus' | 'pro';
+  level: 'bece' | 'wassce' | 'novdec' | null;
+  paymentKind: 'one_time' | 'recurring' | null;
 }
 
 @Injectable()
@@ -86,6 +118,7 @@ export class AuthService {
     private readonly redis: RedisService,
     private readonly referrals: ReferralsService,
     private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
   ) {}
 
   /**
@@ -191,6 +224,13 @@ export class AuthService {
     }
     const passwordHash = dto.password ? await hashPassword(dto.password) : null;
 
+    // NOVDEC users have no form level — remedial students aren't enrolled
+    // by form. The DTO's `ValidateIf` enforces "form required iff not
+    // NOVDEC"; here we collapse the value to null for NOVDEC so a client
+    // that sent a stale sentinel can't accidentally populate the column.
+    const resolvedFormLevel =
+      dto.examType === ExamType.NOVDEC ? null : (dto.formLevel ?? null);
+
     const user = this.usersRepo.create({
       fullName: dto.fullName,
       email: dto.email ?? null,
@@ -202,7 +242,7 @@ export class AuthService {
       authProvider: dto.phone ? AuthProvider.PHONE : AuthProvider.EMAIL,
       examType: dto.examType,
       schoolLevel: schoolLevelFor(dto.examType),
-      formLevel: dto.formLevel,
+      formLevel: resolvedFormLevel,
       referralCode: await this.allocateReferralCode(dto.fullName),
       schoolName: dto.schoolName ?? null,
       region: dto.region ?? null,
@@ -240,6 +280,17 @@ export class AuthService {
         data: { type: 'welcome' },
       })
       .catch(() => void 0);
+
+    // Welcome email — best-effort. MailService never throws (see its
+    // contract), so a Resend outage here can't fail registration. Only
+    // sent when the user gave us an email address (phone-only signups
+    // get the push above and skip email until they add one in settings).
+    if (user.email) {
+      await this.mail.send(MailEvent.WELCOME, user.email, {
+        recipientName: user.fullName.split(' ')[0],
+        examType: user.examType.toUpperCase(),
+      });
+    }
 
     return { user: this.toSafeUser(user), tokens };
   }
@@ -343,9 +394,17 @@ export class AuthService {
     });
     let isNew = false;
     if (!user) {
-      if (!req.examType || !req.formLevel) {
+      if (!req.examType) {
         throw new BadRequestException(
-          'examType and formLevel are required for first-time Google sign-in.',
+          'examType is required for first-time Google sign-in.',
+        );
+      }
+      // formLevel: required for BECE / WASSCE, MUST be null for NOVDEC.
+      const resolvedFormLevel =
+        req.examType === ExamType.NOVDEC ? null : (req.formLevel ?? null);
+      if (req.examType !== ExamType.NOVDEC && resolvedFormLevel === null) {
+        throw new BadRequestException(
+          'formLevel is required for BECE / WASSCE first-time Google sign-in.',
         );
       }
       user = this.usersRepo.create({
@@ -356,7 +415,7 @@ export class AuthService {
         role: UserRole.STUDENT,
         examType: req.examType,
         schoolLevel: schoolLevelFor(req.examType),
-        formLevel: req.formLevel,
+        formLevel: resolvedFormLevel,
         referralCode: await this.allocateReferralCode(profile.name),
       });
       await this.usersRepo.save(user);
@@ -397,16 +456,91 @@ export class AuthService {
     await this.tokens.logoutAll(userId);
   }
 
-  async getMe(
-    userId: string,
-  ): Promise<SafeUser & { subscription: Subscription | null }> {
+  async getMe(userId: string): Promise<
+    SafeUser & {
+      subscription: AuthMeSubscriptionView | null;
+    }
+  > {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
-    const subscription = await this.subsRepo.findOne({
-      where: { userId: user.id },
-      order: { createdAt: 'DESC' },
-    });
-    return { ...this.toSafeUser(user), subscription };
+    // Eager-load the plan relation so the mobile gate (`isPro()`) and
+    // the settings → subscription screen can read account / level /
+    // paymentKind without a second round-trip. The entity's `plan`
+    // relation is lazy by default — without `relations: ['plan']` the
+    // surfaced JSON would be missing those fields and a paid Plus user
+    // would show as Free on the home screen.
+    //
+    // Per-level scoping: prefer the user's current-level active grant
+    // so a stale row on a different level (e.g. Plus on WASSCE while
+    // the user is now on NOVDEC) doesn't make `isPro()` return true on
+    // a level they're effectively Free on. The level scope keeps the
+    // mobile gate in sync with the backend SubscriptionGuard which is
+    // already per-level.
+    let subscription: Subscription | null = null;
+    if (user.examType) {
+      subscription = await this.subsRepo
+        .createQueryBuilder('s')
+        .innerJoin('s.plan', 'p', 'p.level = :level', { level: user.examType })
+        .where('s.user_id = :uid', { uid: user.id })
+        .andWhere("s.status IN ('active','trial','xp_credited')")
+        .andWhere('(s.expires_at IS NULL OR s.expires_at > NOW())')
+        .leftJoinAndSelect('s.plan', 'plan')
+        .orderBy(
+          `CASE p.account WHEN 'pro' THEN 2 WHEN 'plus' THEN 1 ELSE 0 END`,
+          'DESC',
+        )
+        .addOrderBy('s.expires_at', 'DESC', 'NULLS FIRST')
+        .getOne();
+    }
+    // Fallback for "show last subscription state on this level". RESTRICT
+    // to the user's current level — returning a cross-level row would
+    // make a Plus on WASSCE leak into a NOVDEC user's `isPro()` after
+    // they switch profiles. The fallback only matters for inactive rows
+    // (the active path above already covers active grants); we want it
+    // to be "last subscription on THIS level" not "any subscription".
+    if (!subscription && user.examType) {
+      subscription = await this.subsRepo
+        .createQueryBuilder('s')
+        .innerJoin('s.plan', 'p', 'p.level = :level', { level: user.examType })
+        .where('s.user_id = :uid', { uid: user.id })
+        .leftJoinAndSelect('s.plan', 'plan')
+        .orderBy('s.created_at', 'DESC')
+        .getOne();
+    }
+    return {
+      ...this.toSafeUser(user),
+      subscription: subscription
+        ? {
+            id: subscription.id,
+            userId: subscription.userId,
+            planId: subscription.planId,
+            billingInterval: subscription.billingInterval,
+            provider: subscription.provider,
+            providerReference: subscription.providerReference,
+            providerSubscriptionId: subscription.providerSubscriptionId,
+            providerCustomerId: subscription.providerCustomerId,
+            xpRedemptionId: subscription.xpRedemptionId,
+            amountGhs: subscription.amountGhs,
+            countryCode: subscription.countryCode,
+            status: subscription.status,
+            startsAt: subscription.startsAt
+              ? subscription.startsAt.toISOString()
+              : null,
+            expiresAt: subscription.expiresAt
+              ? subscription.expiresAt.toISOString()
+              : null,
+            createdAt: subscription.createdAt
+              ? subscription.createdAt.toISOString()
+              : undefined,
+            updatedAt: subscription.updatedAt
+              ? subscription.updatedAt.toISOString()
+              : undefined,
+            account: subscription.plan?.account ?? 'free',
+            level: subscription.plan?.level ?? null,
+            paymentKind: subscription.plan?.paymentKind ?? null,
+          }
+        : null,
+    };
   }
 
   /** Public — called from the register screen to validate codes live. */
@@ -422,7 +556,7 @@ export class AuthService {
   async updateExamType(
     userId: string,
     examType: ExamType,
-    formLevel: number,
+    formLevel: number | null,
   ): Promise<SafeUser> {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
@@ -430,20 +564,32 @@ export class AuthService {
       examType: user.examType,
       formLevel: user.formLevel,
     };
+    // NOVDEC has no form — null out the column even if a stale client
+    // supplied a value. For BECE / WASSCE the DTO has already validated
+    // 1..3, so we can trust the inbound number.
+    const resolvedFormLevel =
+      examType === ExamType.NOVDEC ? null : (formLevel ?? null);
+    if (examType !== ExamType.NOVDEC && resolvedFormLevel === null) {
+      throw new BadRequestException('formLevel is required for BECE / WASSCE.');
+    }
     user.examType = examType;
     user.schoolLevel = schoolLevelFor(examType);
-    user.formLevel = formLevel;
+    user.formLevel = resolvedFormLevel;
     await this.usersRepo.save(user);
-    if (before.examType !== examType || before.formLevel !== formLevel) {
+    if (
+      before.examType !== examType ||
+      before.formLevel !== resolvedFormLevel
+    ) {
       // Anti-fraud audit trail (spec §6.1: leaderboard farming defense).
       // Without this, a student could flip BECE ↔ WASSCE to dominate a
       // weaker board, then flip back. The controller throttle caps the
       // rate; this log gives admins something to query when reviewing
       // suspicious leaderboard moves.
+      const fmt = (lv: number | null) => (lv == null ? 'F-' : `F${lv}`);
       this.logger.log(
         `[audit] user.exam_type.change user=${userId} ` +
-          `before=${before.examType}/F${before.formLevel} ` +
-          `after=${examType}/F${formLevel}`,
+          `before=${before.examType}/${fmt(before.formLevel)} ` +
+          `after=${examType}/${fmt(resolvedFormLevel)}`,
       );
     }
     return this.toSafeUser(user);

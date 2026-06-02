@@ -16,16 +16,87 @@ export enum AuthProvider {
   PHONE = 'phone',
 }
 
-// v2: exam platform (BECE or WASSCE). First-class across users, subjects, questions, exams.
+// v2: exam platform. First-class across users, subjects, questions, exams.
+// `novdec` (the WAEC re-sit examination for SHS leavers) reuses the WASSCE
+// question pool — entitlement filtering happens at the user-level on
+// school_level=remedial, not by tagging questions with `novdec`.
 export enum ExamType {
   BECE = 'bece',
   WASSCE = 'wassce',
+  NOVDEC = 'novdec',
 }
 
-// v2: school level derived from exam_type (bece→jhs, wassce→shs).
+/**
+ * Resolves an exam type to its question pool. NOVDEC and WASSCE share the
+ * same pool — there are no questions/subjects tagged `novdec` in the DB
+ * (they'd duplicate the WASSCE catalogue). Use this anywhere you filter
+ * questions, subjects, syllabus_topics, exam_sessions, pm_test_questions
+ * etc. by the user's exam type.
+ *
+ * Do NOT use this for:
+ *   - leaderboards (NOVDEC users have their own board to keep competition fair)
+ *   - entitlements (NOVDEC is its own paid level)
+ *   - billing (NOVDEC has its own plan slot)
+ */
+export function questionPoolFor(examType: ExamType): ExamType {
+  return examType === ExamType.NOVDEC ? ExamType.WASSCE : examType;
+}
+
+// v2: school level derived from exam_type:
+//   bece    → jhs
+//   wassce  → shs
+//   novdec  → remedial
+// `remedial` users have NULL form_level (they aren't in a school cohort).
 export enum SchoolLevel {
   JHS = 'jhs',
   SHS = 'shs',
+  REMEDIAL = 'remedial',
+}
+
+/**
+ * Subscription / entitlement account name. The user-visible plan grade.
+ *   - `free`: implicit (absence of any active plus/pro entitlement). Never stored.
+ *   - `plus`: one-time payment, per-level, lifetime access to past + practice
+ *             questions (core + electives) + AI explanations.
+ *   - `pro`:  recurring subscription, per-level, everything in plus + curated
+ *             AI tests, analytics, weakness assessments.
+ * Each entitlement row is scoped to a (user, level) pair — Plus/Pro on SHS
+ * does NOT cover BECE or NOVDEC.
+ */
+export enum AccountType {
+  FREE = 'free',
+  PLUS = 'plus',
+  PRO = 'pro',
+}
+
+/**
+ * How a plan is paid for. Plus = `one_time` (lifetime grant, no expires_at).
+ * Pro = `recurring` (Paystack subscription with billing_interval).
+ */
+export enum PaymentKind {
+  ONE_TIME = 'one_time',
+  RECURRING = 'recurring',
+}
+
+/**
+ * Promo / discount code shape. Percent = e.g. 20% off; fixed = e.g. 50 GHS off
+ * (in the plan's currency).
+ */
+export enum PromoDiscountType {
+  PERCENT = 'percent',
+  FIXED = 'fixed',
+}
+
+/**
+ * Audit trail action for admin-driven entitlement changes (manual grant /
+ * revoke / extend). Excludes user-initiated purchases — those are captured
+ * via the existing `financial_events` table.
+ */
+export enum EntitlementAuditAction {
+  GRANT = 'grant',
+  REVOKE = 'revoke',
+  EXTEND = 'extend',
+  REFUND = 'refund',
 }
 
 export enum SubjectCategory {
@@ -103,7 +174,8 @@ export enum BillingInterval {
   ANNUAL = 'annual',
 }
 
-// v2: added 'xp_credited'.
+// v2: added 'xp_credited' and 'refunded'. `refunded` is terminal — a Plus row
+// flipped to refunded loses the entitlement but the row is preserved for audit.
 export enum SubscriptionStatus {
   ACTIVE = 'active',
   EXPIRED = 'expired',
@@ -111,6 +183,7 @@ export enum SubscriptionStatus {
   TRIAL = 'trial',
   PAST_DUE = 'past_due',
   XP_CREDITED = 'xp_credited',
+  REFUNDED = 'refunded',
 }
 
 export enum FlagReason {

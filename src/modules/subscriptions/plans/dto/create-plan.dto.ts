@@ -1,17 +1,24 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsEnum,
   IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   Length,
+  Max,
   Min,
 } from 'class-validator';
+import {
+  AccountType,
+  ExamType,
+  PaymentKind,
+} from '../../../../common/types/enums';
 
 export class CreatePlanDto {
-  @ApiProperty({ example: 'Bondzi Pro GH' })
+  @ApiProperty({ example: 'Bondzi Pro · WASSCE' })
   @IsString()
   @IsNotEmpty()
   @Length(2, 100)
@@ -40,20 +47,77 @@ export class CreatePlanDto {
   @IsNotEmpty()
   provider!: string;
 
-  @ApiProperty({ example: 29, minimum: 0.01 })
+  @ApiProperty({
+    enum: AccountType,
+    example: AccountType.PRO,
+    description:
+      'Plan grade. `plus` = lifetime per-level access. `pro` = recurring per-level subscription with AI features. `free` is implicit and never stored as a plan.',
+  })
+  @IsEnum(AccountType)
+  account!: AccountType;
+
+  @ApiProperty({
+    enum: ExamType,
+    example: ExamType.WASSCE,
+    description:
+      'Which exam-platform the plan unlocks. Plus/Pro are scoped per level — a user must purchase separately for each.',
+  })
+  @IsEnum(ExamType)
+  level!: ExamType;
+
+  @ApiProperty({
+    enum: PaymentKind,
+    example: PaymentKind.RECURRING,
+    description:
+      '`one_time` (Plus, no recurring) or `recurring` (Pro, Paystack-managed subscription).',
+  })
+  @IsEnum(PaymentKind)
+  paymentKind!: PaymentKind;
+
+  @ApiPropertyOptional({
+    default: 0,
+    minimum: 0,
+    maximum: 100,
+    description:
+      'VAT (or VAT-equivalent levy stack) baked into the displayed price. Stored INCLUSIVELY: a 15% rate on a 200 GHS plan means the user pays 200 at checkout and the PDF receipt breaks it into ~173.91 net + ~26.09 VAT.',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  vatRatePct?: number;
+
+  @ApiProperty({
+    example: 29,
+    minimum: 0.01,
+    description:
+      'For recurring plans: the monthly price. For one-time plans: the single headline price (the only price field used; six-month and annual are ignored).',
+  })
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
   monthlyPrice!: number;
 
-  @ApiProperty({ example: 150, minimum: 0.01 })
+  @ApiPropertyOptional({
+    example: 150,
+    minimum: 0,
+    description:
+      'Recurring plans only — six-month cadence price. Defaults to 0 for one-time plans.',
+  })
+  @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0.01)
-  sixMonthPrice!: number;
+  @Min(0)
+  sixMonthPrice?: number;
 
-  @ApiProperty({ example: 240, minimum: 0.01 })
+  @ApiPropertyOptional({
+    example: 240,
+    minimum: 0,
+    description:
+      'Recurring plans only — annual cadence price. Defaults to 0 for one-time plans.',
+  })
+  @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0.01)
-  annualPrice!: number;
+  @Min(0)
+  annualPrice?: number;
 
   @ApiPropertyOptional({ default: 30 })
   @IsOptional()

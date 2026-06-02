@@ -12,7 +12,12 @@ import { XpTransaction } from './entities/xp-transaction.entity';
 import { XpRedemption } from './entities/xp-redemption.entity';
 import { User } from '../users/entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
-import { SubscriptionStatus } from '../../common/types/enums';
+import { SubscriptionPlanEntity } from '../subscriptions/plans/entities/subscription-plan.entity';
+import {
+  AccountType,
+  PaymentKind,
+  SubscriptionStatus,
+} from '../../common/types/enums';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { GamificationService } from '../gamification/gamification.service';
@@ -113,6 +118,7 @@ export class XpEconomyService {
       const usersRepo = em.getRepository(User);
       const redemptionsRepo = em.getRepository(XpRedemption);
       const subsRepo = em.getRepository(Subscription);
+      const plansRepo = em.getRepository(SubscriptionPlanEntity);
       const txRepo = em.getRepository(XpTransaction);
 
       const updateRes = await usersRepo
@@ -127,6 +133,28 @@ export class XpEconomyService {
       if ((updateRes.affected ?? 0) === 0) {
         throw new BadRequestException('Insufficient spendable XP');
       }
+
+      // Resolve the user's current level + the corresponding default Pro
+      // plan, used below to anchor any fresh XP_CREDITED row to the
+      // (account=pro, level=user.examType) slot. Without this anchor the
+      // per-level entitlement query (which joins through plan_id) would
+      // never see XP-credited rows — they'd appear Free on every level.
+      const redeemer = await usersRepo.findOne({
+        where: { id: userId },
+        select: ['id', 'examType', 'countryCode'],
+      });
+      const userLevel = redeemer?.examType ?? null;
+      const planForCredit = userLevel
+        ? await plansRepo.findOne({
+            where: {
+              account: AccountType.PRO,
+              level: userLevel,
+              isActive: true,
+              isDefault: true,
+              paymentKind: PaymentKind.RECURRING,
+            },
+          })
+        : null;
 
       const redemption = redemptionsRepo.create({
         userId,
@@ -180,15 +208,25 @@ export class XpEconomyService {
         }
         subscription = await subsRepo.save(existingActive);
       } else {
+        // Anchor the fresh XP_CREDITED row to the Pro plan for the user's
+        // CURRENT level. The per-level entitlement resolver joins through
+        // `plan_id` to filter by level — without this anchor the row
+        // would be invisible to `entitlementFor`, leaving the user Free
+        // on every level despite holding XP credit. `planId` may be null
+        // when no Pro plan exists for the user's level (admin hasn't
+        // seeded it yet); in that case the credit row still lives in the
+        // table for audit but won't grant per-level Pro until a plan
+        // exists. The `xpRedemptionId` pointer keeps the lineage clear.
         const fresh = subsRepo.create({
           userId,
-          planId: null,
+          planId: planForCredit?.id ?? null,
           billingInterval: null,
           provider: null,
           status: SubscriptionStatus.XP_CREDITED,
           startsAt: now,
           expiresAt: new Date(now.getTime() + creditMs),
           xpRedemptionId: redemption.id,
+          countryCode: planForCredit?.countryCode ?? 'GH',
         });
         subscription = await subsRepo.save(fresh);
       }

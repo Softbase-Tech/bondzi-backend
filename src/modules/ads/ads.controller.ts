@@ -39,7 +39,7 @@ export class AdsController {
     summary: 'Client ad config. Subscribed users always get adsEnabled=false.',
   })
   clientConfig(@CurrentUser() user: AuthenticatedUser) {
-    return this.ads.getClientConfig(user.id);
+    return this.ads.getClientConfig(user.id, user.examType);
   }
 
   @Post('ads/rewarded-complete')
@@ -48,7 +48,7 @@ export class AdsController {
     summary: 'Called after a rewarded ad completes. Awards XP (capped daily).',
   })
   rewardedComplete(@CurrentUser() user: AuthenticatedUser) {
-    return this.ads.awardRewarded(user.id);
+    return this.ads.awardRewarded(user.id, user.examType);
   }
 
   // ---- Admin -----------------------------------------------------------

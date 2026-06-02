@@ -21,7 +21,7 @@ import { ExamType, UserRole } from '../../common/types/enums';
 describe('QuestionsController', () => {
   let controller: QuestionsController;
   let questions: jest.Mocked<QuestionsService>;
-  let subscriptions: { hasActiveSubscription: jest.Mock };
+  let subscriptions: { hasEntitlement: jest.Mock };
 
   beforeEach(async () => {
     questions = {
@@ -38,7 +38,7 @@ describe('QuestionsController', () => {
       verify: jest.fn(),
     } as unknown as jest.Mocked<QuestionsService>;
     subscriptions = {
-      hasActiveSubscription: jest.fn().mockResolvedValue(false),
+      hasEntitlement: jest.fn().mockResolvedValue(false),
     };
     const moduleRef = await Test.createTestingModule({
       controllers: [QuestionsController],
@@ -55,7 +55,7 @@ describe('QuestionsController', () => {
       {} as never,
       { id: 'a', role: UserRole.ADMIN, examType: ExamType.WASSCE } as never,
     );
-    expect(subscriptions.hasActiveSubscription).not.toHaveBeenCalled();
+    expect(subscriptions.hasEntitlement).not.toHaveBeenCalled();
     expect(questions.list).toHaveBeenCalledWith(
       {},
       expect.objectContaining({
@@ -81,7 +81,7 @@ describe('QuestionsController', () => {
   });
 
   it('search parses the limit query and forwards the subscription state', async () => {
-    subscriptions.hasActiveSubscription.mockResolvedValueOnce(true);
+    subscriptions.hasEntitlement.mockResolvedValueOnce(true);
     await controller.search('algebra', { id: 'u' } as never, '5');
     expect(questions.search).toHaveBeenCalledWith(
       'algebra',
@@ -116,7 +116,7 @@ describe('QuestionsController', () => {
       role: UserRole.SUPERADMIN,
       examType: ExamType.WASSCE,
     } as never);
-    expect(subscriptions.hasActiveSubscription).not.toHaveBeenCalled();
+    expect(subscriptions.hasEntitlement).not.toHaveBeenCalled();
     expect(questions.getById).toHaveBeenCalledWith(
       'q',
       expect.objectContaining({ isAdmin: true, hasActiveSubscription: true }),

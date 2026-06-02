@@ -20,14 +20,14 @@ describe('AdsController', () => {
     controller = moduleRef.get(AdsController);
   });
 
-  it('GET /ads/config forwards the JWT user id', () => {
-    controller.clientConfig({ id: 'u' } as never);
-    expect(ads.getClientConfig).toHaveBeenCalledWith('u');
+  it('GET /ads/config forwards the JWT user id and examType', () => {
+    controller.clientConfig({ id: 'u', examType: 'wassce' } as never);
+    expect(ads.getClientConfig).toHaveBeenCalledWith('u', 'wassce');
   });
 
-  it('POST /ads/rewarded-complete forwards the JWT user id', () => {
-    controller.rewardedComplete({ id: 'u' } as never);
-    expect(ads.awardRewarded).toHaveBeenCalledWith('u');
+  it('POST /ads/rewarded-complete forwards the JWT user id and examType', () => {
+    controller.rewardedComplete({ id: 'u', examType: 'wassce' } as never);
+    expect(ads.awardRewarded).toHaveBeenCalledWith('u', 'wassce');
   });
 
   it('PATCH /admin/ads/config forwards the body to the service', () => {

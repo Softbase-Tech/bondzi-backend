@@ -22,10 +22,12 @@ import { StreakService } from '../gamification/streak.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import {
+  AccountType,
   Difficulty,
   ExamMode,
   ExamStatus,
   QuestionPool,
+  questionPoolFor,
 } from '../../common/types/enums';
 import {
   CreateExamDto,
@@ -99,7 +101,10 @@ export class ExamsService {
       .createQueryBuilder('q')
       .select('q.id', 'id')
       .where("q.status = 'active'")
-      .andWhere('q.examType = :et', { et: user.examType });
+      // NOVDEC students share the WASSCE question pool — remap so they
+      // can build practice exams. The exam row itself keeps the user's
+      // `novdec` examType for analytics (so we can tell who took it).
+      .andWhere('q.examType = :et', { et: questionPoolFor(user.examType) });
 
     const filter = dto.subjectFilter ?? {};
     if (filter.subjectIds?.length)
@@ -190,8 +195,14 @@ export class ExamsService {
     });
     await this.examsRepo.save(exam);
 
-    const hasActiveSubscription =
-      await this.subscriptions.hasActiveSubscription(userId);
+    // Plus or Pro on the user's CURRENT level is what unlocks the
+    // exam-session response shape (full explanations etc). The `user`
+    // object was already loaded at the top of this method.
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      userId,
+      user.examType,
+      AccountType.PLUS,
+    );
     return toExamSessionResponse(exam, questions, { hasActiveSubscription });
   }
 
@@ -222,8 +233,15 @@ export class ExamsService {
       .map((id) => byId.get(id))
       .filter((q): q is Question => Boolean(q));
 
-    const hasActiveSubscription =
-      await this.subscriptions.hasActiveSubscription(userId);
+    // Gate on the exam's OWN level, not the user's current profile level —
+    // a user who switches profile mid-session can still resume the
+    // in-progress exam at whatever account they had on its level. Using
+    // `exam.examType` also saves a user-row fetch on this hot path.
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      userId,
+      exam.examType,
+      AccountType.PLUS,
+    );
     return toExamSessionResponse(exam, ordered, { hasActiveSubscription });
   }
 

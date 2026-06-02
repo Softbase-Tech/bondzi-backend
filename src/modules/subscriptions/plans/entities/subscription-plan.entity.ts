@@ -11,6 +11,11 @@ import {
 } from 'typeorm';
 import { User } from '../../../users/entities/user.entity';
 import { numericTransformer } from '../../../../common/utils/numeric.transformer';
+import {
+  AccountType,
+  ExamType,
+  PaymentKind,
+} from '../../../../common/types/enums';
 
 /**
  * A single subscription product (e.g. "Bondzi Pro GH"). Each row bundles
@@ -32,12 +37,66 @@ import { numericTransformer } from '../../../../common/utils/numeric.transformer
 @Entity({ name: 'subscription_plan' })
 @Index('idx_plan_country_active', ['countryCode', 'isActive'])
 @Index('idx_plan_parent', ['parentPlanId'])
+@Index('idx_plan_account_level_active', ['account', 'level', 'isActive'])
 export class SubscriptionPlanEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
   @Column({ type: 'text' })
   name: string;
+
+  /**
+   * Plan grade. Determines what content the holder can access:
+   *   - `plus`: lifetime access to past + practice questions + AI explanations
+   *     for the plan's `level`.
+   *   - `pro`:  everything in plus + curated AI tests + analytics for the
+   *     plan's `level`.
+   * (Free is never a plan row — it's the absence of any active entitlement.)
+   */
+  @Column({
+    type: 'enum',
+    enum: AccountType,
+  })
+  account: AccountType;
+
+  /**
+   * Which exam-platform the plan unlocks: `bece`, `wassce` or `novdec`.
+   * Per-level pricing means a user must purchase separately for each level
+   * they want to study under.
+   */
+  @Column({
+    type: 'enum',
+    enum: ExamType,
+  })
+  level: ExamType;
+
+  /**
+   * `one_time` plans are charged once and grant lifetime access (subscription
+   * row carries `expires_at = NULL`). `recurring` plans use Paystack's
+   * subscription primitive and renew on each billing cycle.
+   */
+  @Column({
+    name: 'payment_kind',
+    type: 'enum',
+    enum: PaymentKind,
+  })
+  paymentKind: PaymentKind;
+
+  /**
+   * VAT (or VAT-equivalent levy stack) baked into the displayed price. Stored
+   * inclusively: when this is `15.00`, a `monthlyPrice` of 200.00 means the
+   * student pays 200.00 at checkout and the receipt breaks it down as
+   * ~173.91 net + ~26.09 VAT. `0` for tax-exempt or non-GH plans.
+   */
+  @Column({
+    name: 'vat_rate_pct',
+    type: 'numeric',
+    precision: 5,
+    scale: 2,
+    default: 0,
+    transformer: numericTransformer,
+  })
+  vatRatePct: number;
 
   @Column({ type: 'text', nullable: true })
   description: string | null;

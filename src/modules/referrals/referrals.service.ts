@@ -9,6 +9,8 @@ import { GamificationService } from '../gamification/gamification.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { NotificationChannel } from '../../common/types/enums';
+import { MailService } from '../mail/mail.service';
+import { MailEvent } from '../mail/mail.types';
 
 const QUALIFY_THRESHOLD = 10;
 
@@ -46,6 +48,7 @@ export class ReferralsService {
     private readonly notifications: NotificationsService,
     private readonly redis: RedisService,
     private readonly dataSource: DataSource,
+    private readonly mail: MailService,
   ) {}
 
   /**
@@ -157,6 +160,19 @@ export class ReferralsService {
           },
         })
         .catch(() => void 0);
+
+      // Email the referrer as well (best-effort) — same friendly tone,
+      // PDF-free, just a celebratory note + nudge to keep sharing.
+      const referrer = await this.usersRepo.findOne({
+        where: { id: event.referrerId },
+      });
+      if (referrer?.email) {
+        await this.mail.send(MailEvent.REFERRAL_QUALIFIED, referrer.email, {
+          recipientName: referrer.fullName ?? undefined,
+          refereeName: friendName,
+          rewardXp: award.xpAmount,
+        });
+      }
       return true;
     } catch (err) {
       this.logger.warn(

@@ -1,6 +1,11 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../../common/decorators/public.decorator';
+import {
+  AccountType,
+  ExamType,
+  PaymentKind,
+} from '../../../common/types/enums';
 import { PlansService } from './plans.service';
 import { SubscriptionPlanEntity } from './entities/subscription-plan.entity';
 
@@ -8,6 +13,10 @@ interface PublicPlanView {
   id: string;
   name: string;
   description: string | null;
+  account: AccountType;
+  level: ExamType;
+  paymentKind: PaymentKind;
+  vatRatePct: number;
   countryCode: string;
   currency: string;
   isDefault: boolean;
@@ -54,6 +63,10 @@ export class PlansPublicController {
       id: plan.id,
       name: plan.name,
       description: plan.description,
+      account: plan.account,
+      level: plan.level,
+      paymentKind: plan.paymentKind,
+      vatRatePct: Number(plan.vatRatePct ?? 0),
       countryCode: plan.countryCode,
       currency: plan.currency,
       isDefault: plan.isDefault,

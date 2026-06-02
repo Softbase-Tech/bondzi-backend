@@ -93,11 +93,14 @@ export const envValidationSchema = Joi.object({
   FIREBASE_PRIVATE_KEY: Joi.string().allow('').default(''),
   FIREBASE_CLIENT_EMAIL: Joi.string().allow('').default(''),
 
-  SMTP_HOST: Joi.string().allow('').default(''),
-  SMTP_PORT: Joi.number().port().default(587),
-  SMTP_USER: Joi.string().allow('').default(''),
-  SMTP_PASSWORD: Joi.string().allow('').default(''),
-  SMTP_FROM: Joi.string().allow('').default(''),
+  // Resend transactional email — the SMTP_* vars above are deprecated
+  // (mail.config no longer reads them). Existing rows in .env can stay
+  // for the cutover; they're just ignored.
+  MAIL_ENABLED: Joi.string().valid('true', 'false').default('true'),
+  RESEND_API_KEY: Joi.string().allow('').default(''),
+  MAIL_FROM: Joi.string().default('Bondzi <noreply@bondzi.app>'),
+  MAIL_REPLY_TO: Joi.string().email().default('support@bondzi.app'),
+  MAIL_WEB_URL: Joi.string().uri().allow('').default(''),
 
   GOOGLE_CLIENT_ID: Joi.string().allow('').default(''),
 

@@ -83,6 +83,8 @@ describe('ReferralsService', () => {
       ),
     };
 
+    const mail = { send: jest.fn().mockResolvedValue(undefined) };
+    const { MailService } = await import('../mail/mail.service');
     const moduleRef = await Test.createTestingModule({
       providers: [
         ReferralsService,
@@ -97,6 +99,7 @@ describe('ReferralsService', () => {
         { provide: NotificationsService, useValue: notifications },
         { provide: RedisService, useValue: redis },
         { provide: DataSource, useValue: dataSource },
+        { provide: MailService, useValue: mail },
       ],
     }).compile();
     service = moduleRef.get(ReferralsService);

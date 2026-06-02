@@ -11,7 +11,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IsEnum, IsInt, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, Max, Min, ValidateIf } from 'class-validator';
 import { ExamType } from '../../common/types/enums';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -61,10 +61,16 @@ class UpdateExamTypeDto {
   @IsEnum(ExamType)
   examType!: ExamType;
 
+  /**
+   * Required when switching TO BECE / WASSCE; MUST be omitted (or null)
+   * when switching TO NOVDEC — remedial students have no form. Mirrors
+   * the register DTO's branching rule so the two flows can't drift.
+   */
+  @ValidateIf((o: UpdateExamTypeDto) => o.examType !== ExamType.NOVDEC)
   @IsInt()
   @Min(1)
   @Max(3)
-  formLevel!: number;
+  formLevel?: number | null;
 }
 
 @ApiTags('auth')
@@ -226,6 +232,10 @@ export class AuthController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() body: UpdateExamTypeDto,
   ) {
-    return this.auth.updateExamType(user.id, body.examType, body.formLevel);
+    return this.auth.updateExamType(
+      user.id,
+      body.examType,
+      body.formLevel ?? null,
+    );
   }
 }

@@ -13,6 +13,7 @@ import { RedisService } from '../../common/redis/redis.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { GamificationService } from '../gamification/gamification.service';
 import { UpdateAdConfigDto } from './dto/update-ad-config.dto';
+import { AccountType, ExamType } from '../../common/types/enums';
 
 /**
  * v2 Phase-2 ads. Free-tier students only: SubscriptionsService is consulted
@@ -61,7 +62,10 @@ export class AdsService {
    * returns `adsEnabled=false` for subscribed users so the client never even
    * initialises the AdMob SDK for them.
    */
-  async getClientConfig(userId: string): Promise<{
+  async getClientConfig(
+    userId: string,
+    examType: ExamType | null | undefined,
+  ): Promise<{
     adsEnabled: boolean;
     adNetwork: string;
     admobAppId: string | null;
@@ -73,7 +77,15 @@ export class AdsService {
     rewardedRemainingToday: number;
   }> {
     const config = await this.getAdminConfig();
-    const subscribed = await this.subscriptions.hasActiveSubscription(userId);
+    // Ads-off is a Plus/Pro perk for the user's CURRENT level. A student
+    // holding Plus on SHS still sees ads if they switch their profile to
+    // NOVDEC (Free on NOVDEC) — otherwise Free NOVDEC content would be
+    // ads-free for anyone who once paid for any other level.
+    const subscribed = await this.subscriptions.hasEntitlement(
+      userId,
+      examType,
+      AccountType.PLUS,
+    );
     if (subscribed) {
       return {
         adsEnabled: false,
@@ -114,7 +126,10 @@ export class AdsService {
    * `ADS_REWARDED_XP_ENABLED` env flag (defaults to false). Flip it on
    * ONLY after the AdMob SSV callback path is implemented.
    */
-  async awardRewarded(userId: string): Promise<{
+  async awardRewarded(
+    userId: string,
+    examType: ExamType | null | undefined,
+  ): Promise<{
     xpAwarded: number;
     rewardedRemainingToday: number;
   }> {
@@ -129,7 +144,15 @@ export class AdsService {
           'Rewarded XP is temporarily unavailable while ad verification is being upgraded.',
       });
     }
-    const subscribed = await this.subscriptions.hasActiveSubscription(userId);
+    // Rewarded ads are a Free-only acquisition mechanism for THIS level —
+    // a Plus/Pro holder on the user's current level can't loop through
+    // rewarded videos to mint extra XP (their ad-free experience is the
+    // payoff for their purchase).
+    const subscribed = await this.subscriptions.hasEntitlement(
+      userId,
+      examType,
+      AccountType.PLUS,
+    );
     if (subscribed) {
       throw new ForbiddenException('Ads are disabled for subscribed users.');
     }

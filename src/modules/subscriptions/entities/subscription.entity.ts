@@ -90,6 +90,15 @@ export class Subscription {
   @Column({ name: 'xp_redemption_id', type: 'uuid', nullable: true })
   xpRedemptionId: string | null;
 
+  /**
+   * If a promo / discount code was applied at checkout, this points at the
+   * `promo_codes` row that was redeemed. The redemption ledger entry in
+   * `promo_redemptions` carries the reverse pointer (subscription_id).
+   * Nullable — most rows won't have one.
+   */
+  @Column({ name: 'promo_code_id', type: 'uuid', nullable: true })
+  promoCodeId: string | null;
+
   @Column({ name: 'country_code', type: 'varchar', length: 2, default: 'GH' })
   countryCode: string;
 
