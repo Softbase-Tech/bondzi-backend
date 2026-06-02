@@ -57,8 +57,13 @@ export class EntitlementsAndAccountTypes_1860000000000 implements MigrationInter
       alter type "school_level_enum"
         add value if not exists 'remedial' after 'shs';
     `);
+    // NOTE: TypeORM names the enum after the table+column (plural table
+    // here). The initial schema migration (1750) created it as
+    // `subscriptions_status_enum`, NOT `subscription_status_enum`. An
+    // earlier draft of this migration referenced the singular form and
+    // 42704'd on a fresh DB run.
     await queryRunner.query(`
-      alter type "subscription_status_enum"
+      alter type "subscriptions_status_enum"
         add value if not exists 'refunded' after 'xp_credited';
     `);
 
