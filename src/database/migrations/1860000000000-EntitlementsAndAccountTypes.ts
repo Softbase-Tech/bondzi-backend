@@ -24,7 +24,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *      payment_kind, promo_discount_type.
  *   2. Allows users.form_level to be NULL (remedial users aren't in a school
  *      cohort — they sit WASSCE re-sits as private candidates).
- *   3. Extends subscription_plans with `account`, `level`, `payment_kind`,
+ *   3. Extends subscription_plan with `account`, `level`, `payment_kind`,
  *      `vat_rate_pct` so the plan catalogue can express every Free/Plus/Pro
  *      × level combination. Existing rows backfill to (pro, wassce, recurring)
  *      because that mirrors the only plan shape in production until now.
@@ -98,36 +98,36 @@ export class EntitlementsAndAccountTypes_1860000000000 implements MigrationInter
     `);
 
     // -------------------------------------------------------------------------
-    // 3. subscription_plans gains account / level / payment_kind / vat_rate
+    // 3. subscription_plan gains account / level / payment_kind / vat_rate
     //
     // Existing rows (if any) are backfilled to (pro, wassce, recurring, 0) —
     // the only shape used pre-launch. After backfill, the columns are
     // tightened to NOT NULL.
     // -------------------------------------------------------------------------
     await queryRunner.query(`
-      alter table "subscription_plans"
+      alter table "subscription_plan"
         add column if not exists "account" account_type_enum,
         add column if not exists "level" exam_type_enum,
         add column if not exists "payment_kind" payment_kind_enum,
         add column if not exists "vat_rate_pct" numeric(5,2) not null default 0;
     `);
     await queryRunner.query(`
-      update "subscription_plans"
+      update "subscription_plan"
         set "account" = 'pro'::account_type_enum
         where "account" is null;
     `);
     await queryRunner.query(`
-      update "subscription_plans"
+      update "subscription_plan"
         set "level" = 'wassce'::exam_type_enum
         where "level" is null;
     `);
     await queryRunner.query(`
-      update "subscription_plans"
+      update "subscription_plan"
         set "payment_kind" = 'recurring'::payment_kind_enum
         where "payment_kind" is null;
     `);
     await queryRunner.query(`
-      alter table "subscription_plans"
+      alter table "subscription_plan"
         alter column "account" set not null,
         alter column "level" set not null,
         alter column "payment_kind" set not null;
@@ -137,8 +137,8 @@ export class EntitlementsAndAccountTypes_1860000000000 implements MigrationInter
     // from accidentally activating two defaults that the checkout flow can't
     // disambiguate. Active-only by design: archived plans can share the slot.
     await queryRunner.query(`
-      create unique index if not exists "subscription_plans_default_per_slot_uq"
-        on "subscription_plans" ("country_code", "account", "level")
+      create unique index if not exists "subscription_plan_default_per_slot_uq"
+        on "subscription_plan" ("country_code", "account", "level")
         where "is_default" = true and "is_active" = true;
     `);
 
@@ -260,12 +260,12 @@ _Last updated: see "updated_at" on this page._'
     await queryRunner.query(`drop table if exists "promo_redemptions";`);
     await queryRunner.query(`drop table if exists "promo_codes";`);
 
-    // 3. subscription_plans columns + unique index
+    // 3. subscription_plan columns + unique index
     await queryRunner.query(`
-      drop index if exists "subscription_plans_default_per_slot_uq";
+      drop index if exists "subscription_plan_default_per_slot_uq";
     `);
     await queryRunner.query(`
-      alter table "subscription_plans"
+      alter table "subscription_plan"
         drop column if exists "vat_rate_pct",
         drop column if exists "payment_kind",
         drop column if exists "level",
