@@ -9,6 +9,10 @@ import {
   NotificationChannel,
   SubscriptionStatus,
 } from '../common/types/enums';
+import { User } from '../modules/users/entities/user.entity';
+import { PlansService } from '../modules/subscriptions/plans/plans.service';
+import { MailService } from '../modules/mail/mail.service';
+import { MailEvent } from '../modules/mail/mail.types';
 
 const CADENCE_LABEL: Record<BillingInterval, string> = {
   [BillingInterval.MONTHLY]: 'monthly',
@@ -38,8 +42,12 @@ export class SubscriptionRenewalJob {
   constructor(
     @InjectRepository(Subscription)
     private readonly subsRepo: Repository<Subscription>,
+    @InjectRepository(User)
+    private readonly usersRepo: Repository<User>,
     private readonly dataSource: DataSource,
     private readonly notifications: NotificationsService,
+    private readonly plans: PlansService,
+    private readonly mail: MailService,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -92,6 +100,7 @@ export class SubscriptionRenewalJob {
             data: { type: 'subscription_expired', subscriptionId: sub.id },
           })
           .catch(() => void 0);
+        await this.dispatchExpiredEmail(sub).catch(() => void 0);
       } else if (sub.expiresAt.getTime() - now.getTime() < 72 * 3600 * 1000) {
         const cadence = sub.billingInterval
           ? CADENCE_LABEL[sub.billingInterval]
@@ -107,8 +116,50 @@ export class SubscriptionRenewalJob {
             data: { type: 'subscription_expiring', subscriptionId: sub.id },
           })
           .catch(() => void 0);
+        await this.dispatchExpiringSoonEmail(sub, now).catch(() => void 0);
       }
     }
+  }
+
+  private async dispatchExpiringSoonEmail(
+    sub: Subscription,
+    now: Date,
+  ): Promise<void> {
+    if (!sub.planId || !sub.expiresAt) return;
+    const [user, plan] = await Promise.all([
+      this.usersRepo.findOne({ where: { id: sub.userId } }),
+      this.plans.getById(sub.planId).catch(() => null),
+    ]);
+    if (!user?.email || !plan) return;
+    const msRemaining = sub.expiresAt.getTime() - now.getTime();
+    // Round up so "expires in 2 hours" still reads as "1 day" rather
+    // than "0 days" in the subject line.
+    const daysRemaining = Math.max(
+      1,
+      Math.ceil(msRemaining / (24 * 3600 * 1000)),
+    );
+    await this.mail.send(MailEvent.SUBSCRIPTION_EXPIRING_SOON, user.email, {
+      recipientName: user.fullName ?? undefined,
+      planName: plan.name,
+      level: plan.level.toUpperCase(),
+      expiresAt: sub.expiresAt,
+      daysRemaining,
+    });
+  }
+
+  private async dispatchExpiredEmail(sub: Subscription): Promise<void> {
+    if (!sub.planId || !sub.expiresAt) return;
+    const [user, plan] = await Promise.all([
+      this.usersRepo.findOne({ where: { id: sub.userId } }),
+      this.plans.getById(sub.planId).catch(() => null),
+    ]);
+    if (!user?.email || !plan) return;
+    await this.mail.send(MailEvent.SUBSCRIPTION_EXPIRED, user.email, {
+      recipientName: user.fullName ?? undefined,
+      planName: plan.name,
+      level: plan.level.toUpperCase(),
+      expiredAt: sub.expiresAt,
+    });
   }
 
   /**

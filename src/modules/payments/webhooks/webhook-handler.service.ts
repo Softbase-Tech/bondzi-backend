@@ -5,13 +5,21 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { SubscriptionStatus } from '../../../common/types/enums';
+import {
+  AccountType,
+  PaymentKind,
+  SubscriptionStatus,
+} from '../../../common/types/enums';
 import { PlansService } from '../../subscriptions/plans/plans.service';
 import { SubscriptionsService } from '../../subscriptions/subscriptions.service';
 import { PaymentEvent } from '../entities/payment-event.entity';
 import { FinancialEventType } from '../entities/financial-event.entity';
 import { FinancialAuditService } from '../financial-audit.service';
 import { NormalizedWebhookEvent } from '../providers/payment-provider.interface';
+import { MailService } from '../../mail/mail.service';
+import { MailEvent } from '../../mail/mail.types';
+import { User } from '../../users/entities/user.entity';
+import { SubscriptionPlanEntity } from '../../subscriptions/plans/entities/subscription-plan.entity';
 
 /**
  * Provider-agnostic webhook processor. Idempotency + event persistence +
@@ -55,9 +63,12 @@ export class WebhookHandlerService {
   constructor(
     @InjectRepository(PaymentEvent)
     private readonly eventsRepo: Repository<PaymentEvent>,
+    @InjectRepository(User)
+    private readonly usersRepo: Repository<User>,
     private readonly subs: SubscriptionsService,
     private readonly plans: PlansService,
     private readonly financialAudit: FinancialAuditService,
+    private readonly mail: MailService,
   ) {}
 
   async process(
@@ -181,12 +192,20 @@ export class WebhookHandlerService {
       return;
     }
 
-    const interval = event.providerPlanCode
-      ? this.plans.intervalForProviderPlanCode(plan, event.providerPlanCode)
-      : null;
-    if (!interval) {
+    // One-time (Plus) plans have no provider plan code and no interval —
+    // they're charged as a single Paystack transaction. The catalogue's
+    // `payment_kind` is the source of truth; the absence of a plan code
+    // alone isn't reliable (Pro charges can momentarily lack one if
+    // Paystack hasn't echoed it back yet).
+    const isOneTime = plan.paymentKind === PaymentKind.ONE_TIME;
+    const interval = isOneTime
+      ? null
+      : event.providerPlanCode
+        ? this.plans.intervalForProviderPlanCode(plan, event.providerPlanCode)
+        : null;
+    if (!isOneTime && !interval) {
       this.logger.warn(
-        `[webhook] charge.success could not infer billing interval (plan=${plan.id})`,
+        `[webhook] charge.success could not infer billing interval for recurring plan=${plan.id}`,
       );
       return;
     }
@@ -200,7 +219,10 @@ export class WebhookHandlerService {
       interval,
       providerReference: event.reference,
       providerCustomerId: event.customerId,
-      providerSubscriptionId: event.subscriptionId,
+      // One-time charges never have a Paystack subscription id (Paystack
+      // only mints one for recurring plans). Pass undefined so we don't
+      // stamp a null over an existing value on a duplicate webhook.
+      providerSubscriptionId: isOneTime ? undefined : event.subscriptionId,
       amountDisplay,
     });
     await this.financialAudit.record({
@@ -215,9 +237,72 @@ export class WebhookHandlerService {
         providerReference: event.reference,
         providerPlanCode: event.providerPlanCode,
         planId: plan.id,
+        // `null` for one-time; the cadence string ('monthly' / 'annual' /
+        // ...) for recurring. Recorded so reconciliation/forensics can
+        // distinguish Plus vs Pro from the audit trail alone.
         interval,
+        account: plan.account,
+        level: plan.level,
+        paymentKind: plan.paymentKind,
       },
     });
+
+    // Receipt email. Best-effort — MailService never throws on failure
+    // so a Resend hiccup can't roll back an activation. The PDF receipt
+    // is built inside the template (uses the same VAT-inclusive math
+    // the catalogue stores).
+    await this.dispatchPaymentReceiptEmail(userId, plan, event, amountDisplay);
+  }
+
+  private async dispatchPaymentReceiptEmail(
+    userId: string,
+    plan: SubscriptionPlanEntity,
+    event: NormalizedWebhookEvent,
+    amountDisplay: number | undefined,
+  ): Promise<void> {
+    if (amountDisplay === undefined || !event.reference) return;
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user?.email) {
+      this.logger.warn(
+        `[mail] cannot send payment receipt to user=${userId} — no email on file`,
+      );
+      return;
+    }
+    const validUntil = await this.computeValidUntil(plan, event);
+    await this.mail.send(MailEvent.PAYMENT_SUCCESS, user.email, {
+      recipientName: user.fullName ?? undefined,
+      planName: plan.name,
+      account: accountLabel(plan.account),
+      level: plan.level.toUpperCase(),
+      amountDisplay,
+      currency: event.currency ?? plan.currency,
+      vatRatePct: Number(plan.vatRatePct) || 0,
+      paidAt: event.claimedAt ?? new Date(),
+      reference: event.reference,
+      validUntil,
+    });
+  }
+
+  /**
+   * For Plus (one-time) the receipt shows "Lifetime"; for Pro
+   * (recurring) it shows the human-readable renewal date pulled from
+   * the freshly-activated subscription row.
+   */
+  private async computeValidUntil(
+    plan: SubscriptionPlanEntity,
+    event: NormalizedWebhookEvent,
+  ): Promise<string> {
+    if (plan.paymentKind === PaymentKind.ONE_TIME) return 'Lifetime';
+    if (!event.reference) return 'Until next renewal';
+    const sub = await this.subs.findLatestByRef(event.reference);
+    if (sub?.expiresAt) {
+      return sub.expiresAt.toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      });
+    }
+    return 'Until next renewal';
   }
 
   private async onSubscriptionCreate(
@@ -262,6 +347,38 @@ export class WebhookHandlerService {
         newStatus: status,
       },
     });
+
+    // Renewal-failed nudge: Paystack maps `invoice.failed` → PAST_DUE
+    // here. The user's renewal didn't go through; let them know so they
+    // can update payment info before access lapses. We don't email on
+    // CANCELLED — `SubscriptionsService.cancel` already sends that mail
+    // inline and webhooks for subscription.disable would otherwise
+    // double-send.
+    if (status === SubscriptionStatus.PAST_DUE) {
+      await this.dispatchPaymentFailedEmail(sub, event);
+    }
+  }
+
+  private async dispatchPaymentFailedEmail(
+    sub: { userId: string; planId: string | null },
+    event: NormalizedWebhookEvent,
+  ): Promise<void> {
+    if (!sub.planId) return;
+    const [user, plan] = await Promise.all([
+      this.usersRepo.findOne({ where: { id: sub.userId } }),
+      this.plans.getById(sub.planId).catch(() => null),
+    ]);
+    if (!user?.email || !plan) return;
+    await this.mail.send(MailEvent.SUBSCRIPTION_PAYMENT_FAILED, user.email, {
+      recipientName: user.fullName ?? undefined,
+      planName: plan.name,
+      level: plan.level.toUpperCase(),
+      attemptedAt: event.claimedAt ?? new Date(),
+      // Paystack retries on a fixed schedule (usually +1, +3, +5 days).
+      // We don't have the schedule in the webhook payload, so leave NULL —
+      // the template renders generic copy when the retry date is unknown.
+      nextAttemptAt: null,
+    });
   }
 
   private async onSubscriptionNotRenew(
@@ -283,14 +400,22 @@ export class WebhookHandlerService {
   }
 
   /**
-   * Phase 1 refund handler: we don't reverse subscription rows yet (that
-   * is Phase 2 — admin co-sign + audit row), but we MUST invalidate the
-   * subscription-status cache for the affected user. Otherwise a user
-   * who just got refunded continues to read "active" from cache for up
-   * to 60s of guard-cached TTL after the webhook lands — paid back AND
-   * still premium. The DB row doesn't move yet, so the next cache miss
-   * will re-cache "active" until the Phase 2 handler ships, but at
-   * least the immediate stale window is closed.
+   * Refund handler — revokes the entitlement on the refunded transaction.
+   *
+   * Flow:
+   *   1. Find the subscription by `provider_reference`. The transaction
+   *      reference is the only stable link between the refund event and
+   *      the original charge — Paystack does NOT echo the subscription id
+   *      on refund events for one-time charges, so we can't use that.
+   *   2. Flip status to REFUNDED via `applyRefund` (idempotent — re-deliveries
+   *      after the first success are no-ops). The status flip alone
+   *      strips access because `REFUNDED` is outside the active-status set.
+   *   3. Write the financial-event audit row.
+   *   4. Invalidate the entitlement cache so the next request returns Free.
+   *
+   * If no row matches the reference (refund for a transaction we never
+   * recorded — replay attack, mis-routed webhook, or pre-launch dust),
+   * we still record the financial event for forensics but don't 500.
    */
   private async onRefundProcessed(
     event: NormalizedWebhookEvent,
@@ -298,13 +423,31 @@ export class WebhookHandlerService {
     this.logger.log(
       `[webhook] refund.processed ref=${event.reference ?? 'n/a'}`,
     );
-    const userId = await this.resolveUserId(event);
-    if (userId) {
+    let userId = event.userId ?? null;
+    let subscriptionId: string | null = null;
+    let revoked = false;
+    if (event.reference) {
+      const sub = await this.subs.applyRefund(event.reference);
+      if (sub) {
+        userId = sub.userId;
+        subscriptionId = sub.id;
+        revoked = true;
+      } else {
+        this.logger.warn(
+          `[webhook] refund.processed ref=${event.reference} matched no subscription row — recording audit only`,
+        );
+      }
+    }
+    // Fall through to cache invalidation even when the refund didn't
+    // match a row — the caller may have additional state (e.g. legacy
+    // cached entitlement) we'd want flushed anyway.
+    if (!revoked && userId) {
       await this.subs.invalidateCache(userId);
     }
     await this.financialAudit.record({
       eventType: FinancialEventType.REFUND,
       userId: userId ?? null,
+      subscriptionId,
       amountMinor: event.amountMinor ?? null,
       currency: event.currency ?? null,
       source: 'webhook',
@@ -312,7 +455,44 @@ export class WebhookHandlerService {
         provider: 'paystack',
         providerEventId: event.eventId,
         providerReference: event.reference,
+        revoked,
       },
+    });
+
+    // Refund-confirmation email. Only when the refund actually matched a
+    // row — sending "we refunded you" for a reference we never saw would
+    // be confusing (and a possible phishing surface).
+    if (revoked && userId && event.reference) {
+      await this.dispatchRefundEmail(userId, event);
+    }
+  }
+
+  private async dispatchRefundEmail(
+    userId: string,
+    event: NormalizedWebhookEvent,
+  ): Promise<void> {
+    if (!event.reference) return;
+    const sub = await this.subs.findLatestByRef(event.reference);
+    if (!sub?.planId) return;
+    const [user, plan] = await Promise.all([
+      this.usersRepo.findOne({ where: { id: userId } }),
+      this.plans.getById(sub.planId).catch(() => null),
+    ]);
+    if (!user?.email || !plan) return;
+    const amount =
+      event.amountMinor !== undefined
+        ? event.amountMinor / 100
+        : sub.amountGhs
+          ? parseFloat(sub.amountGhs)
+          : 0;
+    await this.mail.send(MailEvent.REFUND_CONFIRMATION, user.email, {
+      recipientName: user.fullName ?? undefined,
+      planName: plan.name,
+      level: plan.level.toUpperCase(),
+      amountDisplay: amount,
+      currency: event.currency ?? plan.currency,
+      refundedAt: event.claimedAt ?? new Date(),
+      reference: event.reference,
     });
   }
 
@@ -322,12 +502,48 @@ export class WebhookHandlerService {
       event.subscriptionId,
     );
     if (!sub) return;
+    const previousExpiry = sub.expiresAt;
     if (event.nextPaymentDate) sub.expiresAt = event.nextPaymentDate;
     // Some providers send invoice.update with a success flag — leave status
     // parsing to future provider adapters that need it. For now we only
     // refresh the expiry.
     await this.subs.saveSubscription(sub);
     await this.subs.invalidateCache(sub.userId);
+
+    // Renewal email: Paystack sends `invoice.update` with a forward-shifted
+    // nextPaymentDate when a recurring charge succeeds. Compare against
+    // the prior expiry — if it moved further into the future, this is a
+    // successful renewal cycle and we email the user.
+    if (
+      event.nextPaymentDate &&
+      previousExpiry &&
+      event.nextPaymentDate.getTime() > previousExpiry.getTime()
+    ) {
+      await this.dispatchRenewedEmail(sub, event);
+    }
+  }
+
+  private async dispatchRenewedEmail(
+    sub: { userId: string; planId: string | null },
+    event: NormalizedWebhookEvent,
+  ): Promise<void> {
+    if (!sub.planId || !event.nextPaymentDate) return;
+    const [user, plan] = await Promise.all([
+      this.usersRepo.findOne({ where: { id: sub.userId } }),
+      this.plans.getById(sub.planId).catch(() => null),
+    ]);
+    if (!user?.email || !plan) return;
+    const amount =
+      event.amountMinor !== undefined ? event.amountMinor / 100 : 0;
+    await this.mail.send(MailEvent.SUBSCRIPTION_RENEWED, user.email, {
+      recipientName: user.fullName ?? undefined,
+      planName: plan.name,
+      level: plan.level.toUpperCase(),
+      amountDisplay: amount,
+      currency: event.currency ?? plan.currency,
+      nextRenewalAt: event.nextPaymentDate,
+      reference: event.reference ?? '',
+    });
   }
 
   private async resolveUserId(
@@ -371,5 +587,22 @@ export class WebhookHandlerService {
       'code' in err &&
       (err as { code: string }).code === '23505'
     );
+  }
+}
+
+/**
+ * Display label for an AccountType — "Plus" / "Pro" / "Free". Used in
+ * receipt + refund emails where users want to see the friendly name,
+ * not the snake-case enum.
+ */
+function accountLabel(account: AccountType): string {
+  switch (account) {
+    case AccountType.PRO:
+      return 'Pro';
+    case AccountType.PLUS:
+      return 'Plus';
+    case AccountType.FREE:
+    default:
+      return 'Free';
   }
 }

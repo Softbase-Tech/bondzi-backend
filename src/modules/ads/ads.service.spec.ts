@@ -29,7 +29,10 @@ describe('AdsService', () => {
     save: jest.Mock;
   };
   let redis: { get: jest.Mock; incr: jest.Mock };
-  let subscriptions: { hasActiveSubscription: jest.Mock };
+  let subscriptions: {
+    hasActiveSubscription: jest.Mock;
+    hasEntitlement: jest.Mock;
+  };
   let gamification: { awardXpAmount: jest.Mock };
   let config: { get: jest.Mock };
 
@@ -58,7 +61,10 @@ describe('AdsService', () => {
       save: jest.fn(async (r: unknown) => r),
     };
     redis = { get: jest.fn(), incr: jest.fn() };
-    subscriptions = { hasActiveSubscription: jest.fn() };
+    subscriptions = {
+      hasActiveSubscription: jest.fn(),
+      hasEntitlement: jest.fn(),
+    };
     gamification = { awardXpAmount: jest.fn() };
     // Default the launch-blocking gate ON for the existing happy-path tests
     // below. The "disabled by default" branch is exercised by its own test.
@@ -85,8 +91,8 @@ describe('AdsService', () => {
 
   it('returns adsEnabled=false and null AdMob ids for subscribed users', async () => {
     stubConfig();
-    subscriptions.hasActiveSubscription.mockResolvedValueOnce(true);
-    const out = await service.getClientConfig('user-1');
+    subscriptions.hasEntitlement.mockResolvedValueOnce(true);
+    const out = await service.getClientConfig('user-1', 'wassce' as never);
     expect(out.adsEnabled).toBe(false);
     expect(out.admobAppId).toBeNull();
     expect(out.admobRewardedId).toBeNull();
@@ -97,9 +103,9 @@ describe('AdsService', () => {
 
   it('returns the live config and a rewardedRemainingToday derived from Redis for free users', async () => {
     stubConfig({ frequencyCap: 3 });
-    subscriptions.hasActiveSubscription.mockResolvedValueOnce(false);
+    subscriptions.hasEntitlement.mockResolvedValueOnce(false);
     redis.get.mockResolvedValueOnce('1');
-    const out = await service.getClientConfig('user-1');
+    const out = await service.getClientConfig('user-1', 'wassce' as never);
     expect(out.adsEnabled).toBe(true);
     expect(out.admobAppId).toBe('app');
     expect(out.rewardedRemainingToday).toBe(2); // 3 cap - 1 used
@@ -107,9 +113,9 @@ describe('AdsService', () => {
 
   it('treats a non-numeric Redis value as 0 used', async () => {
     stubConfig({ frequencyCap: 3 });
-    subscriptions.hasActiveSubscription.mockResolvedValueOnce(false);
+    subscriptions.hasEntitlement.mockResolvedValueOnce(false);
     redis.get.mockResolvedValueOnce('abc');
-    const out = await service.getClientConfig('user-1');
+    const out = await service.getClientConfig('user-1', 'wassce' as never);
     expect(out.rewardedRemainingToday).toBe(3);
   });
 
@@ -119,45 +125,45 @@ describe('AdsService', () => {
     // Default-off: no SSV implementation yet, so the endpoint must NOT
     // mint XP on the client's word alone.
     config.get.mockReturnValueOnce(false);
-    await expect(service.awardRewarded('user-1')).rejects.toBeInstanceOf(
+    await expect(service.awardRewarded('user-1', 'wassce' as never)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
-    expect(subscriptions.hasActiveSubscription).not.toHaveBeenCalled();
+    expect(subscriptions.hasEntitlement).not.toHaveBeenCalled();
     expect(gamification.awardXpAmount).not.toHaveBeenCalled();
   });
 
   it('rejects rewarded XP claims from subscribed users with Forbidden', async () => {
-    subscriptions.hasActiveSubscription.mockResolvedValueOnce(true);
-    await expect(service.awardRewarded('user-1')).rejects.toBeInstanceOf(
+    subscriptions.hasEntitlement.mockResolvedValueOnce(true);
+    await expect(service.awardRewarded('user-1', 'wassce' as never)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
     expect(gamification.awardXpAmount).not.toHaveBeenCalled();
   });
 
   it('rejects with NotFound when ads are globally disabled', async () => {
-    subscriptions.hasActiveSubscription.mockResolvedValueOnce(false);
+    subscriptions.hasEntitlement.mockResolvedValueOnce(false);
     stubConfig({ adsEnabled: false });
-    await expect(service.awardRewarded('user-1')).rejects.toBeInstanceOf(
+    await expect(service.awardRewarded('user-1', 'wassce' as never)).rejects.toBeInstanceOf(
       NotFoundException,
     );
   });
 
   it('rejects with Forbidden once the user crosses the daily cap', async () => {
-    subscriptions.hasActiveSubscription.mockResolvedValueOnce(false);
+    subscriptions.hasEntitlement.mockResolvedValueOnce(false);
     stubConfig({ frequencyCap: 2 });
     redis.incr.mockResolvedValueOnce(3); // used > cap
-    await expect(service.awardRewarded('user-1')).rejects.toBeInstanceOf(
+    await expect(service.awardRewarded('user-1', 'wassce' as never)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
     expect(gamification.awardXpAmount).not.toHaveBeenCalled();
   });
 
   it('awards via GamificationService and returns the remaining quota', async () => {
-    subscriptions.hasActiveSubscription.mockResolvedValueOnce(false);
+    subscriptions.hasEntitlement.mockResolvedValueOnce(false);
     stubConfig({ rewardedXpAmount: 25, frequencyCap: 5 });
     redis.incr.mockResolvedValueOnce(1);
     gamification.awardXpAmount.mockResolvedValueOnce({ xpAmount: 25 });
-    const out = await service.awardRewarded('user-1');
+    const out = await service.awardRewarded('user-1', 'wassce' as never);
     expect(gamification.awardXpAmount).toHaveBeenCalledWith(
       'user-1',
       25,

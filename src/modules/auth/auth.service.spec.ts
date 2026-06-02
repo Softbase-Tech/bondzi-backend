@@ -73,7 +73,7 @@ describe('AuthService', () => {
     createQueryBuilder: jest.Mock;
     manager: { query: jest.Mock };
   };
-  let subsRepo: { findOne: jest.Mock };
+  let subsRepo: { findOne: jest.Mock; createQueryBuilder: jest.Mock };
   let referralsRepo: { insert: jest.Mock };
   let tokens: {
     issuePair: jest.Mock;
@@ -87,6 +87,7 @@ describe('AuthService', () => {
   let redis: { incr: jest.Mock; del: jest.Mock };
   let referrals: { issueSignupRewards: jest.Mock };
   let notifications: { send: jest.Mock };
+  let mail: { send: jest.Mock };
 
   beforeEach(async () => {
     usersRepo = {
@@ -100,7 +101,7 @@ describe('AuthService', () => {
       // referral-fraud test below overrides this to assert short-circuit.
       manager: { query: jest.fn().mockResolvedValue([]) },
     };
-    subsRepo = { findOne: jest.fn() };
+    subsRepo = { findOne: jest.fn(), createQueryBuilder: jest.fn() };
     referralsRepo = { insert: jest.fn() };
     tokens = {
       issuePair: jest.fn(async () => ({
@@ -119,7 +120,9 @@ describe('AuthService', () => {
     redis = { incr: jest.fn(async () => 1), del: jest.fn() };
     referrals = { issueSignupRewards: jest.fn() };
     notifications = { send: jest.fn(async () => undefined) };
+    mail = { send: jest.fn(async () => undefined) };
 
+    const { MailService } = await import('../mail/mail.service');
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -132,6 +135,7 @@ describe('AuthService', () => {
         { provide: RedisService, useValue: redis },
         { provide: ReferralsService, useValue: referrals },
         { provide: NotificationsService, useValue: notifications },
+        { provide: MailService, useValue: mail },
       ],
     }).compile();
 
@@ -362,11 +366,53 @@ describe('AuthService', () => {
       );
     });
 
-    it('getMe attaches the most-recent subscription when present', async () => {
+    it('getMe attaches the current-level subscription when present', async () => {
       usersRepo.findOne.mockResolvedValueOnce(makeUser());
-      subsRepo.findOne.mockResolvedValueOnce({ id: 'sub-1' } as Subscription);
+      // First attempt: per-level query-builder lookup. Returns the
+      // active WASSCE row.
+      const qb = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        getOne: jest
+          .fn()
+          .mockResolvedValueOnce({ id: 'sub-1' } as Subscription),
+      };
+      subsRepo.createQueryBuilder.mockReturnValueOnce(qb);
       const out = await service.getMe('user-1');
       expect(out.subscription?.id).toBe('sub-1');
+    });
+
+    it('getMe falls back to the latest level-scoped row when no current-level grant exists', async () => {
+      usersRepo.findOne.mockResolvedValueOnce(makeUser());
+      // Active-grant lookup returns null (no active grant on user's level).
+      const activeQb = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValueOnce(null),
+      };
+      // Fallback lookup returns the latest level-scoped row.
+      const fallbackQb = {
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest
+          .fn()
+          .mockResolvedValueOnce({ id: 'sub-old' } as Subscription),
+      };
+      subsRepo.createQueryBuilder
+        .mockReturnValueOnce(activeQb)
+        .mockReturnValueOnce(fallbackQb);
+      const out = await service.getMe('user-1');
+      expect(out.subscription?.id).toBe('sub-old');
     });
 
     it('checkReferralCode reports valid when the code owner exists', async () => {

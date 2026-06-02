@@ -20,6 +20,16 @@ export const CacheKeys = {
   pendingExplanation: (userId: string, questionId: string) =>
     `pending_explanation:${userId}:${questionId}`,
   subscriptionStatus: (userId: string) => `subscription_status:${userId}`,
+  /**
+   * Per-(user, level) entitlement cache. Stores the resolved `{ account,
+   * expiresAt, subscriptionId }` for the user on a given exam level. Plus
+   * is per-level (lifetime), Pro is per-level (recurring) — so a single
+   * userId can have three different entitlement values, one per level.
+   * Invalidated on payment success / cancel / refund via
+   * SubscriptionsService.invalidateEntitlementCache(userId).
+   */
+  entitlement: (userId: string, level: string) =>
+    `entitlement:${userId}:${level}`,
   leaderboardWeekly: (week: string) => `leaderboard:weekly:${week}`,
   userStats: (userId: string) => `user_stats:${userId}`,
   srsDueCount: (userId: string) => `srs_due_count:${userId}`,

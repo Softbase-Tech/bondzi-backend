@@ -90,13 +90,20 @@ describe('WebhookHandlerService', () => {
     };
     financialAudit = { record: jest.fn().mockResolvedValue(undefined) };
 
+    const usersRepo = { findOne: jest.fn().mockResolvedValue(null) };
+    const mail = { send: jest.fn().mockResolvedValue(undefined) };
+    const { User } = await import('../../users/entities/user.entity');
+    const { MailService } = await import('../../mail/mail.service');
+
     const moduleRef = await Test.createTestingModule({
       providers: [
         WebhookHandlerService,
         { provide: getRepositoryToken(PaymentEvent), useValue: eventsRepo },
+        { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: SubscriptionsService, useValue: subs },
         { provide: PlansService, useValue: plans },
         { provide: FinancialAuditService, useValue: financialAudit },
+        { provide: MailService, useValue: mail },
       ],
     }).compile();
     service = moduleRef.get(WebhookHandlerService);

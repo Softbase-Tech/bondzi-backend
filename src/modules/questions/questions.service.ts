@@ -266,13 +266,16 @@ export class QuestionsService {
 
     // Spec §3.1: adaptive results are always scoped by the caller's exam_type
     // from the JWT. Fetch once and apply to every step's WHERE clause.
+    // NOVDEC users share the WASSCE question pool — remap so adaptive
+    // pulls from the same questions a WASSCE student would see.
     const user = await this.dataSource
       .getRepository('users')
       .createQueryBuilder('u')
       .select('u.exam_type', 'examType')
       .where('u.id = :uid', { uid: userId })
       .getRawOne<{ examType: string }>();
-    const examType = user?.examType;
+    const examType =
+      user?.examType === 'novdec' ? 'wassce' : (user?.examType ?? undefined);
 
     const recentIds = await this.dataSource.query<
       Array<{ question_id: string }>

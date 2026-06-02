@@ -80,6 +80,7 @@ export class AdminService {
       referralDaily14d,
       activeUsersBece,
       activeUsersWassce,
+      activeUsersNovdec,
       questionsBece,
       questionsWassce,
       questionsBeceExplained,
@@ -90,6 +91,7 @@ export class AdminService {
       pmTestLastGen,
       winnersPendingBece,
       winnersPendingWassce,
+      winnersPendingNovdec,
     ] = await Promise.all([
       this.usersRepo.count({ where: { isActive: true } }),
       this.subsRepo.count({ where: { status: SubscriptionStatus.ACTIVE } }),
@@ -153,6 +155,9 @@ export class AdminService {
       this.usersRepo.count({
         where: { isActive: true, examType: ExamType.WASSCE },
       }),
+      this.usersRepo.count({
+        where: { isActive: true, examType: ExamType.NOVDEC },
+      }),
       this.questionsRepo.count({
         where: { examType: ExamType.BECE, status: QuestionStatus.ACTIVE },
       }),
@@ -186,6 +191,7 @@ export class AdminService {
         .getRawOne<{ last: Date | null }>(),
       this.lastWeekNeedsWinners(ExamType.BECE, weekStart),
       this.lastWeekNeedsWinners(ExamType.WASSCE, weekStart),
+      this.lastWeekNeedsWinners(ExamType.NOVDEC, weekStart),
     ]);
 
     const referralTotals = referralQualifications ?? {
@@ -228,6 +234,11 @@ export class AdminService {
 
       activeUsersBece,
       activeUsersWassce,
+      // NOVDEC users are a distinct level for billing / leaderboards even
+      // though they share the WASSCE question pool. We don't surface a
+      // separate `questionsNovdec` tile because the catalogue numbers
+      // would just duplicate `questionsWassce`.
+      activeUsersNovdec,
       questionsBece,
       questionsWassce,
       questionsBeceExplained,
@@ -242,8 +253,9 @@ export class AdminService {
 
       winnersPendingWeeklyBece: winnersPendingBece,
       winnersPendingWeeklyWassce: winnersPendingWassce,
+      winnersPendingWeeklyNovdec: winnersPendingNovdec,
       winnersPeriodEndedAt:
-        winnersPendingBece || winnersPendingWassce
+        winnersPendingBece || winnersPendingWassce || winnersPendingNovdec
           ? weekStart.toISOString()
           : null,
     };

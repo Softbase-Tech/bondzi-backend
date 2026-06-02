@@ -5,6 +5,8 @@ import { User } from '../users/entities/user.entity';
 import { XpRateConfig } from '../xp-economy/entities/xp-rate-config.entity';
 import { XpTransaction } from '../xp-economy/entities/xp-transaction.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { MailService } from '../mail/mail.service';
+import { MailEvent } from '../mail/mail.types';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import {
@@ -65,6 +67,7 @@ export class GamificationService {
     private readonly notifications: NotificationsService,
     private readonly dataSource: DataSource,
     private readonly redis: RedisService,
+    private readonly mail: MailService,
   ) {}
 
   /**
@@ -250,6 +253,19 @@ export class GamificationService {
             `level-up notification failed: ${(err as Error).message}`,
           ),
         );
+
+      // Email companion (best-effort; mail.send is non-throwing). Skipped
+      // for users with no email on file (phone-only signups). The push
+      // above is the primary channel — the email is the "I missed the
+      // notification" backstop a few hours later.
+      const userRow = await this.usersRepo.findOne({ where: { id: userId } });
+      if (userRow?.email) {
+        await this.mail.send(MailEvent.LEVEL_UP, userRow.email, {
+          recipientName: userRow.fullName ?? undefined,
+          newLevel: txResult.newLevel,
+          xpEarned: amount,
+        });
+      }
     }
 
     return {

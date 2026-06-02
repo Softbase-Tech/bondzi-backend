@@ -27,8 +27,23 @@ export class SubscriptionsController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Get('me')
+  @ApiOperation({
+    summary:
+      "Returns the user's subscription on their current level (from JWT). Pass the user's examType so cross-level holdings don't leak — a Plus on WASSCE shouldn't surface as the 'current' sub when the user is on NOVDEC.",
+  })
   me(@CurrentUser() user: AuthenticatedUser) {
-    return this.subs.getMine(user.id);
+    return this.subs.getMine(user.id, user.examType ?? null);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Get('entitlements')
+  @ApiOperation({
+    summary:
+      'Resolved entitlement on each level (BECE / WASSCE / NOVDEC). Mobile uses this to paint per-level "Current plan" state on the plans screen.',
+  })
+  entitlements(@CurrentUser() user: AuthenticatedUser) {
+    return this.subs.entitlementsForAllLevels(user.id);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -42,7 +57,14 @@ export class SubscriptionsController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: InitiateSubscriptionDto,
   ) {
-    return this.subs.initiate(user.id, dto.planId, dto.interval);
+    // `interval` is undefined for one-time (Plus) plans. The service
+    // validates the combination against the plan's `payment_kind` and
+    // returns 400 if a Pro plan was selected without an interval or a
+    // Plus plan was selected with one. `promoCode` is optional; the
+    // service yields 400 with a precise reason if supplied but invalid.
+    return this.subs.initiate(user.id, dto.planId, dto.interval ?? null, {
+      promoCode: dto.promoCode,
+    });
   }
 
   @UseGuards(JwtAuthGuard)
@@ -62,7 +84,11 @@ export class SubscriptionsController {
   @ApiBearerAuth()
   @Post('cancel')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Cancels the user's active subscription on their CURRENT level (from JWT). A Plus on WASSCE is not affected when a NOVDEC Pro is cancelled.",
+  })
   cancel(@CurrentUser() user: AuthenticatedUser) {
-    return this.subs.cancel(user.id);
+    return this.subs.cancel(user.id, user.examType ?? null);
   }
 }

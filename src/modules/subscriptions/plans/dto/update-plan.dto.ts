@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsString,
   Length,
+  Max,
   Min,
 } from 'class-validator';
 
@@ -38,17 +39,35 @@ export class UpdatePlanDto {
   @Min(0.01)
   monthlyPrice?: number;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description:
+      'Recurring plans only. Defaults to 0 on one-time plans, where it must not be set.',
+  })
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0.01)
+  @Min(0)
   sixMonthPrice?: number;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description:
+      'Recurring plans only. Defaults to 0 on one-time plans, where it must not be set.',
+  })
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0.01)
+  @Min(0)
   annualPrice?: number;
+
+  @ApiPropertyOptional({
+    minimum: 0,
+    maximum: 100,
+    description:
+      'VAT rate baked into the displayed price (inclusive). Setting from 0 → non-zero (or back) is safe — it only changes how the receipt PDF breaks the price down.',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  vatRatePct?: number;
 
   @ApiPropertyOptional()
   @IsOptional()

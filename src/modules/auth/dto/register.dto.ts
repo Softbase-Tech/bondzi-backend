@@ -52,11 +52,22 @@ export class RegisterDto {
   @IsEnum(ExamType)
   examType!: ExamType;
 
-  @ApiProperty({ minimum: 1, maximum: 3 })
+  /**
+   * Required for BECE / WASSCE. MUST be omitted (or null) for NOVDEC —
+   * remedial students aren't enrolled by form. The `users.form_level`
+   * column is nullable for exactly this case (see migration 1860).
+   */
+  @ApiPropertyOptional({
+    minimum: 1,
+    maximum: 3,
+    description:
+      'Required for BECE / WASSCE; omit for NOVDEC (remedial students have no form).',
+  })
+  @ValidateIf((o: RegisterDto) => o.examType !== ExamType.NOVDEC)
   @IsInt()
   @Min(1)
   @Max(3)
-  formLevel!: number;
+  formLevel?: number | null;
 
   @ApiPropertyOptional({
     description: 'PM-XXXX-XXX referral code from another user.',

@@ -92,6 +92,15 @@ describe('SubscriptionsService', () => {
       ),
     };
 
+    const mail = { send: jest.fn().mockResolvedValue(undefined) };
+    const promoCodes = {
+      quote: jest.fn().mockResolvedValue(null),
+      recordRedemption: jest.fn().mockResolvedValue(undefined),
+    };
+    const { MailService } = await import('../mail/mail.service');
+    const { PromoCodesService } = await import(
+      '../promo-codes/promo-codes.service'
+    );
     const moduleRef = await Test.createTestingModule({
       providers: [
         SubscriptionsService,
@@ -101,6 +110,8 @@ describe('SubscriptionsService', () => {
         { provide: PaymentProviderRegistry, useValue: providers },
         { provide: RedisService, useValue: redis },
         { provide: DataSource, useValue: dataSource },
+        { provide: MailService, useValue: mail },
+        { provide: PromoCodesService, useValue: promoCodes },
       ],
     }).compile();
     service = moduleRef.get(SubscriptionsService);

@@ -10,7 +10,12 @@ import { DeviceSession } from './entities/device-session.entity';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { parseExpiryMs } from '../../common/utils/expiry.util';
-import { SubscriptionStatus } from '../../common/types/enums';
+import {
+  AccountType,
+  ExamType,
+  SubscriptionStatus,
+} from '../../common/types/enums';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 export interface TokenPair {
   accessToken: string;
@@ -47,53 +52,44 @@ export class TokensService {
     private readonly sessionsRepo: Repository<DeviceSession>,
     @InjectRepository(Subscription)
     private readonly subsRepo: Repository<Subscription>,
+    private readonly subscriptions: SubscriptionsService,
     private readonly redis: RedisService,
   ) {}
 
   /**
-   * Cached subscription-status lookup for JWT stamping. Reuses the same
-   * `CacheKeys.subscriptionStatus` key that SubscriptionGuard + the
-   * explanation-gate check, so webhook / XP-redemption cache invalidation
-   * refreshes the value on the very next access-token refresh.
+   * Cached subscription-status lookup for JWT stamping. Resolves to the
+   * user's account on their CURRENT level — Plus/Pro on SHS doesn't
+   * surface as "active" in a JWT issued while they're on NOVDEC.
    *
-   * Status mirrors the `subscriptions_status_enum` values literally.
-   * Returns `'free'` when the user has no active subscription so clients
-   * can branch on a single canonical string.
+   * Status is the canonical short string that mobile branches on:
+   *   - `'free'` — no Plus/Pro on this level (or no examType set)
+   *   - `'plus'` — Plus on this level (lifetime)
+   *   - `'pro'`  — Pro on this level (recurring, currently active)
+   *   - `'expired'` — there was a row but it's lapsed (UI shows "renew")
+   *
+   * Marked as a UI hint only — see AuthenticatedUser.subscriptionStatus
+   * for the authz disclaimer.
    */
-  private async currentSubscriptionStatus(userId: string): Promise<string> {
-    const cacheKey = CacheKeys.subscriptionStatus(userId);
-    const cached = await this.redis.getJson<{
-      status: SubscriptionStatus;
-      expiresAt: string | null;
-    }>(cacheKey);
-    if (cached) return this.resolveStatus(cached.status, cached.expiresAt);
-    const sub = await this.subsRepo.findOne({
-      where: { userId },
-      order: { createdAt: 'DESC' },
-    });
-    if (!sub) return 'free';
-    const expiresAtIso = sub.expiresAt ? sub.expiresAt.toISOString() : null;
-    // Same TTL as SubscriptionGuard — they share the cache key. Lower
-    // TTL = fresher reads, more DB hits. 60s default is the staleness
-    // ceiling after a cancel/refund.
-    const ttl =
-      this.config.get<number>('app.subscriptionStatusCacheTtlSec') ?? 60;
-    await this.redis.setJson(
-      cacheKey,
-      { status: sub.status, expiresAt: expiresAtIso },
-      ttl,
-    );
-    return this.resolveStatus(sub.status, expiresAtIso);
-  }
-
-  private resolveStatus(
-    status: SubscriptionStatus,
-    expiresAtIso: string | null,
-  ): string {
-    if (expiresAtIso && new Date(expiresAtIso).getTime() <= Date.now()) {
+  private async currentSubscriptionStatus(
+    userId: string,
+    examType: ExamType | null | undefined,
+  ): Promise<string> {
+    // Pre-onboarding (no examType): nothing to gate against — surface free.
+    if (!examType) return 'free';
+    const ent = await this.subscriptions.entitlementFor(userId, examType);
+    if (ent.account === AccountType.FREE) {
+      // Could still be a previously-expired row; surface 'expired' so the
+      // UI can prompt renewal. Cheaper signal than re-querying the latest
+      // subscription row for an explicit status.
+      return 'free';
+    }
+    if (
+      ent.expiresAt &&
+      ent.expiresAt.getTime() <= Date.now()
+    ) {
       return 'expired';
     }
-    return status;
+    return ent.account;
   }
 
   async issuePair(
@@ -115,7 +111,10 @@ export class TokensService {
     const accessExpiresAt = new Date(Date.now() + accessExpiryMs);
     const refreshExpiresAt = new Date(Date.now() + refreshExpiryMs);
 
-    const subscriptionStatus = await this.currentSubscriptionStatus(user.id);
+    const subscriptionStatus = await this.currentSubscriptionStatus(
+      user.id,
+      user.examType,
+    );
 
     const accessToken = await this.jwt.signAsync(
       {

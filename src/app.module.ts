@@ -54,6 +54,9 @@ import { ReferralsModule } from './modules/referrals/referrals.module';
 import { PmTestModule } from './modules/pm-test/pm-test.module';
 import { AdminAiGenModule } from './modules/admin-ai-gen/admin-ai-gen.module';
 import { AdsModule } from './modules/ads/ads.module';
+import { MailModule } from './modules/mail/mail.module';
+import { LegalModule } from './modules/legal/legal.module';
+import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
 
 @Module({
   imports: [
@@ -149,6 +152,9 @@ import { AdsModule } from './modules/ads/ads.module';
     PmTestModule,
     AdminAiGenModule,
     AdsModule,
+    MailModule,
+    LegalModule,
+    PromoCodesModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

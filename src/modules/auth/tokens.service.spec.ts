@@ -59,6 +59,7 @@ describe('TokensService', () => {
   };
   let config: { get: jest.Mock };
   let usersRepo: { findOne: jest.Mock };
+  let subscriptions: { entitlementFor: jest.Mock };
 
   beforeEach(async () => {
     jwt = {
@@ -100,6 +101,13 @@ describe('TokensService', () => {
       }),
     };
 
+    subscriptions = {
+      entitlementFor: jest.fn().mockResolvedValue({
+        account: 'free',
+        expiresAt: null,
+        subscriptionId: null,
+      }),
+    };
     const moduleRef = await Test.createTestingModule({
       providers: [
         TokensService,
@@ -108,6 +116,11 @@ describe('TokensService', () => {
         { provide: RedisService, useValue: redis },
         { provide: getRepositoryToken(DeviceSession), useValue: sessionsRepo },
         { provide: getRepositoryToken(Subscription), useValue: subsRepo },
+        {
+          provide: (await import('../subscriptions/subscriptions.service'))
+            .SubscriptionsService,
+          useValue: subscriptions,
+        },
       ],
     }).compile();
     service = moduleRef.get(TokensService);
@@ -156,26 +169,29 @@ describe('TokensService', () => {
       expect(deviceCacheCall![2]).toBeGreaterThan(0);
     });
 
-    it('stamps the access token with the current subscription status', async () => {
-      redis.getJson.mockResolvedValueOnce(null);
-      subsRepo.findOne.mockResolvedValueOnce({
-        status: SubscriptionStatus.ACTIVE,
+    it('stamps the access token with the current account from entitlementFor', async () => {
+      subscriptions.entitlementFor.mockResolvedValueOnce({
+        account: 'pro',
         expiresAt: new Date(Date.now() + 24 * 3600 * 1000),
+        subscriptionId: 'sub-1',
       });
       await service.issuePair(baseUser, { deviceId: 'd1' });
       const accessSignArgs = jwt.signAsync.mock.calls[0];
       expect(accessSignArgs[0]).toMatchObject({
         sub: 'user-1',
-        subscriptionStatus: SubscriptionStatus.ACTIVE,
+        // Under the per-level model, the JWT carries the user's account on
+        // their current level (`pro`, `plus`, `free`, or `expired`) rather
+        // than the legacy subscription status enum.
+        subscriptionStatus: 'pro',
         did: 'd1',
       });
     });
 
     it('downgrades subscriptionStatus to "expired" when expiresAt has passed', async () => {
-      redis.getJson.mockResolvedValueOnce(null);
-      subsRepo.findOne.mockResolvedValueOnce({
-        status: SubscriptionStatus.ACTIVE,
+      subscriptions.entitlementFor.mockResolvedValueOnce({
+        account: 'pro',
         expiresAt: new Date(Date.now() - 1000),
+        subscriptionId: 'sub-1',
       });
       await service.issuePair(baseUser, { deviceId: 'd1' });
       const accessSignArgs = jwt.signAsync.mock.calls[0];

@@ -42,10 +42,15 @@ export class SubjectsController {
     @Query('examType') examType?: string,
     @Query('includeInactive') includeInactiveRaw?: string,
   ) {
+    // NOVDEC students share the WASSCE question pool — they study the
+    // same syllabus and sit the same exam at a different sitting. There
+    // are no separate NOVDEC subject rows, so we remap to WASSCE on the
+    // way in. Without this, a NOVDEC user's home screen would show zero
+    // subjects (the exam_type filter is exact-match).
     const normalised =
       examType === ExamType.BECE
         ? ExamType.BECE
-        : examType === ExamType.WASSCE
+        : examType === ExamType.WASSCE || examType === ExamType.NOVDEC
           ? ExamType.WASSCE
           : undefined;
     // Treat "true"/"1" as opt-in; everything else (and absent) =

@@ -65,8 +65,11 @@ export class User {
   schoolLevel: SchoolLevel;
 
   // form_level: 1-3 for both JHS and SHS. Meaning depends on school_level.
-  @Column({ name: 'form_level', type: 'int' })
-  formLevel: number;
+  // NULL for `remedial` users (NOVDEC re-sit candidates) — they're not in a
+  // school cohort so form-level has no meaning. Subject-filter queries that
+  // join on form_level must coalesce / branch on school_level = 'remedial'.
+  @Column({ name: 'form_level', type: 'int', nullable: true })
+  formLevel: number | null;
 
   @Column({ name: 'school_name', type: 'text', nullable: true })
   schoolName: string | null;

@@ -11,6 +11,9 @@ import { PmTestQuestion } from '../modules/pm-test/entities/pm-test-question.ent
 import { PmTestOption } from '../modules/pm-test/entities/pm-test-option.entity';
 import { SyllabusTopic } from '../modules/subjects/entities/syllabus-topic.entity';
 import { PaymentEvent } from '../modules/payments/entities/payment-event.entity';
+import { User } from '../modules/users/entities/user.entity';
+import { ExamAnswer } from '../modules/exams/entities/exam-answer.entity';
+import { XpTransaction } from '../modules/xp-economy/entities/xp-transaction.entity';
 import { NotificationsProcessor } from './notifications.processor';
 import { AiGenerationProcessor } from './ai-generation.processor';
 import { SubscriptionRenewalJob } from './subscription-renewal.job';
@@ -19,11 +22,14 @@ import { LeaderboardWinnerJob } from './leaderboard-winner.job';
 import { ReferralQualifyJob } from './referral-qualify.job';
 import { AiBudgetAlertJob } from './ai-budget-alert.job';
 import { WebhookReconciliationJob } from './webhook-reconciliation.job';
+import { StreakAtRiskJob } from './streak-at-risk.job';
+import { WeeklyDigestJob } from './weekly-digest.job';
 import { NotificationsModule } from '../modules/notifications/notifications.module';
 import { LeaderboardModule } from '../modules/leaderboard/leaderboard.module';
 import { ReferralsModule } from '../modules/referrals/referrals.module';
 import { AiModule } from '../modules/ai/ai.module';
 import { PaymentsModule } from '../modules/payments/payments.module';
+import { SubscriptionsModule } from '../modules/subscriptions/subscriptions.module';
 import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
 
 @Module({
@@ -39,6 +45,9 @@ import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
       PmTestOption,
       SyllabusTopic,
       PaymentEvent,
+      User,
+      ExamAnswer,
+      XpTransaction,
     ]),
     BullModule.registerQueue({ name: QUEUE_AI_GENERATION }),
     NotificationsModule,
@@ -46,6 +55,10 @@ import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
     ReferralsModule,
     AiModule,
     PaymentsModule,
+    // SubscriptionRenewalJob now uses PlansService (to format
+    // expiring/expired emails with the plan name + level), so the
+    // subscriptions module must be imported here.
+    SubscriptionsModule,
   ],
   providers: [
     NotificationsProcessor,
@@ -56,6 +69,8 @@ import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
     ReferralQualifyJob,
     AiBudgetAlertJob,
     WebhookReconciliationJob,
+    StreakAtRiskJob,
+    WeeklyDigestJob,
   ],
 })
 export class JobsModule {}

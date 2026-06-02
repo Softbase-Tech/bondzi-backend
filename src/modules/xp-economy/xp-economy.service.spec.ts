@@ -9,6 +9,7 @@ import { XpTransaction } from './entities/xp-transaction.entity';
 import { XpRedemption } from './entities/xp-redemption.entity';
 import { User } from '../users/entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
+import { SubscriptionPlanEntity } from '../subscriptions/plans/entities/subscription-plan.entity';
 import { GamificationService } from '../gamification/gamification.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { SubscriptionStatus } from '../../common/types/enums';
@@ -47,6 +48,7 @@ describe('XpEconomyService', () => {
     createQueryBuilder: jest.Mock;
   };
   let txXpRepo: { insert: jest.Mock };
+  let txPlansRepo: { findOne: jest.Mock };
 
   beforeEach(async () => {
     ratesRepo = { find: jest.fn().mockResolvedValue([]) };
@@ -89,6 +91,9 @@ describe('XpEconomyService', () => {
       createQueryBuilder: jest.fn(() => noExistingActiveQb),
     };
     txXpRepo = { insert: jest.fn().mockResolvedValue(undefined) };
+    // Default: no default Pro plan for the user's level. Tests for the
+    // level-anchored happy path override this with a real plan stub.
+    txPlansRepo = { findOne: jest.fn().mockResolvedValue(null) };
 
     const em = {
       getRepository: (entity: unknown) => {
@@ -96,6 +101,7 @@ describe('XpEconomyService', () => {
         if (entity === XpRedemption) return txRedemptionsRepo;
         if (entity === Subscription) return txSubsRepo;
         if (entity === XpTransaction) return txXpRepo;
+        if (entity === SubscriptionPlanEntity) return txPlansRepo;
         return null;
       },
     } as unknown as EntityManager;
@@ -171,7 +177,11 @@ describe('XpEconomyService', () => {
         xpCost: 500,
         creditDays: 30,
       });
-      txUsersRepo.findOne.mockResolvedValueOnce({ spendableXp: 200 });
+      // findOne stubs: first the spendableXp check, then the level-anchor
+      // lookup (returns user without an examType so the anchor is null).
+      txUsersRepo.findOne
+        .mockResolvedValueOnce({ spendableXp: 200 })
+        .mockResolvedValueOnce({ id: 'user-1', examType: null });
       const out = await service.redeem('user-1', 't-30');
       // Subscription row carries the redemption pointer and XP_CREDITED status.
       const subCall = txSubsRepo.create.mock.calls[0][0] as Record<
@@ -200,6 +210,41 @@ describe('XpEconomyService', () => {
           creditDays: 30,
         }),
       );
+    });
+
+    it("anchors a fresh XP_CREDITED row to the user's level's default Pro plan", async () => {
+      // Under the per-level entitlement model, the resolver joins through
+      // plan_id to filter by level. A null planId would make the credit
+      // invisible — `entitlementFor` would return Free on every level.
+      // The redeem path resolves the user's examType and stamps the
+      // matching default Pro plan as a level anchor.
+      tiersRepo.findOne.mockResolvedValueOnce({
+        tierKey: 't-30',
+        xpCost: 500,
+        creditDays: 30,
+      });
+      // First findOne: the level-anchor lookup (select examType,
+      // countryCode). Second findOne: the post-save welcome-email
+      // recipient lookup (full user row).
+      txUsersRepo.findOne
+        .mockResolvedValueOnce({
+          id: 'user-1',
+          examType: 'wassce',
+          countryCode: 'GH',
+        })
+        .mockResolvedValueOnce({ spendableXp: 200 });
+      txPlansRepo.findOne.mockResolvedValueOnce({
+        id: 'plan-wassce-pro',
+        countryCode: 'GH',
+      });
+      await service.redeem('user-1', 't-30');
+      const subCall = txSubsRepo.create.mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(subCall.planId).toBe('plan-wassce-pro');
+      expect(subCall.countryCode).toBe('GH');
+      expect(subCall.status).toBe(SubscriptionStatus.XP_CREDITED);
     });
 
     it('with an existing ACTIVE paid sub: extends its expires_at instead of inserting a new row', async () => {
