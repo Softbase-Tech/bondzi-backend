@@ -495,6 +495,17 @@ export class PlansService {
   ): Promise<SubscriptionPlanEntity> {
     const plan = await this.getById(id);
 
+    // One-time (Plus) plans don't carry provider plan codes — they
+    // charge as single Paystack transactions. Calling sync would create
+    // three useless Paystack `plan` objects (priced at 0 because
+    // sixMonth/annual columns are 0 on Plus rows) and never use them.
+    // Reject so the admin UI / curl call gets a clear signal.
+    if (plan.paymentKind === PaymentKind.ONE_TIME) {
+      throw new BadRequestException(
+        'One-time (Plus) plans do not use provider plan codes — they charge as single transactions. Nothing to sync.',
+      );
+    }
+
     const toSync: CadencePricing[] = [];
     if (!plan.providerPlanMonthly) {
       toSync.push({
