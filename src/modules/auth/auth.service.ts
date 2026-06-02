@@ -570,9 +570,7 @@ export class AuthService {
     const resolvedFormLevel =
       examType === ExamType.NOVDEC ? null : (formLevel ?? null);
     if (examType !== ExamType.NOVDEC && resolvedFormLevel === null) {
-      throw new BadRequestException(
-        'formLevel is required for BECE / WASSCE.',
-      );
+      throw new BadRequestException('formLevel is required for BECE / WASSCE.');
     }
     user.examType = examType;
     user.schoolLevel = schoolLevelFor(examType);

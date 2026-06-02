@@ -1,11 +1,7 @@
 import axios from 'axios';
 import { DataSource } from 'typeorm';
 import { SubscriptionPlanEntity } from '../../modules/subscriptions/plans/entities/subscription-plan.entity';
-import {
-  AccountType,
-  ExamType,
-  PaymentKind,
-} from '../../common/types/enums';
+import { AccountType, ExamType, PaymentKind } from '../../common/types/enums';
 
 /**
  * Seeds the six default subscription plans — one row per

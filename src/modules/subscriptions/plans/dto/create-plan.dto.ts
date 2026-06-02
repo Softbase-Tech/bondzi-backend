@@ -100,7 +100,8 @@ export class CreatePlanDto {
   @ApiPropertyOptional({
     example: 150,
     minimum: 0,
-    description: 'Recurring plans only — six-month cadence price. Defaults to 0 for one-time plans.',
+    description:
+      'Recurring plans only — six-month cadence price. Defaults to 0 for one-time plans.',
   })
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
@@ -110,7 +111,8 @@ export class CreatePlanDto {
   @ApiPropertyOptional({
     example: 240,
     minimum: 0,
-    description: 'Recurring plans only — annual cadence price. Defaults to 0 for one-time plans.',
+    description:
+      'Recurring plans only — annual cadence price. Defaults to 0 for one-time plans.',
   })
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })

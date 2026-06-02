@@ -65,9 +65,7 @@ export class WeeklyDigestJob {
     // Active-user shortlist: users who answered ≥1 question in the
     // last 7 days. The DISTINCT join keeps the user row out of memory
     // until we know they're worth digesting.
-    const activeRows = await this.dataSource.query<
-      { user_id: string }[]
-    >(
+    const activeRows = await this.dataSource.query<{ user_id: string }[]>(
       `SELECT DISTINCT e.user_id
        FROM exam_answers a
        JOIN exams e ON e.id = a.exam_id
@@ -104,17 +102,14 @@ export class WeeklyDigestJob {
   private async computeStats(
     userId: string,
     weekAgo: Date,
-  ): Promise<
-    | {
-        email: string;
-        recipientName?: string;
-        questionsAnswered: number;
-        correctRate: number;
-        xpThisWeek: number;
-        currentStreak: number;
-      }
-    | null
-  > {
+  ): Promise<{
+    email: string;
+    recipientName?: string;
+    questionsAnswered: number;
+    correctRate: number;
+    xpThisWeek: number;
+    currentStreak: number;
+  } | null> {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user?.email) return null;
 

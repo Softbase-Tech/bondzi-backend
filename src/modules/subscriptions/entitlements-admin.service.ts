@@ -114,7 +114,10 @@ export class EntitlementsAdminService {
    * `provider='manual'` and a synthetic `provider_reference` so it can
    * never collide with a real Paystack-driven row.
    */
-  async grant(adminId: string, dto: GrantEntitlementDto): Promise<Subscription> {
+  async grant(
+    adminId: string,
+    dto: GrantEntitlementDto,
+  ): Promise<Subscription> {
     // The DTO already narrows account to PLUS | PRO at the type level,
     // but the runtime payload could still smuggle 'free' through a
     // hand-crafted request. Re-check before touching the catalogue.
@@ -126,9 +129,7 @@ export class EntitlementsAdminService {
     const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
 
     if (dto.account === AccountType.PLUS && expiresAt) {
-      throw new BadRequestException(
-        'Plus is lifetime — omit expiresAt.',
-      );
+      throw new BadRequestException('Plus is lifetime — omit expiresAt.');
     }
     if (dto.account === AccountType.PRO && !expiresAt) {
       throw new BadRequestException(
@@ -136,9 +137,7 @@ export class EntitlementsAdminService {
       );
     }
     if (expiresAt && expiresAt.getTime() <= Date.now()) {
-      throw new BadRequestException(
-        'expiresAt must be in the future.',
-      );
+      throw new BadRequestException('expiresAt must be in the future.');
     }
 
     // Find the canonical default plan for the (account, level) slot so

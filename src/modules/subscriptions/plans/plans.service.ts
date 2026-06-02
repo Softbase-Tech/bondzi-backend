@@ -287,9 +287,7 @@ export class PlansService {
         // PDF breaks the gross price into net + tax). Adjusting it does
         // NOT need a version bump because no charged amount or contract
         // term is changing — only how the existing gross is annotated.
-        ...(dto.vatRatePct !== undefined
-          ? { vatRatePct: dto.vatRatePct }
-          : {}),
+        ...(dto.vatRatePct !== undefined ? { vatRatePct: dto.vatRatePct } : {}),
       });
       return trx
         .getRepository(SubscriptionPlanEntity)

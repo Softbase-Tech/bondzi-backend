@@ -16,9 +16,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * `promo_codes(id)` with ON DELETE SET NULL so deleting an unused code
  * doesn't break historic subscription rows.
  */
-export class AddPromoCodeIdToSubscriptions_1870000000000
-  implements MigrationInterface
-{
+export class AddPromoCodeIdToSubscriptions_1870000000000 implements MigrationInterface {
   name = 'AddPromoCodeIdToSubscriptions_1870000000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

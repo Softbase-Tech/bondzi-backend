@@ -98,9 +98,8 @@ describe('SubscriptionsService', () => {
       recordRedemption: jest.fn().mockResolvedValue(undefined),
     };
     const { MailService } = await import('../mail/mail.service');
-    const { PromoCodesService } = await import(
-      '../promo-codes/promo-codes.service'
-    );
+    const { PromoCodesService } =
+      await import('../promo-codes/promo-codes.service');
     const moduleRef = await Test.createTestingModule({
       providers: [
         SubscriptionsService,

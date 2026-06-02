@@ -10,11 +10,7 @@ import { DeviceSession } from './entities/device-session.entity';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { parseExpiryMs } from '../../common/utils/expiry.util';
-import {
-  AccountType,
-  ExamType,
-  SubscriptionStatus,
-} from '../../common/types/enums';
+import { AccountType, ExamType } from '../../common/types/enums';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 export interface TokenPair {
@@ -83,10 +79,7 @@ export class TokensService {
       // subscription row for an explicit status.
       return 'free';
     }
-    if (
-      ent.expiresAt &&
-      ent.expiresAt.getTime() <= Date.now()
-    ) {
+    if (ent.expiresAt && ent.expiresAt.getTime() <= Date.now()) {
       return 'expired';
     }
     return ent.account;

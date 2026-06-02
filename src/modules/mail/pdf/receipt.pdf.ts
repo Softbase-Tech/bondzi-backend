@@ -3,8 +3,7 @@ import { computeVatInclusive, VatBreakdown } from './vat.util';
 
 // pdfkit ships only CommonJS; the import shape is awkward when consumed
 // from ESM-style TS. require() avoids a runtime/typings mismatch.
-const PDFDocument =
-  require('pdfkit') as typeof import('pdfkit');
+const PDFDocument = require('pdfkit') as typeof import('pdfkit');
 
 export interface ReceiptArgs {
   recipientName: string;
@@ -85,14 +84,9 @@ export async function generateReceiptPdf(args: ReceiptArgs): Promise<Buffer> {
   });
 }
 
-function renderHeader(
-  doc: PDFKit.PDFDocument,
-  args: ReceiptArgs,
-): void {
+function renderHeader(doc: PDFKit.PDFDocument, args: ReceiptArgs): void {
   // Navy header strip
-  doc
-    .rect(0, 0, doc.page.width, 70)
-    .fill(BRAND_NAVY);
+  doc.rect(0, 0, doc.page.width, 70).fill(BRAND_NAVY);
   doc
     .fillColor('#FFFFFF')
     .font('Helvetica-Bold')
@@ -103,16 +97,11 @@ function renderHeader(
     .fontSize(11)
     .fillColor('#FFFFFF')
     .text('Receipt', 0, 30, { width: doc.page.width - 56, align: 'right' });
-  doc
-    .fillColor(TEXT_MUTED)
-    .moveDown(2);
+  doc.fillColor(TEXT_MUTED).moveDown(2);
 
   // Issued + reference, right-aligned under the strip
   const yMeta = 90;
-  doc
-    .font('Helvetica')
-    .fontSize(10)
-    .fillColor(TEXT_MUTED);
+  doc.font('Helvetica').fontSize(10).fillColor(TEXT_MUTED);
   doc.text(`Issued: ${formatDate(args.paidAt)}`, 56, yMeta, {
     width: doc.page.width - 112,
     align: 'right',
@@ -123,10 +112,7 @@ function renderHeader(
   });
 }
 
-function renderBillingBlock(
-  doc: PDFKit.PDFDocument,
-  args: ReceiptArgs,
-): void {
+function renderBillingBlock(doc: PDFKit.PDFDocument, args: ReceiptArgs): void {
   const startY = 140;
   doc
     .font('Helvetica-Bold')
@@ -168,10 +154,7 @@ function renderLineItems(
   breakdown: VatBreakdown,
 ): void {
   const startY = 240;
-  doc
-    .font('Helvetica-Bold')
-    .fontSize(10)
-    .fillColor(TEXT_MUTED);
+  doc.font('Helvetica-Bold').fontSize(10).fillColor(TEXT_MUTED);
   doc.text('Description', 56, startY);
   doc.text('Amount', 56, startY, {
     width: doc.page.width - 112,
@@ -186,32 +169,21 @@ function renderLineItems(
 
   let y = startY + 28;
   // Net + VAT lines
-  doc
-    .font('Helvetica')
-    .fontSize(11)
-    .fillColor('#1A1A2E');
+  doc.font('Helvetica').fontSize(11).fillColor('#1A1A2E');
   doc.text(args.planName, 56, y);
-  doc.text(
-    `${args.currency} ${breakdown.net.toFixed(2)}`,
-    56,
-    y,
-    { width: doc.page.width - 112, align: 'right' },
-  );
+  doc.text(`${args.currency} ${breakdown.net.toFixed(2)}`, 56, y, {
+    width: doc.page.width - 112,
+    align: 'right',
+  });
   y += 18;
   doc
     .fillColor(TEXT_MUTED)
     .fontSize(10)
-    .text(
-      `VAT @ ${breakdown.ratePct.toFixed(2)}%`,
-      56,
-      y,
-    );
-  doc.text(
-    `${args.currency} ${breakdown.vat.toFixed(2)}`,
-    56,
-    y,
-    { width: doc.page.width - 112, align: 'right' },
-  );
+    .text(`VAT @ ${breakdown.ratePct.toFixed(2)}%`, 56, y);
+  doc.text(`${args.currency} ${breakdown.vat.toFixed(2)}`, 56, y, {
+    width: doc.page.width - 112,
+    align: 'right',
+  });
 
   y += 22;
   doc
@@ -229,12 +201,10 @@ function renderLineItems(
     .text('Total paid', 56, y);
   doc
     .fillColor(BRAND_ORANGE)
-    .text(
-      `${args.currency} ${breakdown.gross.toFixed(2)}`,
-      56,
-      y,
-      { width: doc.page.width - 112, align: 'right' },
-    );
+    .text(`${args.currency} ${breakdown.gross.toFixed(2)}`, 56, y, {
+      width: doc.page.width - 112,
+      align: 'right',
+    });
 }
 
 function renderFooter(doc: PDFKit.PDFDocument): void {
@@ -249,16 +219,8 @@ function renderFooter(doc: PDFKit.PDFDocument): void {
     .font('Helvetica')
     .fontSize(10)
     .fillColor(TEXT_MUTED)
-    .text(
-      'Thank you for your purchase.',
-      56,
-      y + 14,
-    )
-    .text(
-      'Bondzi · bondzi.app · support@bondzi.app',
-      56,
-      y + 30,
-    );
+    .text('Thank you for your purchase.', 56, y + 14)
+    .text('Bondzi · bondzi.app · support@bondzi.app', 56, y + 30);
 }
 
 function formatDate(d: Date): string {

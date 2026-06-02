@@ -12,7 +12,7 @@ import type { Request } from 'express';
 import { REQUIRES_SUBSCRIPTION_KEY } from '../decorators/subscription.decorator';
 import { Subscription } from '../../modules/subscriptions/entities/subscription.entity';
 import { SubscriptionPlanEntity } from '../../modules/subscriptions/plans/entities/subscription-plan.entity';
-import { AccountType, SubscriptionStatus } from '../types/enums';
+import { AccountType } from '../types/enums';
 import { RedisService } from '../redis/redis.service';
 import { CacheKeys } from '../utils/cache-keys.util';
 import type { AuthenticatedUser } from '../decorators/current-user.decorator';
@@ -106,7 +106,11 @@ export class SubscriptionGuard implements CanActivate {
       )
       .addOrderBy('s.expires_at', 'DESC', 'NULLS FIRST')
       .limit(1)
-      .getRawOne<{ id: string; expires_at: Date | null; account: AccountType }>();
+      .getRawOne<{
+        id: string;
+        expires_at: Date | null;
+        account: AccountType;
+      }>();
 
     if (!sub) {
       throw new ForbiddenException(

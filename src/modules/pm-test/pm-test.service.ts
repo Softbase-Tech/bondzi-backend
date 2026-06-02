@@ -130,10 +130,7 @@ export class PmTestService {
     if (formLevel != null) {
       qb.andWhere('q.form_level = :fl', { fl: formLevel });
     }
-    const rows = await qb
-      .orderBy('random()')
-      .limit(limit)
-      .getMany();
+    const rows = await qb.orderBy('random()').limit(limit).getMany();
 
     if (rows.length === 0) {
       throw new BadRequestException(

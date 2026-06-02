@@ -25,10 +25,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/types/enums';
-import {
-  CreatePromoCodeDto,
-  UpdatePromoCodeDto,
-} from './dto/promo-code.dto';
+import { CreatePromoCodeDto, UpdatePromoCodeDto } from './dto/promo-code.dto';
 import { PromoCodesService } from './promo-codes.service';
 
 /**

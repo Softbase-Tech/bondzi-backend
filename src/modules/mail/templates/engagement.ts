@@ -112,7 +112,8 @@ export function buildWeeklyDigest(
   payload: WeeklyDigestPayload,
   webUrl: string,
 ): BuiltMail {
-  const rankSymbol = payload.rankDelta > 0 ? '▲' : payload.rankDelta < 0 ? '▼' : '–';
+  const rankSymbol =
+    payload.rankDelta > 0 ? '▲' : payload.rankDelta < 0 ? '▼' : '–';
   const rankColour =
     payload.rankDelta > 0
       ? '#06D6A0'

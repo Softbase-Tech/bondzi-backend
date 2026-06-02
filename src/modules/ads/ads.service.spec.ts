@@ -125,36 +125,36 @@ describe('AdsService', () => {
     // Default-off: no SSV implementation yet, so the endpoint must NOT
     // mint XP on the client's word alone.
     config.get.mockReturnValueOnce(false);
-    await expect(service.awardRewarded('user-1', 'wassce' as never)).rejects.toBeInstanceOf(
-      ServiceUnavailableException,
-    );
+    await expect(
+      service.awardRewarded('user-1', 'wassce' as never),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(subscriptions.hasEntitlement).not.toHaveBeenCalled();
     expect(gamification.awardXpAmount).not.toHaveBeenCalled();
   });
 
   it('rejects rewarded XP claims from subscribed users with Forbidden', async () => {
     subscriptions.hasEntitlement.mockResolvedValueOnce(true);
-    await expect(service.awardRewarded('user-1', 'wassce' as never)).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
+    await expect(
+      service.awardRewarded('user-1', 'wassce' as never),
+    ).rejects.toBeInstanceOf(ForbiddenException);
     expect(gamification.awardXpAmount).not.toHaveBeenCalled();
   });
 
   it('rejects with NotFound when ads are globally disabled', async () => {
     subscriptions.hasEntitlement.mockResolvedValueOnce(false);
     stubConfig({ adsEnabled: false });
-    await expect(service.awardRewarded('user-1', 'wassce' as never)).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      service.awardRewarded('user-1', 'wassce' as never),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('rejects with Forbidden once the user crosses the daily cap', async () => {
     subscriptions.hasEntitlement.mockResolvedValueOnce(false);
     stubConfig({ frequencyCap: 2 });
     redis.incr.mockResolvedValueOnce(3); // used > cap
-    await expect(service.awardRewarded('user-1', 'wassce' as never)).rejects.toBeInstanceOf(
-      ForbiddenException,
-    );
+    await expect(
+      service.awardRewarded('user-1', 'wassce' as never),
+    ).rejects.toBeInstanceOf(ForbiddenException);
     expect(gamification.awardXpAmount).not.toHaveBeenCalled();
   });
 

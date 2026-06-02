@@ -15,10 +15,7 @@ import {
 import { PromoCode } from './entities/promo-code.entity';
 import { PromoRedemption } from './entities/promo-redemption.entity';
 import { SubscriptionPlanEntity } from '../subscriptions/plans/entities/subscription-plan.entity';
-import {
-  CreatePromoCodeDto,
-  UpdatePromoCodeDto,
-} from './dto/promo-code.dto';
+import { CreatePromoCodeDto, UpdatePromoCodeDto } from './dto/promo-code.dto';
 
 /**
  * Promo / discount code lifecycle.
@@ -67,10 +64,7 @@ export class PromoCodesService {
     return row;
   }
 
-  async create(
-    adminId: string,
-    dto: CreatePromoCodeDto,
-  ): Promise<PromoCode> {
+  async create(adminId: string, dto: CreatePromoCodeDto): Promise<PromoCode> {
     const code = dto.code.toLowerCase().trim();
     // Surface the collision as 409 with a clear message — the DB error
     // would also block it via the UNIQUE constraint, but the duplicate
@@ -88,9 +82,7 @@ export class PromoCodesService {
       dto.discountType === PromoDiscountType.PERCENT &&
       dto.discountValue > 100
     ) {
-      throw new BadRequestException(
-        'Percent discounts must be 0–100.',
-      );
+      throw new BadRequestException('Percent discounts must be 0–100.');
     }
     const row = this.codesRepo.create({
       code,
@@ -117,9 +109,7 @@ export class PromoCodesService {
         row.discountType === PromoDiscountType.PERCENT &&
         dto.discountValue > 100
       ) {
-        throw new BadRequestException(
-          'Percent discounts must be 0–100.',
-        );
+        throw new BadRequestException('Percent discounts must be 0–100.');
       }
       row.discountValue = dto.discountValue.toFixed(2);
     }

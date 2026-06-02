@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Logger,
   NotFoundException,
   Param,
   ParseUUIDPipe,
@@ -54,6 +55,8 @@ class ExplanationVoteDto {
 @UseGuards(JwtAuthGuard)
 @Controller('explanations')
 export class ExplanationsController {
+  private readonly logger = new Logger(ExplanationsController.name);
+
   constructor(
     @InjectRepository(Question)
     private readonly questions: Repository<Question>,
@@ -109,8 +112,7 @@ export class ExplanationsController {
       source: question.explanationModel ? 'ai' : 'human',
       content: question.explanation,
       contentHtml: question.explanationHtml,
-      generatedAt:
-        question.explanationGeneratedAt?.toISOString() ?? null,
+      generatedAt: question.explanationGeneratedAt?.toISOString() ?? null,
     };
   }
 
@@ -122,8 +124,8 @@ export class ExplanationsController {
   })
   async vote(
     @Param('questionId', new ParseUUIDPipe()) questionId: string,
-    @Body() _body: ExplanationVoteDto,
-    @CurrentUser() _user: AuthenticatedUser,
+    @Body() body: ExplanationVoteDto,
+    @CurrentUser() user: AuthenticatedUser,
   ): Promise<{ ok: true }> {
     // Existence check so the client gets a 404 for unknown questions
     // (the mobile shows a toast on error). The actual vote write lands
@@ -132,6 +134,14 @@ export class ExplanationsController {
       where: { id: questionId },
     });
     if (!exists) throw new NotFoundException('Question not found');
+    // Log the vote attempt so we have a paper trail until the ledger
+    // table lands. The @Body() and @CurrentUser() decorators remain so
+    // class-validator runs (the DTO enforces vote ∈ {-1, 0, 1}) and the
+    // JWT guard hydrates the user — both important for the future
+    // ledger insert.
+    this.logger.log(
+      `[explanation-vote] user=${user.id} question=${questionId} vote=${body.vote}`,
+    );
     return { ok: true };
   }
 }

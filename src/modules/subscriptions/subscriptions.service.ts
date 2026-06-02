@@ -571,8 +571,11 @@ export class SubscriptionsService {
     // Promo code (optional). The quote() helper validates scope, window,
     // exhaustion, and per-user prior redemption — returns null on any
     // failure so we surface a clean 400.
-    let promoApplied: { codeId: string; code: string; discountAmount: number } | null =
-      null;
+    let promoApplied: {
+      codeId: string;
+      code: string;
+      discountAmount: number;
+    } | null = null;
     if (opts.promoCode) {
       const quote = await this.promoCodes.quote(
         opts.promoCode,
@@ -1015,14 +1018,14 @@ export class SubscriptionsService {
       // expiry from the plan's cadence for the given interval.
       const computedExpiry = isOneTime
         ? null
-        : args.expiresAt ??
+        : (args.expiresAt ??
           new Date(
             Date.now() +
               this.plans.cadenceFor(args.plan, args.interval as BillingInterval)
                 .durationDays *
                 86400 *
                 1000,
-          );
+          ));
 
       if (existing) {
         existing.status = SubscriptionStatus.ACTIVE;

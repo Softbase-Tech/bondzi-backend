@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { User } from '../modules/users/entities/user.entity';
@@ -76,7 +76,9 @@ export class StreakAtRiskJob {
       if (!user.email || !user.lastActiveAt) continue;
       // The streak resets 24h after lastActiveAt — surface that as the
       // expiry the user is racing against.
-      const expiresAt = new Date(user.lastActiveAt.getTime() + 24 * 3600 * 1000);
+      const expiresAt = new Date(
+        user.lastActiveAt.getTime() + 24 * 3600 * 1000,
+      );
       await this.mail.send(MailEvent.STREAK_AT_RISK, user.email, {
         recipientName: user.fullName ?? undefined,
         streakDays: user.streakDays,

@@ -1,11 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
-import {
-  BuiltMail,
-  MailEvent,
-  MailPayloadByEvent,
-} from './mail.types';
+import { BuiltMail, MailEvent, MailPayloadByEvent } from './mail.types';
 import { buildWelcomeEmail } from './templates/welcome';
 import { buildEmailVerification } from './templates/email-verification';
 import { buildPasswordReset } from './templates/password-reset';
@@ -216,7 +212,9 @@ export class MailService implements OnModuleInit {
         // Exhaustiveness: if a new MailEvent literal is added without a
         // case above, TS surfaces it here.
         const exhaustive: never = event;
-        throw new Error(`No mail template registered for event: ${exhaustive as string}`);
+        throw new Error(
+          `No mail template registered for event: ${exhaustive as string}`,
+        );
       }
     }
   }
