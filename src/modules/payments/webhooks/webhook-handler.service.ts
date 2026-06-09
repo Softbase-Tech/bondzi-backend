@@ -497,61 +497,6 @@ export class WebhookHandlerService {
         paymentKind: plan.paymentKind,
         isRenewal,
       },
-    );
-
-    // Email dispatch. Best-effort — MailService never throws on
-    // failure so a Resend hiccup can't roll back an activation.
-    //
-    // Renewal cycles get the dedicated "renewed" template (different
-    // copy — emphasizes the recurring nature, links to manage page,
-    // shows the new period end). First activations / one-time
-    // charges get the original "payment success" receipt with the
-    // PDF.
-    //
-    // Sending from HERE (instead of onInvoiceUpdate) ensures the
-    // email fires reliably on every renewal cycle. The previous
-    // design sent from onInvoiceUpdate using a `nextPaymentDate >
-    // expiresAt` comparison, which broke once onChargeSuccess
-    // became the single writer of expiresAt — the comparison
-    // collapsed to false on the typical event ordering.
-    if (isRenewal) {
-      await this.dispatchRenewedEmail({ userId, planId: plan.id }, event);
-    } else {
-      await this.dispatchPaymentReceiptEmail(
-        userId,
-        plan,
-        event,
-        amountDisplay,
-      );
-    }
-  }
-
-  private async dispatchPaymentReceiptEmail(
-    userId: string,
-    plan: SubscriptionPlanEntity,
-    event: NormalizedWebhookEvent,
-    amountDisplay: number | undefined,
-  ): Promise<void> {
-    if (amountDisplay === undefined || !event.reference) return;
-    const user = await this.usersRepo.findOne({ where: { id: userId } });
-    if (!user?.email) {
-      this.logger.warn(
-        `[mail] cannot send payment receipt to user=${userId} — no email on file`,
-      );
-      return;
-    }
-    const validUntil = await this.computeValidUntil(plan, event);
-    await this.mail.send(MailEvent.PAYMENT_SUCCESS, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      account: accountLabel(plan.account),
-      level: plan.level.toUpperCase(),
-      amountDisplay,
-      currency: event.currency ?? plan.currency,
-      vatRatePct: Number(plan.vatRatePct) || 0,
-      paidAt: event.claimedAt ?? new Date(),
-      reference: event.reference,
-      validUntil,
     });
 
     // Reload to pick up the back-filled subscription_id so the
@@ -621,28 +566,6 @@ export class WebhookHandlerService {
       reference: event.reference,
       validUntil,
     });
-  }
-
-  /**
-   * For Plus (one-time) the receipt shows "Lifetime"; for Pro
-   * (recurring) it shows the human-readable renewal date pulled from
-   * the freshly-activated subscription row.
-   */
-  private async computeValidUntil(
-    plan: SubscriptionPlanEntity,
-    event: NormalizedWebhookEvent,
-  ): Promise<string> {
-    if (plan.paymentKind === PaymentKind.ONE_TIME) return 'Lifetime';
-    if (!event.reference) return 'Until next renewal';
-    const sub = await this.subs.findLatestByRef(event.reference);
-    if (sub?.expiresAt) {
-      return sub.expiresAt.toLocaleDateString('en-GB', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-      });
-    }
-    return 'Until next renewal';
   }
 
   /**
@@ -754,97 +677,6 @@ export class WebhookHandlerService {
     if (status === SubscriptionStatus.PAST_DUE) {
       await this.dispatchPaymentFailedEmail(sub, event);
     }
-  }
-
-  /**
-   * `invoice.failed` — Paystack tried to auto-debit and the bank
-   * declined. Paystack will retry on its own schedule (typically +1,
-   * +3, +5 days, ~72h total). We intentionally do NOT change the
-   * subscription status here:
-   *
-   *   - The user has already paid for the current period; expires_at
-   *     hasn't moved. Stripping access immediately would punish a user
-   *     mid-cycle for a renewal attempt that may still succeed on
-   *     retry. Their access lapses naturally at expires_at if all
-   *     retries fail.
-   *   - Paystack ultimately sends `subscription.disable` /
-   *     `subscription.not_renew` when it gives up — those handlers
-   *     own the terminal-state transition.
-   *
-   * We DO send the dunning email so the user can update their card
-   * before retries are exhausted.
-   */
-  private async onInvoiceFailed(
-    event: NormalizedWebhookEvent,
-    billingLogId: string,
-  ): Promise<void> {
-    if (!event.subscriptionId) {
-      await this.billingLog.markProcessed(
-        billingLogId,
-        BillingLogProcessStatus.SUCCESS,
-      );
-      return;
-    }
-    const sub = await this.subs.findLatestBySubscriptionId(
-      event.subscriptionId,
-    );
-    if (!sub) {
-      await this.billingLog.markProcessed(
-        billingLogId,
-        BillingLogProcessStatus.SUCCESS,
-      );
-      return;
-    }
-
-    await this.financialAudit.record({
-      eventType: FinancialEventType.STATUS_CORRECTION,
-      userId: sub.userId,
-      subscriptionId: sub.id,
-      source: 'webhook',
-      providerEventId: event.eventId,
-      metadata: {
-        provider: 'paystack',
-        providerEventId: event.eventId,
-        kind: 'invoice_failed_no_status_change',
-        keepAccessUntil: sub.expiresAt?.toISOString() ?? null,
-      },
-    });
-    await this.billingLog.markProcessed(
-      billingLogId,
-      BillingLogProcessStatus.SUCCESS,
-      { subscriptionId: sub.id, userId: sub.userId },
-    );
-    await this.dispatchPaymentFailedEmail(sub, event);
-  }
-
-  private async dispatchPaymentFailedEmail(
-    sub: {
-      userId: string;
-      planId: string | null;
-      expiresAt?: Date | null;
-    },
-    event: NormalizedWebhookEvent,
-  ): Promise<void> {
-    if (!sub.planId) return;
-    const [user, plan] = await Promise.all([
-      this.usersRepo.findOne({ where: { id: sub.userId } }),
-      this.plans.getById(sub.planId).catch(() => null),
-    ]);
-    if (!user?.email || !plan) return;
-    await this.mail.send(MailEvent.SUBSCRIPTION_PAYMENT_FAILED, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      level: plan.level.toUpperCase(),
-      attemptedAt: event.claimedAt ?? new Date(),
-      // Paystack retries on a fixed schedule (usually +1, +3, +5 days).
-      // We don't have the schedule in the webhook payload, so leave NULL —
-      // the template renders generic copy when the retry date is unknown.
-      nextAttemptAt: null,
-      // The user's prepaid access boundary — surfaced in the email
-      // so they have a concrete deadline to fix their card before
-      // losing Pro.
-      accessUntil: sub.expiresAt ?? null,
-    });
   }
 
   /**
