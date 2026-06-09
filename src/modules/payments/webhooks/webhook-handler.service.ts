@@ -566,63 +566,6 @@ export class WebhookHandlerService {
       reference: event.reference,
       validUntil,
     });
-
-    // Receipt email. Best-effort — MailService never throws on failure
-    // so a Resend hiccup can't roll back an activation. The PDF receipt
-    // is built inside the template (uses the same VAT-inclusive math
-    // the catalogue stores).
-    await this.dispatchPaymentReceiptEmail(userId, plan, event, amountDisplay);
-  }
-
-  private async dispatchPaymentReceiptEmail(
-    userId: string,
-    plan: SubscriptionPlanEntity,
-    event: NormalizedWebhookEvent,
-    amountDisplay: number | undefined,
-  ): Promise<void> {
-    if (amountDisplay === undefined || !event.reference) return;
-    const user = await this.usersRepo.findOne({ where: { id: userId } });
-    if (!user?.email) {
-      this.logger.warn(
-        `[mail] cannot send payment receipt to user=${userId} — no email on file`,
-      );
-      return;
-    }
-    const validUntil = await this.computeValidUntil(plan, event);
-    await this.mail.send(MailEvent.PAYMENT_SUCCESS, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      account: accountLabel(plan.account),
-      level: plan.level.toUpperCase(),
-      amountDisplay,
-      currency: event.currency ?? plan.currency,
-      vatRatePct: Number(plan.vatRatePct) || 0,
-      paidAt: event.claimedAt ?? new Date(),
-      reference: event.reference,
-      validUntil,
-    });
-  }
-
-  /**
-   * For Plus (one-time) the receipt shows "Lifetime"; for Pro
-   * (recurring) it shows the human-readable renewal date pulled from
-   * the freshly-activated subscription row.
-   */
-  private async computeValidUntil(
-    plan: SubscriptionPlanEntity,
-    event: NormalizedWebhookEvent,
-  ): Promise<string> {
-    if (plan.paymentKind === PaymentKind.ONE_TIME) return 'Lifetime';
-    if (!event.reference) return 'Until next renewal';
-    const sub = await this.subs.findLatestByRef(event.reference);
-    if (sub?.expiresAt) {
-      return sub.expiresAt.toLocaleDateString('en-GB', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-      });
-    }
-    return 'Until next renewal';
   }
 
   /**
@@ -734,28 +677,6 @@ export class WebhookHandlerService {
     if (status === SubscriptionStatus.PAST_DUE) {
       await this.dispatchPaymentFailedEmail(sub, event);
     }
-  }
-
-  private async dispatchPaymentFailedEmail(
-    sub: { userId: string; planId: string | null },
-    event: NormalizedWebhookEvent,
-  ): Promise<void> {
-    if (!sub.planId) return;
-    const [user, plan] = await Promise.all([
-      this.usersRepo.findOne({ where: { id: sub.userId } }),
-      this.plans.getById(sub.planId).catch(() => null),
-    ]);
-    if (!user?.email || !plan) return;
-    await this.mail.send(MailEvent.SUBSCRIPTION_PAYMENT_FAILED, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      level: plan.level.toUpperCase(),
-      attemptedAt: event.claimedAt ?? new Date(),
-      // Paystack retries on a fixed schedule (usually +1, +3, +5 days).
-      // We don't have the schedule in the webhook payload, so leave NULL —
-      // the template renders generic copy when the retry date is unknown.
-      nextAttemptAt: null,
-    });
   }
 
   /**
