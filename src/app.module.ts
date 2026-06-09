@@ -3,7 +3,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { UserAwareThrottlerGuard } from './common/guards/user-aware-throttler.guard';
 
 import appConfig from './config/app.config';
 import databaseConfig from './config/database.config';
@@ -160,7 +161,11 @@ import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     // pino-http (registered by PinoLoggerModule) replaces the old
     // LoggingInterceptor — one source of truth for per-request logs.
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // UserAwareThrottlerGuard prefers `req.user.id` over IP for the
+    // throttle key — so shared-NAT (school WiFi, mobile gateway)
+    // students don't collide into one bucket on per-user rate limits
+    // (e.g. PATCH /auth/me/exam-type, password change).
+    { provide: APP_GUARD, useClass: UserAwareThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: SubscriptionGuard },
   ],

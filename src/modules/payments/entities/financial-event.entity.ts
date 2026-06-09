@@ -77,6 +77,17 @@ export class FinancialEvent {
   @Column({ name: 'actor_id', type: 'uuid', nullable: true })
   actorId: string | null;
 
+  /**
+   * Provider-side event id when source='webhook'. Backed by a partial
+   * unique index `(event_type, provider_event_id) WHERE
+   * provider_event_id IS NOT NULL` so a single webhook delivered
+   * twice doesn't write two ACTIVATION/RENEWAL/REFUND rows for the
+   * same charge. Non-webhook events (admin, system, job) leave this
+   * NULL and the index doesn't constrain them.
+   */
+  @Column({ name: 'provider_event_id', type: 'text', nullable: true })
+  providerEventId: string | null;
+
   /** Free-form audit context (provider reference, plan id, reason, etc). */
   @Column({ type: 'jsonb', nullable: true })
   metadata: Record<string, unknown> | null;

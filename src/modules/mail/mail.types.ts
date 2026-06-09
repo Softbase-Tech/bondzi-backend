@@ -127,6 +127,13 @@ export interface SubscriptionPaymentFailedPayload extends BasePayload {
   attemptedAt: Date;
   /** When Paystack will retry (or null if final attempt). */
   nextAttemptAt: Date | null;
+  /**
+   * When the user's current prepaid access lapses if all retries
+   * fail. Surfaced in the dunning email so the user knows exactly
+   * when they'll lose Pro and has a concrete deadline to fix their
+   * card.
+   */
+  accessUntil?: Date | null;
 }
 
 export interface StreakAtRiskPayload extends BasePayload {

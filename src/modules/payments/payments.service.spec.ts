@@ -3,21 +3,26 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { PaymentsService } from './payments.service';
 import { PaymentEvent } from './entities/payment-event.entity';
 import { FinancialEvent } from './entities/financial-event.entity';
+import { PaymentAttempt } from './entities/payment-attempt.entity';
 
 /**
- * PaymentsService is now a thin read-only audit query layer (ingestion moved
- * to WebhookHandlerService). These tests pin the ordering + limit defaults
- * because the admin dashboard pages off them.
+ * PaymentsService is a thin read-only audit/query layer (ingestion lives
+ * in WebhookHandlerService + PaymentAttemptsService). These tests pin
+ * the ordering + limit defaults the admin dashboard pages off.
  */
 
 describe('PaymentsService', () => {
   let service: PaymentsService;
   let eventsRepo: { find: jest.Mock; createQueryBuilder: jest.Mock };
+  let attemptsRepo: { findAndCount: jest.Mock };
 
   beforeEach(async () => {
     eventsRepo = {
       find: jest.fn().mockResolvedValue([]),
       createQueryBuilder: jest.fn(),
+    };
+    attemptsRepo = {
+      findAndCount: jest.fn().mockResolvedValue([[], 0]),
     };
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -28,6 +33,10 @@ describe('PaymentsService', () => {
         {
           provide: getRepositoryToken(FinancialEvent),
           useValue: { createQueryBuilder: jest.fn() },
+        },
+        {
+          provide: getRepositoryToken(PaymentAttempt),
+          useValue: attemptsRepo,
         },
       ],
     }).compile();
@@ -49,28 +58,25 @@ describe('PaymentsService', () => {
     );
   });
 
-  it('listUserPayments filters by indexed user_id column (with JSONB fallback for legacy rows)', async () => {
-    // Previously the only path was `raw_payload -> ... -> userId`, which
-    // was a JSONB seq-scan over every webhook ever received. The new
-    // shape queries the denormalised `user_id` column primarily and
-    // falls back to the JSONB path only for legacy rows where the
-    // webhook handler couldn't resolve a user at insert time.
-    const qb = {
-      where: jest.fn().mockReturnThis(),
-      orWhere: jest.fn().mockReturnThis(),
-      orderBy: jest.fn().mockReturnThis(),
-      limit: jest.fn().mockReturnThis(),
-      getMany: jest.fn().mockResolvedValue([]),
-    };
-    eventsRepo.createQueryBuilder.mockReturnValueOnce(qb);
-    await service.listUserPayments('user-1');
-    expect(qb.where).toHaveBeenCalledWith('e.user_id = :userId', {
-      userId: 'user-1',
+  it('listUserPaymentAttempts is scoped to the user, joins plan, orders newest-first, paginates', async () => {
+    await service.listUserPaymentAttempts('user-1', { limit: 10, offset: 20 });
+    expect(attemptsRepo.findAndCount).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+      relations: ['plan'],
+      order: { initiatedAt: 'DESC' },
+      take: 10,
+      skip: 20,
     });
-    expect(qb.orWhere).toHaveBeenCalledWith(
-      expect.stringContaining("metadata' ->> 'userId'"),
-      { userId: 'user-1' },
+  });
+
+  it('listUserPaymentAttempts clamps limit to a sane range', async () => {
+    // 9999 should clamp down to the max (100). Negative offset → 0.
+    await service.listUserPaymentAttempts('user-1', {
+      limit: 9999,
+      offset: -5,
+    });
+    expect(attemptsRepo.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 100, skip: 0 }),
     );
-    expect(qb.orderBy).toHaveBeenCalledWith('e.created_at', 'DESC');
   });
 });

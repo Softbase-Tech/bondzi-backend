@@ -16,6 +16,14 @@ export interface RecordFinancialEventInput {
   currency?: string | null;
   source: FinancialEventSource;
   actorId?: string | null;
+  /**
+   * Provider event id for webhook-sourced records. When present, the
+   * (event_type, provider_event_id) partial unique index dedups a
+   * second delivery of the same webhook so two concurrent retries
+   * don't write two ACTIVATION / RENEWAL / REFUND rows for one charge.
+   * Non-webhook callers leave this undefined.
+   */
+  providerEventId?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -41,24 +49,40 @@ export class FinancialAuditService {
 
   async record(input: RecordFinancialEventInput): Promise<void> {
     try {
-      await this.repo.save(
-        this.repo.create({
-          eventType: input.eventType,
-          userId: input.userId ?? null,
-          subscriptionId: input.subscriptionId ?? null,
-          amountMinor: input.amountMinor ?? null,
-          currency: input.currency ?? null,
-          source: input.source,
-          actorId: input.actorId ?? null,
-          // Defence-in-depth: scrub PII before persisting even though
-          // callers should pass only ids + amounts. A future caller
-          // that hands the raw provider payload in won't leak email
-          // / phone into the long-lived ledger.
-          metadata: input.metadata
-            ? (redactPii(input.metadata) as Record<string, unknown>)
-            : null,
-        }),
-      );
+      const values: Record<string, unknown> = {
+        eventType: input.eventType,
+        userId: input.userId ?? null,
+        subscriptionId: input.subscriptionId ?? null,
+        amountMinor: input.amountMinor ?? null,
+        currency: input.currency ?? null,
+        source: input.source,
+        actorId: input.actorId ?? null,
+        providerEventId: input.providerEventId ?? null,
+        // Defence-in-depth: scrub PII before persisting even though
+        // callers should pass only ids + amounts. A future caller
+        // that hands the raw provider payload in won't leak email
+        // / phone into the long-lived ledger.
+        metadata: input.metadata
+          ? (redactPii(input.metadata) as Record<string, unknown>)
+          : null,
+      };
+      // For webhook-sourced rows, the partial unique index on
+      // (event_type, provider_event_id) is the idempotency boundary —
+      // ON CONFLICT DO NOTHING absorbs a duplicate delivery
+      // gracefully. Non-webhook callers fall through to a plain
+      // insert (no conflict target needed; their dedup is the
+      // caller's concern).
+      if (input.providerEventId) {
+        await this.repo
+          .createQueryBuilder()
+          .insert()
+          .into(FinancialEvent)
+          .values(values)
+          .orIgnore()
+          .execute();
+      } else {
+        await this.repo.save(this.repo.create(values));
+      }
     } catch (err) {
       this.logger.error(
         `[financial-audit] write failed event=${input.eventType} user=${input.userId ?? 'n/a'}: ${(err as Error).message}`,

@@ -16,6 +16,8 @@ import {
   NormalizedWebhookEventType,
   PaymentProvider,
   ProviderPlan,
+  RefundResult,
+  RefundTransactionInput,
   VerifiedTransaction,
 } from '../payment-provider.interface';
 
@@ -141,6 +143,62 @@ export class PaystackProvider implements PaymentProvider {
       code: input.subscriptionId,
       token: input.customerId ?? '',
     });
+  }
+
+  /**
+   * Issue a Paystack refund for a settled transaction. Paystack's
+   * `/refund` endpoint accepts the transaction reference and an
+   * optional amount/currency/customer_note. The response carries a
+   * status: 'pending' on first call, then transitions through
+   * 'processed' via the refund.processed webhook.
+   *
+   * Idempotency: Paystack returns 200 with the existing refund row
+   * when called twice for the same reference — so callers can safely
+   * retry. We translate any non-2xx into RefundResult{status:'failed'}
+   * rather than throwing, so the alarm path can decide whether to
+   * leave the attempt PAID (visible in the duplicate-Plus admin
+   * filter) or proceed to mark REFUNDED.
+   */
+  async refundTransaction(
+    input: RefundTransactionInput,
+  ): Promise<RefundResult> {
+    type PaystackRefundResponse = {
+      status?: boolean;
+      message?: string;
+      data?: {
+        id?: number | string;
+        status?: string;
+      };
+    };
+    try {
+      const body: Record<string, unknown> = {
+        transaction: input.reference,
+      };
+      if (input.amountMinor !== undefined) body.amount = input.amountMinor;
+      if (input.currency) body.currency = input.currency;
+      if (input.reason) body.customer_note = input.reason.slice(0, 200);
+      const response = await this.http.post<PaystackRefundResponse>(
+        '/refund',
+        body,
+      );
+      const data = response.data?.data;
+      const statusRaw = (data?.status ?? '').toString().toLowerCase();
+      // Paystack ships statuses 'pending' | 'processing' | 'processed'
+      // | 'failed'. We collapse the first two into our 'pending'.
+      let status: RefundResult['status'] = 'pending';
+      if (statusRaw === 'processed') status = 'processed';
+      else if (statusRaw === 'failed') status = 'failed';
+      return {
+        status,
+        providerRefundId: data?.id != null ? String(data.id) : null,
+        raw: response.data,
+      };
+    } catch (err) {
+      this.logger.error(
+        `[paystack] refundTransaction ref=${input.reference} failed: ${(err as Error).message}`,
+      );
+      return { status: 'failed', providerRefundId: null };
+    }
   }
 
   verifyWebhookSignature(

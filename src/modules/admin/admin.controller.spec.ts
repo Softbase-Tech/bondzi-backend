@@ -4,6 +4,9 @@ import { AdminService } from './admin.service';
 import { AdminJobsService } from './admin-jobs.service';
 import { AdminNotificationsService } from './admin-notifications.service';
 import { PaymentsService } from '../payments/payments.service';
+import { PaymentAttemptsService } from '../payments/payment-attempts.service';
+import { BillingLogService } from '../payments/billing-log.service';
+import { PaymentAttemptStatus } from '../../common/types/enums';
 
 /**
  * AdminController is a wiring layer protected by RolesGuard. Tests cover:
@@ -19,6 +22,8 @@ describe('AdminController', () => {
   let adminJobs: jest.Mocked<AdminJobsService>;
   let adminNotifications: jest.Mocked<AdminNotificationsService>;
   let payments: jest.Mocked<PaymentsService>;
+  let paymentAttempts: jest.Mocked<PaymentAttemptsService>;
+  let billingLog: jest.Mocked<BillingLogService>;
 
   beforeEach(async () => {
     admin = {
@@ -42,6 +47,12 @@ describe('AdminController', () => {
     payments = {
       listEvents: jest.fn(),
     } as unknown as jest.Mocked<PaymentsService>;
+    paymentAttempts = {
+      listAll: jest.fn(),
+    } as unknown as jest.Mocked<PaymentAttemptsService>;
+    billingLog = {
+      listAll: jest.fn(),
+    } as unknown as jest.Mocked<BillingLogService>;
 
     const moduleRef = await Test.createTestingModule({
       controllers: [AdminController],
@@ -50,6 +61,8 @@ describe('AdminController', () => {
         { provide: AdminJobsService, useValue: adminJobs },
         { provide: AdminNotificationsService, useValue: adminNotifications },
         { provide: PaymentsService, useValue: payments },
+        { provide: PaymentAttemptsService, useValue: paymentAttempts },
+        { provide: BillingLogService, useValue: billingLog },
       ],
     }).compile();
     controller = moduleRef.get(AdminController);
@@ -83,8 +96,35 @@ describe('AdminController', () => {
     expect(adminJobs.failed).toHaveBeenCalledWith('ai-generation', 50);
   });
 
-  it('listPayments hard-codes a 200 row cap for the admin dashboard', () => {
+  it('listPayments paginates payment_attempts with sane defaults', () => {
     controller.listPayments();
+    expect(paymentAttempts.listAll).toHaveBeenCalledWith({
+      limit: 50,
+      offset: 0,
+      status: undefined,
+    });
+  });
+
+  it('listPayments forwards status / limit / offset query params', () => {
+    controller.listPayments('25', '50', PaymentAttemptStatus.PAID);
+    expect(paymentAttempts.listAll).toHaveBeenCalledWith({
+      limit: 25,
+      offset: 50,
+      status: PaymentAttemptStatus.PAID,
+    });
+  });
+
+  it('listBillingLog paginates billing_log with sane defaults', () => {
+    controller.listBillingLog();
+    expect(billingLog.listAll).toHaveBeenCalledWith({
+      limit: 50,
+      offset: 0,
+      processStatus: undefined,
+    });
+  });
+
+  it('listPaymentEvents (legacy) hard-codes a 200 row cap', () => {
+    controller.listPaymentEvents();
     expect(payments.listEvents).toHaveBeenCalledWith(200);
   });
 });

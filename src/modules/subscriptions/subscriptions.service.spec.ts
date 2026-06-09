@@ -11,8 +11,15 @@ import { Subscription } from './entities/subscription.entity';
 import { User } from '../users/entities/user.entity';
 import { PlansService } from './plans/plans.service';
 import { PaymentProviderRegistry } from '../payments/providers/payment-provider.registry';
+import { PaymentAttemptsService } from '../payments/payment-attempts.service';
 import { RedisService } from '../../common/redis/redis.service';
-import { BillingInterval, SubscriptionStatus } from '../../common/types/enums';
+import {
+  AccountType,
+  BillingInterval,
+  PaymentAttemptStatus,
+  PaymentKind,
+  SubscriptionStatus,
+} from '../../common/types/enums';
 
 /**
  * SubscriptionsService specs. Focus on the call paths that gate revenue
@@ -41,6 +48,9 @@ const basePlan = {
   provider: 'paystack',
   currency: 'GHS',
   countryCode: 'GH',
+  account: AccountType.PRO,
+  level: 'wassce',
+  paymentKind: PaymentKind.RECURRING,
 };
 
 describe('SubscriptionsService', () => {
@@ -63,6 +73,16 @@ describe('SubscriptionsService', () => {
     cancelSubscription: jest.Mock;
   };
   let redis: { getJson: jest.Mock; setJson: jest.Mock; del: jest.Mock };
+  let paymentAttempts: {
+    createPending: jest.Mock;
+    findByReference: jest.Mock;
+    findById: jest.Mock;
+    markPaid: jest.Mock;
+    markFailed: jest.Mock;
+    markFailedByReference: jest.Mock;
+    markRefunded: jest.Mock;
+    linkSubscription: jest.Mock;
+  };
 
   beforeEach(async () => {
     subsRepo = {
@@ -86,16 +106,47 @@ describe('SubscriptionsService', () => {
     // DataSource.transaction(fn) runs the callback against a fake entity
     // manager whose `query` mock pretends `pg_advisory_xact_lock` succeeded
     // — that's all `applyWebhookActivation` needs from the lock layer.
+    // `getRepository(PaymentAttempt).createQueryBuilder()` powers
+    // initiate's "double-tap pending guard"; default to "no recent
+    // pending" so tests that don't care about the guard pass cleanly.
     const dataSource = {
       transaction: jest.fn(async (fn: (em: unknown) => Promise<unknown>) =>
         fn({ query: jest.fn().mockResolvedValue(undefined) }),
       ),
+      getRepository: jest.fn().mockReturnValue({
+        createQueryBuilder: jest.fn().mockReturnValue({
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          orderBy: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(null),
+        }),
+      }),
     };
 
     const mail = { send: jest.fn().mockResolvedValue(undefined) };
     const promoCodes = {
       quote: jest.fn().mockResolvedValue(null),
       recordRedemption: jest.fn().mockResolvedValue(undefined),
+    };
+    paymentAttempts = {
+      createPending: jest.fn(async (input) => ({
+        id: 'pa-1',
+        ...input,
+        status: PaymentAttemptStatus.PENDING,
+      })),
+      findByReference: jest.fn(),
+      findById: jest.fn(),
+      markPaid: jest.fn(async (id) => ({
+        id,
+        status: PaymentAttemptStatus.PAID,
+      })),
+      markFailed: jest.fn(async (id) => ({
+        id,
+        status: PaymentAttemptStatus.FAILED,
+      })),
+      markFailedByReference: jest.fn().mockResolvedValue(null),
+      markRefunded: jest.fn(),
+      linkSubscription: jest.fn().mockResolvedValue(undefined),
     };
     const { MailService } = await import('../mail/mail.service');
     const { PromoCodesService } =
@@ -111,6 +162,7 @@ describe('SubscriptionsService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: MailService, useValue: mail },
         { provide: PromoCodesService, useValue: promoCodes },
+        { provide: PaymentAttemptsService, useValue: paymentAttempts },
       ],
     }).compile();
     service = moduleRef.get(SubscriptionsService);
@@ -169,8 +221,22 @@ describe('SubscriptionsService', () => {
   // ------------------------------ initiate ------------------------------
 
   describe('initiate', () => {
+    // The dupe-check query runs FIRST inside `initiate` after the cadence
+    // resolution. Every test in this block needs a stubbed empty result
+    // — otherwise `null.getOne` throws before the test's real assertion
+    // can run.
+    function stubNoDuplicate() {
+      subsRepo.createQueryBuilder.mockReturnValueOnce({
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      });
+    }
+
     it('rejects when the user has no email (Paystack requires one)', async () => {
       plans.getActiveForCheckout.mockResolvedValueOnce(basePlan);
+      stubNoDuplicate();
       plans.cadenceFor.mockReturnValueOnce({
         providerPlanCode: 'p_monthly',
         amountMinor: 5000,
@@ -185,6 +251,7 @@ describe('SubscriptionsService', () => {
 
     it('rejects when the cadence has no provider plan code (admin needs to sync)', async () => {
       plans.getActiveForCheckout.mockResolvedValueOnce(basePlan);
+      stubNoDuplicate();
       plans.cadenceFor.mockReturnValueOnce({
         providerPlanCode: null,
         amountMinor: 5000,
@@ -196,14 +263,28 @@ describe('SubscriptionsService', () => {
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
-    it('happy path: persists a pending PAST_DUE row and returns the auth URL', async () => {
-      // Pre-payment rows MUST be PAST_DUE (NOT TRIAL). TRIAL is in the
-      // active-grant set used by SubscriptionGuard + getActiveSubscription;
-      // a TRIAL row with a future expires_at would unlock Pro for the full
-      // plan window with no payment. PAST_DUE sits outside every isActive()
-      // check, so the row stays dormant until verify() or the Paystack
-      // webhook flips it to ACTIVE.
+    it('rejects when an active subscription with the same cadence already exists', async () => {
       plans.getActiveForCheckout.mockResolvedValueOnce(basePlan);
+      subsRepo.createQueryBuilder.mockReturnValueOnce({
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest
+          .fn()
+          .mockResolvedValue({ id: 'existing-sub' } as Subscription),
+      });
+      await expect(
+        service.initiate('user-1', 'plan-1', BillingInterval.MONTHLY),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('happy path: persists a PENDING payment_attempt and returns the auth URL', async () => {
+      // Pre-payment rows live in `payment_attempts`, NOT `subscriptions`.
+      // No subscription is created until the Paystack callback confirms
+      // the charge — at which point `consumePaidAttempt` upserts the
+      // Plus/Pro row per the refactor brief.
+      plans.getActiveForCheckout.mockResolvedValueOnce(basePlan);
+      stubNoDuplicate();
       plans.cadenceFor.mockReturnValueOnce({
         providerPlanCode: 'p_monthly',
         amountMinor: 5000,
@@ -221,57 +302,85 @@ describe('SubscriptionsService', () => {
         BillingInterval.MONTHLY,
       );
       expect(out.authorizationUrl).toContain('paystack');
-      expect(subsRepo.save).toHaveBeenCalledWith(
+      expect(paymentAttempts.createPending).toHaveBeenCalledWith(
         expect.objectContaining({
           userId: 'user-1',
-          status: SubscriptionStatus.PAST_DUE,
-          providerReference: 'ref_1',
+          planId: 'plan-1',
+          billingInterval: BillingInterval.MONTHLY,
+          amountMinor: 5000,
+          amountGhs: 50,
+          provider: 'paystack',
         }),
       );
+      // No subscription row created at initiate time anymore.
+      expect(subsRepo.save).not.toHaveBeenCalled();
     });
   });
 
   // ------------------------------ verify ------------------------------
 
   describe('verify', () => {
+    // Reusable query-builder stub for `consumePaidAttempt`'s "existing
+    // sub for this (user, level, account)" lookup — defaults to null
+    // (fresh activation).
+    function stubNoExistingSub() {
+      subsRepo.createQueryBuilder.mockReturnValueOnce({
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      });
+    }
+
     it('rejects unknown references with NotFound', async () => {
-      subsRepo.findOne.mockResolvedValueOnce(null);
+      paymentAttempts.findByReference.mockResolvedValueOnce(null);
       await expect(service.verify('user-1', 'ref_x')).rejects.toBeInstanceOf(
         NotFoundException,
       );
     });
 
     it('rejects a reference owned by a different user', async () => {
-      subsRepo.findOne.mockResolvedValueOnce({
+      paymentAttempts.findByReference.mockResolvedValueOnce({
+        id: 'pa-1',
         userId: 'someone-else',
         provider: 'paystack',
+        status: PaymentAttemptStatus.PENDING,
       });
       await expect(service.verify('user-1', 'ref_x')).rejects.toBeInstanceOf(
         ConflictException,
       );
     });
 
-    it('rejects when the provider returns a non-success status', async () => {
-      subsRepo.findOne.mockResolvedValueOnce({
+    it('rejects when the provider returns a non-success status and marks the attempt FAILED', async () => {
+      paymentAttempts.findByReference.mockResolvedValueOnce({
+        id: 'pa-1',
         userId: 'user-1',
         provider: 'paystack',
-        status: SubscriptionStatus.PAST_DUE,
+        status: PaymentAttemptStatus.PENDING,
+        planId: 'plan-1',
+        amountMinor: 5000,
       });
       provider.verifyTransaction.mockResolvedValueOnce({ status: 'failed' });
       await expect(service.verify('user-1', 'ref_x')).rejects.toBeInstanceOf(
         ConflictException,
       );
+      expect(paymentAttempts.markFailed).toHaveBeenCalledWith(
+        'pa-1',
+        expect.stringContaining('failed'),
+      );
     });
 
     it('rejects when Paystack returns success but amount paid is lower than expected', async () => {
-      // amountGhs '50.00' = 5000 pesewas; tampered paid amount = 100p (1 GHS)
-      // is well outside the AMOUNT_MATCH_TOLERANCE_MINOR window.
-      subsRepo.findOne.mockResolvedValueOnce({
-        id: 'sub-1',
+      // amountMinor=5000 (50 GHS); tampered paid = 100p (1 GHS) is
+      // well outside the AMOUNT_MATCH_TOLERANCE_MINOR window.
+      paymentAttempts.findByReference.mockResolvedValueOnce({
+        id: 'pa-1',
         userId: 'user-1',
         provider: 'paystack',
-        status: SubscriptionStatus.PAST_DUE,
-        amountGhs: '50.00',
+        status: PaymentAttemptStatus.PENDING,
+        planId: 'plan-1',
+        amountMinor: 5000,
       });
       provider.verifyTransaction.mockResolvedValueOnce({
         status: 'success',
@@ -282,35 +391,84 @@ describe('SubscriptionsService', () => {
         ConflictException,
       );
       expect(subsRepo.save).not.toHaveBeenCalled();
+      expect(paymentAttempts.markPaid).not.toHaveBeenCalled();
     });
 
-    it('short-circuits when the subscription is already ACTIVE (no Paystack roundtrip)', async () => {
+    it('short-circuits when the attempt is already PAID and a linked subscription exists', async () => {
+      paymentAttempts.findByReference.mockResolvedValueOnce({
+        id: 'pa-1',
+        userId: 'user-1',
+        provider: 'paystack',
+        status: PaymentAttemptStatus.PAID,
+        subscriptionId: 'sub-1',
+      });
       subsRepo.findOne.mockResolvedValueOnce({
         id: 'sub-1',
         userId: 'user-1',
-        provider: 'paystack',
         status: SubscriptionStatus.ACTIVE,
-      });
+        plan: { account: AccountType.PRO, paymentKind: PaymentKind.RECURRING },
+      } as unknown as Subscription);
       const out = await service.verify('user-1', 'ref_x');
-      expect(out.status).toBe(SubscriptionStatus.ACTIVE);
       expect(provider.verifyTransaction).not.toHaveBeenCalled();
+      // The reload above resolves via toMeView, which surfaces
+      // status from the joined entity.
+      expect(out.status).toBe(SubscriptionStatus.ACTIVE);
     });
 
-    it('flips status to ACTIVE on success and invalidates the cache', async () => {
-      const sub = {
-        id: 'sub-1',
+    it('flips the attempt to PAID + upserts the subscription on success and invalidates the cache', async () => {
+      const attempt = {
+        id: 'pa-1',
         userId: 'user-1',
         provider: 'paystack',
-        status: SubscriptionStatus.PAST_DUE,
-        amountGhs: '50.00',
-      } as Subscription;
-      subsRepo.findOne.mockResolvedValueOnce(sub);
+        status: PaymentAttemptStatus.PENDING,
+        planId: 'plan-1',
+        billingInterval: BillingInterval.MONTHLY,
+        amountMinor: 5000,
+        amountGhs: 50,
+        providerReference: 'ref_x',
+        promoCodeId: null,
+        discountAmount: null,
+        currency: 'GHS',
+        metadata: null,
+      };
+      paymentAttempts.findByReference.mockResolvedValueOnce(attempt);
       provider.verifyTransaction.mockResolvedValueOnce({
         status: 'success',
         amountMinor: 5000,
         customerId: 'cus_1',
       });
+      // After markPaid, consumePaidAttempt calls findById to read the
+      // freshly-stamped row.
+      paymentAttempts.findById.mockResolvedValueOnce({
+        ...attempt,
+        status: PaymentAttemptStatus.PAID,
+      });
+      plans.getActiveForCheckout.mockResolvedValueOnce(basePlan);
+      plans.cadenceFor.mockReturnValueOnce({
+        providerPlanCode: 'p_monthly',
+        amountMinor: 5000,
+        amountDisplay: 50,
+        durationDays: 30,
+      });
+      stubNoExistingSub();
+      subsRepo.save.mockResolvedValueOnce({
+        id: 'sub-new',
+        userId: 'user-1',
+        status: SubscriptionStatus.ACTIVE,
+      } as Subscription);
+      subsRepo.findOne.mockResolvedValueOnce({
+        id: 'sub-new',
+        userId: 'user-1',
+        status: SubscriptionStatus.ACTIVE,
+        plan: { account: AccountType.PRO, paymentKind: PaymentKind.RECURRING },
+      } as unknown as Subscription);
+
       const out = await service.verify('user-1', 'ref_x');
+      expect(paymentAttempts.markPaid).toHaveBeenCalledWith(
+        'pa-1',
+        expect.objectContaining({ providerCustomerId: 'cus_1' }),
+      );
+      expect(subsRepo.save).toHaveBeenCalled();
       expect(out.status).toBe(SubscriptionStatus.ACTIVE);
       expect(redis.del).toHaveBeenCalled();
     });
@@ -360,12 +518,24 @@ describe('SubscriptionsService', () => {
      * "live" statuses (ACTIVE / TRIAL / XP_CREDITED) — the previous
      * shape only matched ACTIVE and 404'd for trial/xp_credited users.
      */
-    function stubLiveSubQb(sub: Subscription | null) {
+    // `cancel` joins SubscriptionPlan to read `payment_kind` so it can
+    // refuse to cancel Plus (one-time lifetime plans). The query
+    // returns rows via `getRawAndEntities` so the joined column is
+    // accessible — match that shape here.
+    function stubLiveSubQb(
+      sub: Subscription | null,
+      paymentKind: 'recurring' | 'one_time' = 'recurring',
+    ) {
       subsRepo.createQueryBuilder.mockReturnValueOnce({
+        innerJoin: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
-        getOne: jest.fn().mockResolvedValue(sub),
+        getRawAndEntities: jest.fn().mockResolvedValue({
+          entities: sub ? [sub] : [],
+          raw: sub ? [{ p_payment_kind: paymentKind }] : [],
+        }),
       });
     }
 
@@ -373,6 +543,24 @@ describe('SubscriptionsService', () => {
       stubLiveSubQb(null);
       await expect(service.cancel('user-1')).rejects.toBeInstanceOf(
         NotFoundException,
+      );
+    });
+
+    it('refuses to cancel a Plus (one-time lifetime) subscription', async () => {
+      // Plus is lifetime by contract — cancellation has no recurring
+      // billing to stop and would silently drop the user to Free. The
+      // service must throw BadRequest instead, so cancel buttons can
+      // surface a polite "contact support" message.
+      const sub = {
+        id: 'plus-1',
+        userId: 'user-1',
+        provider: 'paystack',
+        providerSubscriptionId: null,
+        status: SubscriptionStatus.ACTIVE,
+      } as Subscription;
+      stubLiveSubQb(sub, 'one_time');
+      await expect(service.cancel('user-1')).rejects.toBeInstanceOf(
+        BadRequestException,
       );
     });
 

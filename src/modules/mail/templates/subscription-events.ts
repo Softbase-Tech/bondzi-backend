@@ -160,6 +160,11 @@ export function buildSubscriptionPaymentFailed(
   const retryLine = payload.nextAttemptAt
     ? `<p style="margin:0 0 14px;">We'll automatically retry on <strong>${escapeText(formatDate(payload.nextAttemptAt))}</strong>. Make sure your payment method has funds before then.</p>`
     : `<p style="margin:0 0 14px;color:${brand.orange};font-weight:700;">This was the final retry — your subscription will lapse unless you renew manually.</p>`;
+  // Surface the prepaid access boundary so the user has a concrete
+  // deadline rather than a vague "lapse unless" sentence.
+  const accessLine = payload.accessUntil
+    ? `<p style="margin:0 0 14px;color:${brand.muted};">You keep access until <strong>${escapeText(formatDate(payload.accessUntil))}</strong>. Update your card before then to avoid losing ${escapeText(payload.planName)}.</p>`
+    : '';
   const body = `
     <p style="margin:0 0 14px;font-size:20px;font-weight:700;color:${brand.navy};">
       Renewal payment failed
@@ -170,6 +175,12 @@ export function buildSubscriptionPaymentFailed(
       for <strong>${escapeText(payload.planName)}</strong>.
     </p>
     ${retryLine}
+    ${accessLine}
+    <p style="margin:0 0 14px;color:${brand.muted};font-size:13px;">
+      Stuck? Reply to this email or message us at
+      <a href="mailto:support@bondzi.com" style="color:${brand.orange};text-decoration:none;font-weight:600;">support@bondzi.com</a>
+      and a human will help you sort the card out.
+    </p>
     <p style="margin:0 0 6px;">— The Bondzi team</p>
   `;
   return {

@@ -5,13 +5,15 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { hashPassword, verifyPassword } from '../../common/utils/password.util';
 import { User } from './entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
 import { Exam } from '../exams/entities/exam.entity';
 import { ExamAnswer } from '../exams/entities/exam-answer.entity';
+import { Subject } from '../subjects/entities/subject.entity';
+import { UserSubject } from './entities/user-subject.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from '../auth/dto/change-password.dto';
 
@@ -26,7 +28,86 @@ export class UsersService {
     @InjectRepository(Exam) private readonly examsRepo: Repository<Exam>,
     @InjectRepository(ExamAnswer)
     private readonly answersRepo: Repository<ExamAnswer>,
+    @InjectRepository(Subject)
+    private readonly subjectsRepo: Repository<Subject>,
+    @InjectRepository(UserSubject)
+    private readonly userSubjectsRepo: Repository<UserSubject>,
+    private readonly dataSource: DataSource,
   ) {}
+
+  /**
+   * Returns the subject IDs the user has explicitly selected.
+   *
+   * Soft-filter contract (see `1890-UserSubjects` migration): an empty
+   * array means "no preference, show everything" — the mobile home tab
+   * falls back to rendering all subjects when the list is empty. The
+   * `addSelectedFlags` helper below applies that contract when joining
+   * the user's selection to the public catalogue.
+   */
+  async getSelectedSubjectIds(userId: string): Promise<string[]> {
+    const rows = await this.userSubjectsRepo.find({
+      where: { userId },
+      select: ['subjectId'],
+    });
+    return rows.map((r) => r.subjectId);
+  }
+
+  /**
+   * Wholesale-replaces a user's subject selection. Atomic — either every
+   * row in the new selection lands and the old ones are gone, or the
+   * transaction rolls back and the prior selection is intact.
+   *
+   * Validation:
+   *   - Caller-supplied IDs must all reference active subjects.
+   *   - Each subject's `exam_type` must match the user's `exam_type`
+   *     (no cross-level smuggling — a WASSCE student selecting a BECE
+   *     subject would just see empty content downstream and confuse
+   *     themselves; reject up-front).
+   */
+  async setSelectedSubjects(
+    userId: string,
+    subjectIds: string[],
+  ): Promise<{ subjectIds: string[] }> {
+    const user = await this.usersRepo.findOne({
+      where: { id: userId },
+      select: ['id', 'examType'],
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    // Empty selection is a legitimate state — the user is opting back
+    // into "no preference, show me everything". Short-circuit the
+    // validation walk.
+    const uniqueIds = Array.from(new Set(subjectIds));
+
+    if (uniqueIds.length > 0) {
+      const subjects = await this.subjectsRepo.find({
+        where: { id: In(uniqueIds), isActive: true },
+        select: ['id', 'examType'],
+      });
+      if (subjects.length !== uniqueIds.length) {
+        throw new BadRequestException(
+          'One or more subjects do not exist or are inactive.',
+        );
+      }
+      const mismatched = subjects.filter((s) => s.examType !== user.examType);
+      if (mismatched.length > 0) {
+        throw new BadRequestException(
+          'All selected subjects must match your current exam type.',
+        );
+      }
+    }
+
+    await this.dataSource.transaction(async (em) => {
+      const repo = em.getRepository(UserSubject);
+      await repo.delete({ userId });
+      if (uniqueIds.length > 0) {
+        await repo.insert(
+          uniqueIds.map((subjectId) => ({ userId, subjectId })),
+        );
+      }
+    });
+    return { subjectIds: uniqueIds };
+  }
 
   async getMe(userId: string) {
     const user = await this.usersRepo.findOne({ where: { id: userId } });

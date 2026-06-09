@@ -20,6 +20,8 @@ interface AccessTokenPayload {
   jti: string;
   /** Device id bound to this token at issuance time (single-device enforcement). */
   did?: string;
+  /** Standard JWT expiry (unix seconds). Populated by passport-jwt's decode. */
+  exp?: number;
 }
 
 @Injectable()
@@ -76,6 +78,10 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       examType: payload.examType,
       subscriptionStatus: payload.subscriptionStatus,
       jti: payload.jti,
+      // Pass the raw expiry through so callers that need to revoke
+      // this exact token (e.g. examType rotation) can compute the
+      // Redis TTL without re-decoding the JWT.
+      exp: payload.exp,
     };
   }
 

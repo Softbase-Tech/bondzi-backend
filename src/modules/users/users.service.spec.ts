@@ -5,8 +5,11 @@ import {
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
+import { UserSubject } from './entities/user-subject.entity';
+import { Subject } from '../subjects/entities/subject.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
 import { Exam } from '../exams/entities/exam.entity';
@@ -61,6 +64,19 @@ describe('UsersService', () => {
     progressRepo = { find: jest.fn() };
     answersRepo = { createQueryBuilder: jest.fn() };
     const examsRepo = {} as never;
+    const subjectsRepo = { find: jest.fn() };
+    const userSubjectsRepo = {
+      find: jest.fn(),
+      delete: jest.fn(),
+      insert: jest.fn(),
+    };
+    const dataSource = {
+      transaction: jest.fn(async (fn: (em: unknown) => Promise<unknown>) =>
+        fn({
+          getRepository: () => userSubjectsRepo,
+        }),
+      ),
+    };
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -73,6 +89,12 @@ describe('UsersService', () => {
         },
         { provide: getRepositoryToken(Exam), useValue: examsRepo },
         { provide: getRepositoryToken(ExamAnswer), useValue: answersRepo },
+        { provide: getRepositoryToken(Subject), useValue: subjectsRepo },
+        {
+          provide: getRepositoryToken(UserSubject),
+          useValue: userSubjectsRepo,
+        },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
     service = moduleRef.get(UsersService);
