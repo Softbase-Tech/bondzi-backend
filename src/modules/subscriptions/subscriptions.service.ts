@@ -1287,6 +1287,11 @@ export class SubscriptionsService {
           }),
         );
       }
+    } else if (sub.planId && !sub.billingInterval) {
+      // One-time (Plus): no billing interval → lifetime grant. Stamp
+      // start-of-life at NOW; expires_at stays NULL.
+      sub.startsAt = new Date();
+      sub.expiresAt = null;
     }
 
     // Back-fill subscription_id on the attempt unless we already did
