@@ -276,6 +276,14 @@ export class PlansService {
           )
           .execute();
       }
+      // For one-time (Plus) plans, the headline price lives in
+      // `monthlyPrice` (cadence siblings are 0 by catalogue invariant —
+      // see create()'s `isOneTime ? 0 : …` clamp). It updates in place
+      // here because Plus has no Paystack plan code to keep aligned —
+      // new buyers pay the new price, existing buyers already paid
+      // lifetime. For recurring (Pro) plans this code path never
+      // touches monthlyPrice (the version-bump path owns that).
+      const isOneTime = current.paymentKind === PaymentKind.ONE_TIME;
       await trx.getRepository(SubscriptionPlanEntity).update(current.id, {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
         ...(dto.description !== undefined
@@ -288,6 +296,9 @@ export class PlansService {
         // NOT need a version bump because no charged amount or contract
         // term is changing — only how the existing gross is annotated.
         ...(dto.vatRatePct !== undefined ? { vatRatePct: dto.vatRatePct } : {}),
+        ...(isOneTime && dto.monthlyPrice !== undefined
+          ? { monthlyPrice: dto.monthlyPrice }
+          : {}),
       });
       return trx
         .getRepository(SubscriptionPlanEntity)
@@ -738,6 +749,17 @@ export class PlansService {
     current: SubscriptionPlanEntity,
     dto: UpdatePlanDto,
   ): ('monthly' | 'six_month' | 'annual')[] {
+    // One-time (Plus) plans never trigger a version bump: there are no
+    // Paystack plan codes to invalidate (Plus charges as a single
+    // transaction, not a subscription), so updating the headline price
+    // doesn't change the contract for any existing buyer — they
+    // already paid lifetime. New buyers simply pay the new price.
+    // Force the route to `applyCosmetic`, which now writes
+    // `monthlyPrice` for one-time plans alongside the other cosmetic
+    // fields.
+    if (current.paymentKind === PaymentKind.ONE_TIME) {
+      return [];
+    }
     const changed: ('monthly' | 'six_month' | 'annual')[] = [];
     if (
       dto.monthlyPrice !== undefined &&

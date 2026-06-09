@@ -19,11 +19,17 @@ import {
   CurrentUser,
   AuthenticatedUser,
 } from '../../common/decorators/current-user.decorator';
-import { UserRole } from '../../common/types/enums';
+import {
+  BillingLogProcessStatus,
+  PaymentAttemptStatus,
+  UserRole,
+} from '../../common/types/enums';
 import { AdminService } from './admin.service';
 import { AdminJobsService } from './admin-jobs.service';
 import { AdminNotificationsService } from './admin-notifications.service';
 import { PaymentsService } from '../payments/payments.service';
+import { PaymentAttemptsService } from '../payments/payment-attempts.service';
+import { BillingLogService } from '../payments/billing-log.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { BroadcastNotificationDto } from './dto/broadcast-notification.dto';
 
@@ -39,6 +45,8 @@ export class AdminController {
     private readonly adminJobs: AdminJobsService,
     private readonly adminNotifications: AdminNotificationsService,
     private readonly payments: PaymentsService,
+    private readonly paymentAttempts: PaymentAttemptsService,
+    private readonly billingLog: BillingLogService,
   ) {}
 
   @Get('dashboard')
@@ -84,8 +92,62 @@ export class AdminController {
     return this.admin.aiUsageBreakdown();
   }
 
+  /**
+   * Paginated payment_attempts feed — every checkout we initiated,
+   * regardless of outcome. Replaces the legacy /admin/payments view
+   * over raw payment_events, which conflated webhook deliveries with
+   * checkout attempts and produced unreadable noise.
+   *
+   * Filter by status (pending / paid / failed / refunded / abandoned)
+   * to drill into specific operational concerns — e.g. refund triage,
+   * or "any abandoned in the last hour?".
+   */
   @Get('payments')
-  listPayments() {
+  listPayments(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('status') status?: PaymentAttemptStatus,
+    @Query('alarm') alarm?: 'duplicate_plus',
+  ) {
+    // `?alarm=duplicate_plus` surfaces every payment_attempt the
+    // system flagged for refund (user was charged for Plus on a
+    // level they already owned). The system never silently absorbs
+    // a duplicate Plus charge — it flags and the operator refunds in
+    // the Paystack dashboard.
+    return this.paymentAttempts.listAll({
+      limit: limit ? parseInt(limit, 10) : 50,
+      offset: offset ? parseInt(offset, 10) : 0,
+      status,
+      alarm: alarm === 'duplicate_plus' ? 'duplicate_plus' : undefined,
+    });
+  }
+
+  /**
+   * Append-only raw-payload sink for webhooks. The
+   * `process_status='no_matching_payment'` filter is the canonical
+   * security view — every alarmed event lives there.
+   */
+  @Get('billing-log')
+  listBillingLog(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('processStatus') processStatus?: BillingLogProcessStatus,
+  ) {
+    return this.billingLog.listAll({
+      limit: limit ? parseInt(limit, 10) : 50,
+      offset: offset ? parseInt(offset, 10) : 0,
+      processStatus,
+    });
+  }
+
+  /**
+   * Legacy raw webhook-events view. Kept under a dedicated URL for the
+   * one operational case it still serves — debugging webhook
+   * signatures and Paystack idempotency. Most operators now want
+   * /admin/payments or /admin/billing-log instead.
+   */
+  @Get('payment-events')
+  listPaymentEvents() {
     return this.payments.listEvents(200);
   }
 

@@ -1,5 +1,19 @@
-import { Controller, Get, Header, Query, Res, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  Controller,
+  DefaultValuePipe,
+  Get,
+  Header,
+  ParseIntPipe,
+  Query,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import type { Response } from 'express';
 import {
   AuthenticatedUser,
@@ -16,10 +30,19 @@ export class PaymentsController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @Get('history')
-  @ApiOperation({ summary: "Current user's payment event history." })
-  history(@CurrentUser() user: AuthenticatedUser) {
-    return this.payments.listUserPayments(user.id);
+  @Get('me')
+  @ApiOperation({
+    summary:
+      "Current user's payment history (all attempts: pending → paid → failed → refunded).",
+  })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'offset', required: false })
+  history(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('limit', new DefaultValuePipe(25), ParseIntPipe) limit: number,
+    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
+  ) {
+    return this.payments.listUserPaymentAttempts(user.id, { limit, offset });
   }
 
   /**

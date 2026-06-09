@@ -174,16 +174,85 @@ export enum BillingInterval {
   ANNUAL = 'annual',
 }
 
-// v2: added 'xp_credited' and 'refunded'. `refunded` is terminal — a Plus row
-// flipped to refunded loses the entitlement but the row is preserved for audit.
+// Subscription state machine.
+//
+//   ACTIVE      — currently entitled. Renews on its own (Pro) or is
+//                 lifetime (Plus, expires_at=null).
+//   CANCELLED   — user tapped Cancel. expires_at is preserved; the
+//                 entitlement resolver still grants access until that
+//                 date (cancellation grace). After expires_at lapses
+//                 the renewal cron flips it to EXPIRED.
+//   EXPIRED     — terminal "natural end": prepaid period ran out, or
+//                 Paystack gave up on recurring renewal retries.
+//                 Row kept for audit; no access.
+//   REFUNDED    — refund landed. Access removed immediately.
+//   XP_CREDITED — granted via XP redemption rather than payment.
+//                 Lives in the active set for resolution purposes.
+//
+// `TRIAL` and `PAST_DUE` are LEGACY — kept in the enum so older test
+// rows don't blow up TypeORM but never written by current application
+// code. The 1900-PaymentsAndBillingLog migration backfilled any
+// existing rows in those states to EXPIRED. The payments table is now
+// the source of truth for "checkout attempted, not yet paid" and the
+// `subscription.disable` webhook is what flips a Pro subscription to
+// EXPIRED when Paystack gives up on retries.
 export enum SubscriptionStatus {
   ACTIVE = 'active',
   EXPIRED = 'expired',
   CANCELLED = 'cancelled',
+  /** @deprecated never write — see header comment. */
   TRIAL = 'trial',
+  /** @deprecated never write — see header comment. */
   PAST_DUE = 'past_due',
   XP_CREDITED = 'xp_credited',
   REFUNDED = 'refunded',
+}
+
+/**
+ * Payment-attempt lifecycle. Owned by the `payment_attempts` table.
+ *
+ *   PENDING   — initiated by the backend, Paystack URL handed to the
+ *               client. We're waiting for either the mobile verify
+ *               callback or the server-to-server webhook to confirm.
+ *   PAID      — webhook (or verify) confirmed the charge. `paid_at`
+ *               is stamped. A subscription row will exist alongside.
+ *   FAILED    — Paystack explicitly told us the charge failed (card
+ *               declined, insufficient funds, etc.). Terminal.
+ *   REFUNDED  — original charge was paid then refunded out-of-band.
+ *               The linked subscription is also flipped to REFUNDED.
+ *   ABANDONED — swept from PENDING after the abandon window
+ *               (default 24h). Cosmetic distinction from "still
+ *               waiting for a webhook" so admins don't have to wonder.
+ */
+export enum PaymentAttemptStatus {
+  PENDING = 'pending',
+  PAID = 'paid',
+  FAILED = 'failed',
+  REFUNDED = 'refunded',
+  ABANDONED = 'abandoned',
+}
+
+/**
+ * Outcome of processing a single webhook event. Recorded on the
+ * `billing_log` row so the admin "Webhooks" view can surface
+ * `no_matching_payment` events as security alarms.
+ *
+ *   RECEIVED            — row written, downstream processing pending.
+ *   SUCCESS             — downstream processing applied cleanly.
+ *   NO_MATCHING_PAYMENT — webhook reference didn't match any
+ *                         payment_attempts row. Potential fraud /
+ *                         misrouted webhook. ALARM.
+ *   DUPLICATE           — same provider_event_id was processed before.
+ *                         Idempotent no-op; logged for audit.
+ *   ERROR               — processing threw. `process_error` carries
+ *                         the message. Requires manual reconciliation.
+ */
+export enum BillingLogProcessStatus {
+  RECEIVED = 'received',
+  SUCCESS = 'success',
+  NO_MATCHING_PAYMENT = 'no_matching_payment',
+  DUPLICATE = 'duplicate',
+  ERROR = 'error',
 }
 
 export enum FlagReason {

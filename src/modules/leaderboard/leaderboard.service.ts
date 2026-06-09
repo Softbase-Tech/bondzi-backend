@@ -46,20 +46,27 @@ export class LeaderboardService {
     const cached = await this.redis.getJson<LeaderboardRow[]>(cacheKey);
     if (cached) return cached;
 
+    // CRITICAL ordering: `.where()` REPLACES the existing WHERE clause
+    // in TypeORM, while `.andWhere()` appends. The previous version
+    // called `.andWhere(...)` first to set up the user-side filters
+    // (deleted_at IS NULL, is_active = true) and THEN `.where('lb.exam_type ...')` —
+    // which silently dropped the user-side filters and let banned /
+    // soft-deleted accounts ghost the public board. Start with `.where()`
+    // to seed the clause, then append every other condition with
+    // `.andWhere()`.
     const rows = await this.entriesRepo
       .createQueryBuilder('lb')
       .innerJoin('lb.user', 'u')
-      // CRITICAL: filter out soft-deleted users. Without this, ghost
-      // accounts (banned / deleted-self) keep appearing on the public
-      // board. `users.deleted_at` is a soft-delete column the entity-
-      // level repository would auto-filter on, but raw QueryBuilder
-      // ignores it — we have to add it manually here.
-      .andWhere('u.deleted_at is null')
-      .andWhere('u.is_active = true')
       .where('lb.exam_type = :et', { et: opts.examType })
       .andWhere('lb.period_type = :pt', { pt: periodType })
       .andWhere('lb.period_start = :ps', { ps: periodStart })
       .andWhere('lb.scope = :scope', { scope })
+      .andWhere('u.deleted_at is null')
+      .andWhere('u.is_active = true')
+      // Skip rows where the joined user has no display name — a NULL
+      // `full_name` would crash the mobile's render (initials() calls
+      // `.trim()` on the string). It also has no useful display value.
+      .andWhere('u.full_name is not null')
       .select('lb.user_id', 'userId')
       .addSelect('u.full_name', 'fullName')
       .addSelect('lb.weekly_xp', 'score')

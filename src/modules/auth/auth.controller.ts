@@ -11,7 +11,15 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IsEnum, IsInt, Max, Min, ValidateIf } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+  ValidateIf,
+} from 'class-validator';
 import { ExamType } from '../../common/types/enums';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -71,6 +79,20 @@ class UpdateExamTypeDto {
   @Min(1)
   @Max(3)
   formLevel?: number | null;
+
+  /**
+   * Optional body override for the X-Device-ID header. The service
+   * uses it to bind the rotated JWT pair (issued on examType change)
+   * to the calling device's session. Clients that already send the
+   * header can omit this; only here so curl/postman test flows work.
+   */
+  @IsOptional()
+  @IsString()
+  deviceId?: string;
+
+  @IsOptional()
+  @IsString()
+  deviceName?: string;
 }
 
 @ApiTags('auth')
@@ -231,11 +253,45 @@ export class AuthController {
   updateExamType(
     @CurrentUser() user: AuthenticatedUser,
     @Body() body: UpdateExamTypeDto,
+    @Req() req: Request,
   ) {
+    // Pull the deviceId off the standard header (same path used by
+    // login/register) so the rotated session is bound to the device
+    // making this call. The service rotates the JWT pair only when
+    // the examType actually changes; otherwise tokens=null and the
+    // client keeps its current tokens.
+    const deviceId = (() => {
+      try {
+        return pickDeviceId(req, body.deviceId);
+      } catch {
+        // Server-side admin tools / future flows may invoke this
+        // without a device — fall back to no-rotation so the user's
+        // examType still updates. The cache invalidation still fires
+        // server-side, so the staleness window is bounded by the
+        // JWT TTL only.
+        return null;
+      }
+    })();
     return this.auth.updateExamType(
       user.id,
       body.examType,
       body.formLevel ?? null,
+      deviceId
+        ? {
+            deviceId,
+            ip: req.ip,
+            deviceName: pickDeviceName(req, body.deviceName),
+            // The current request's JWT jti + exp let the service
+            // revoke the pre-rotation access token immediately — so
+            // any cached copy of it (in-flight retries, background
+            // sync, push handlers that woke just before the rotation)
+            // is invalidated by the JwtStrategy on its next use,
+            // closing the up-to-15-min staleness window the JWT TTL
+            // would otherwise leave open.
+            currentJti: user.jti,
+            currentExp: user.exp,
+          }
+        : null,
     );
   }
 }

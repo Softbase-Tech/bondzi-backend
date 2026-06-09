@@ -88,6 +88,7 @@ describe('AuthService', () => {
   let referrals: { issueSignupRewards: jest.Mock };
   let notifications: { send: jest.Mock };
   let mail: { send: jest.Mock };
+  let subsService: { invalidateCache: jest.Mock };
 
   beforeEach(async () => {
     usersRepo = {
@@ -123,6 +124,26 @@ describe('AuthService', () => {
     mail = { send: jest.fn(async () => undefined) };
 
     const { MailService } = await import('../mail/mail.service');
+    const { DataSource } = await import('typeorm');
+    const { SubscriptionsService } =
+      await import('../subscriptions/subscriptions.service');
+    subsService = {
+      invalidateCache: jest.fn().mockResolvedValue(undefined),
+    };
+    // The updateExamType path uses dataSource.createQueryBuilder() to
+    // wipe stale `user_subjects` rows when the level changes. Stub the
+    // chain so the spec's login / OTP paths (which don't exercise
+    // exam-type writes) don't trip on a missing DataSource. The
+    // exam-type spec block sets up its own per-test expectations on
+    // top of this default.
+    const dataSource = {
+      createQueryBuilder: jest.fn().mockReturnValue({
+        delete: jest.fn().mockReturnThis(),
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 0 }),
+      }),
+    };
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -136,6 +157,8 @@ describe('AuthService', () => {
         { provide: ReferralsService, useValue: referrals },
         { provide: NotificationsService, useValue: notifications },
         { provide: MailService, useValue: mail },
+        { provide: DataSource, useValue: dataSource },
+        { provide: SubscriptionsService, useValue: subsService },
       ],
     }).compile();
 
@@ -429,16 +452,42 @@ describe('AuthService', () => {
       });
     });
 
-    it('updateExamType derives schoolLevel from examType', async () => {
+    it('updateExamType derives schoolLevel from examType, invalidates cache, and rotates tokens', async () => {
       const user = makeUser({
         examType: ExamType.WASSCE,
         schoolLevel: SchoolLevel.SHS,
       });
       usersRepo.findOne.mockResolvedValueOnce(user);
-      const out = await service.updateExamType('user-1', ExamType.BECE, 3);
-      expect(out.examType).toBe(ExamType.BECE);
-      expect(out.schoolLevel).toBe(SchoolLevel.JHS);
+      const out = await service.updateExamType('user-1', ExamType.BECE, 3, {
+        deviceId: 'dev-1',
+        ip: '1.2.3.4',
+      });
+      expect(out.user.examType).toBe(ExamType.BECE);
+      expect(out.user.schoolLevel).toBe(SchoolLevel.JHS);
       expect(usersRepo.save).toHaveBeenCalled();
+      // Cache invalidation MUST happen so the rotated token reads
+      // against fresh per-level entitlement state.
+      expect(subsService.invalidateCache).toHaveBeenCalledWith('user-1');
+      // Token rotation closes the stale-JWT window — without it the
+      // access token's `examType` claim still points at the old
+      // level for up to the access TTL (~15 min).
+      expect(tokens.issuePair).toHaveBeenCalled();
+      expect(out.tokens).not.toBeNull();
+    });
+
+    it('updateExamType skips token rotation + cache purge when only formLevel changes', async () => {
+      const user = makeUser({
+        examType: ExamType.WASSCE,
+        schoolLevel: SchoolLevel.SHS,
+        formLevel: 1,
+      });
+      usersRepo.findOne.mockResolvedValueOnce(user);
+      const out = await service.updateExamType('user-1', ExamType.WASSCE, 2, {
+        deviceId: 'dev-1',
+      });
+      expect(out.user.formLevel).toBe(2);
+      expect(out.tokens).toBeNull();
+      expect(subsService.invalidateCache).not.toHaveBeenCalled();
     });
   });
 });

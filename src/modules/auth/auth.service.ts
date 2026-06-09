@@ -10,10 +10,11 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { hashPassword, verifyPassword } from '../../common/utils/password.util';
 import { User } from '../users/entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import {
   AuthProvider,
@@ -119,6 +120,8 @@ export class AuthService {
     private readonly referrals: ReferralsService,
     private readonly notifications: NotificationsService,
     private readonly mail: MailService,
+    private readonly dataSource: DataSource,
+    private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
   /**
@@ -552,12 +555,37 @@ export class AuthService {
     return { valid: Boolean(owner) };
   }
 
-  /** PATCH /auth/me/exam-type — schoolLevel derived from examType. */
+  /**
+   * PATCH /auth/me/exam-type — schoolLevel derived from examType.
+   *
+   * The access token bakes in the user's `examType` claim, which the
+   * SubscriptionGuard reads directly to gate per-level paywalls. A
+   * change to examType MUST invalidate the per-level entitlement
+   * cache AND rotate the token pair so the next request reflects the
+   * new level immediately. Without rotation the user lives on stale
+   * claims for up to the JWT TTL (15 min); without cache
+   * invalidation, the freshly-issued token reads back into a stale
+   * Redis entry keyed against the old level.
+   *
+   * `deviceId` is required when the call originates from a logged-in
+   * mobile session (i.e. always). It identifies which DeviceSession
+   * to rotate; without it the rotation would orphan the user's
+   * session.
+   */
   async updateExamType(
     userId: string,
     examType: ExamType,
     formLevel: number | null,
-  ): Promise<SafeUser> {
+    rotation: {
+      deviceId: string;
+      ip?: string;
+      deviceName?: string;
+      /** Pre-rotation JWT jti — revoked immediately after the new pair is issued. */
+      currentJti?: string;
+      /** Pre-rotation JWT exp (unix seconds) — sets the revocation TTL. */
+      currentExp?: number;
+    } | null,
+  ): Promise<{ user: SafeUser; tokens: TokenPair | null }> {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
     const before = {
@@ -576,10 +604,45 @@ export class AuthService {
     user.schoolLevel = schoolLevelFor(examType);
     user.formLevel = resolvedFormLevel;
     await this.usersRepo.save(user);
-    if (
-      before.examType !== examType ||
-      before.formLevel !== resolvedFormLevel
-    ) {
+    // Subject selections are scoped to the OLD exam type — a WASSCE
+    // student switching to BECE was studying Core Maths SHS, not Core
+    // Maths JHS, and those rows would now point at subjects with the
+    // wrong examType. Wipe them so the user lands on the new level
+    // with a clean "no preference, show everything" default; they can
+    // re-curate via Settings → Subjects.
+    const examTypeChanged = before.examType !== examType;
+    if (examTypeChanged) {
+      await this.dataSource
+        .createQueryBuilder()
+        .delete()
+        .from('user_subjects')
+        .where('user_id = :uid', { uid: userId })
+        .execute();
+
+      // Anti-leaderboard-farming defense: a user could otherwise grind
+      // to the top of BECE on Monday, switch to WASSCE on Tuesday and
+      // accumulate a SECOND bucket, then flip back and continue the
+      // BECE grind — the throttle limits switch frequency but does
+      // nothing about persisted leaderboard rows. Wipe the OLD
+      // exam_type's leaderboard entries for this user so they
+      // re-enter the new board at zero. The audit log entry below
+      // remains as the forensic trail.
+      await this.dataSource
+        .createQueryBuilder()
+        .delete()
+        .from('leaderboard_entries')
+        .where('user_id = :uid AND exam_type = :prev', {
+          uid: userId,
+          prev: before.examType,
+        })
+        .execute()
+        .catch((err) =>
+          this.logger.error(
+            `[exam-type] failed to wipe leaderboard_entries for user=${userId} prev=${before.examType}: ${(err as Error).message}`,
+          ),
+        );
+    }
+    if (examTypeChanged || before.formLevel !== resolvedFormLevel) {
       // Anti-fraud audit trail (spec §6.1: leaderboard farming defense).
       // Without this, a student could flip BECE ↔ WASSCE to dominate a
       // weaker board, then flip back. The controller throttle caps the
@@ -592,7 +655,73 @@ export class AuthService {
           `after=${examType}/${fmt(resolvedFormLevel)}`,
       );
     }
-    return this.toSafeUser(user);
+
+    // Entitlements are per-(user, level) in Redis. The freshly-issued
+    // token's claim will be read against this cache on the next
+    // request — purge ALL per-level entries + the legacy cross-level
+    // status key so the guard re-resolves against the live DB.
+    if (examTypeChanged) {
+      await this.subscriptionsService
+        .invalidateCache(userId)
+        .catch((err) =>
+          this.logger.error(
+            `[exam-type] cache invalidation failed for user=${userId}: ${(err as Error).message}`,
+          ),
+        );
+    }
+
+    // Token rotation on level change. The access token bakes the
+    // examType + the resolved per-level entitlement at issue time —
+    // both go stale on a level switch. Issue a fresh pair so the
+    // mobile carries the right claims from the very next request,
+    // closing the up-to-15-minute window where the old claim would
+    // still be honoured.
+    //
+    // We only rotate when the level actually changed AND we have a
+    // deviceId to bind the new session to (mobile flows always supply
+    // it via the X-Device-ID header). Tokens=null when no rotation
+    // happened so the caller can decide whether to update local
+    // storage.
+    let tokens: TokenPair | null = null;
+    if (examTypeChanged && rotation?.deviceId) {
+      tokens = await this.tokens
+        .issuePair(user, {
+          deviceId: rotation.deviceId,
+          ip: rotation.ip,
+          deviceName: rotation.deviceName,
+        })
+        .catch((err) => {
+          this.logger.error(
+            `[exam-type] token rotation failed for user=${userId}: ${(err as Error).message}`,
+          );
+          return null;
+        });
+
+      // Revoke the PRE-rotation access token so any cached copy
+      // (in-flight retry, background sync, push handler that woke
+      // just before this call) is rejected by JwtStrategy on its
+      // next use. Without this the old token's `did` claim still
+      // matches the (now re-bound) DeviceSession AND it isn't on
+      // the revoked-set — so it could carry the stale `examType`
+      // claim for up to the access TTL (~15 min), defeating the
+      // very rotation we just did.
+      //
+      // Best-effort: a Redis hiccup here doesn't roll back the
+      // exam-type change — the new tokens are still issued and
+      // bound, so the mobile gets the right claims immediately;
+      // only the narrow stale-token-replay window stays open.
+      if (tokens && rotation.currentJti && rotation.currentExp) {
+        await this.tokens
+          .revokeByAccessJti(rotation.currentJti, rotation.currentExp)
+          .catch((err) =>
+            this.logger.error(
+              `[exam-type] failed to revoke pre-rotation jti=${rotation.currentJti}: ${(err as Error).message}`,
+            ),
+          );
+      }
+    }
+
+    return { user: this.toSafeUser(user), tokens };
   }
 
   toSafeUser(user: User): SafeUser {

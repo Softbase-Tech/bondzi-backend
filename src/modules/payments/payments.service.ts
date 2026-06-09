@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PaymentEvent } from './entities/payment-event.entity';
 import { FinancialEvent } from './entities/financial-event.entity';
+import { PaymentAttempt } from './entities/payment-attempt.entity';
 import { redactPaymentPayload } from './utils/redact-payload.util';
 
 /**
@@ -16,6 +17,8 @@ export class PaymentsService {
     private readonly eventsRepo: Repository<PaymentEvent>,
     @InjectRepository(FinancialEvent)
     private readonly financialRepo: Repository<FinancialEvent>,
+    @InjectRepository(PaymentAttempt)
+    private readonly attemptsRepo: Repository<PaymentAttempt>,
   ) {}
 
   /**
@@ -61,23 +64,29 @@ export class PaymentsService {
     return qb.getMany();
   }
 
-  async listUserPayments(userId: string): Promise<PaymentEvent[]> {
-    // Previously did `raw_payload -> 'data' -> 'metadata' ->> 'userId'`
-    // — a JSONB expression scan that visited every webhook row ever
-    // received. The denormalised `user_id` column already exists on
-    // `payment_events` (and is indexed by the 1800… migration), so we
-    // query it directly. Historical rows where the webhook handler
-    // couldn't resolve a user at insert time still fall back to the
-    // JSONB path so they stay reachable.
-    return this.eventsRepo
-      .createQueryBuilder('e')
-      .where('e.user_id = :userId', { userId })
-      .orWhere(
-        `(e.user_id is null and e.raw_payload -> 'data' -> 'metadata' ->> 'userId' = :userId)`,
-        { userId },
-      )
-      .orderBy('e.created_at', 'DESC')
-      .limit(200)
-      .getMany();
+  /**
+   * User-facing payment history. Returns ALL payment_attempts for the
+   * user — pending, paid, failed, refunded, and abandoned — joined to
+   * the plan so the UI can render account/level/cadence labels without
+   * a second roundtrip.
+   *
+   * Ordered by initiated_at DESC (the natural "newest first" axis for
+   * a user looking at their checkout timeline). Capped at 100 rows;
+   * pagination is via `offset` and the optional `before` cursor.
+   */
+  async listUserPaymentAttempts(
+    userId: string,
+    opts: { limit?: number; offset?: number } = {},
+  ): Promise<{ items: PaymentAttempt[]; total: number }> {
+    const limit = Math.min(100, Math.max(1, opts.limit ?? 25));
+    const offset = Math.max(0, opts.offset ?? 0);
+    const [items, total] = await this.attemptsRepo.findAndCount({
+      where: { userId },
+      relations: ['plan'],
+      order: { initiatedAt: 'DESC' },
+      take: limit,
+      skip: offset,
+    });
+    return { items, total };
   }
 }

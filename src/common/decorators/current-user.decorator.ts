@@ -22,6 +22,13 @@ export interface AuthenticatedUser {
    */
   subscriptionStatus?: string;
   jti?: string;
+  /**
+   * Standard JWT expiry (unix seconds). Required when blacklisting
+   * the current token (e.g. examType rotation revokes the
+   * pre-rotation jti so its remaining TTL can't be replayed). Optional
+   * because not every caller cares.
+   */
+  exp?: number;
 }
 
 type RequestWithUser = Request & { user?: AuthenticatedUser };
