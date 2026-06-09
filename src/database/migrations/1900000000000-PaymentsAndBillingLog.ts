@@ -187,6 +187,10 @@ export class PaymentsAndBillingLog_1900000000000 implements MigrationInterface {
     // admin view doesn't surface them as live. Pre-launch only — in
     // production a richer migration would preserve intent.
     // -------------------------------------------------------------------------
+    // Postgres forbids using a newly-added enum literal in the same
+    // transaction as `ALTER TYPE ... ADD VALUE` (55P04). TypeORM wraps
+    // each migration in one transaction, so compare via ::text instead
+    // of casting 'inactive' back to subscriptions_status_enum.
     await queryRunner.query(`
       alter type "subscriptions_status_enum"
         add value if not exists 'inactive';
@@ -194,7 +198,7 @@ export class PaymentsAndBillingLog_1900000000000 implements MigrationInterface {
     await queryRunner.query(`
       update "subscriptions"
         set "status" = 'expired'
-        where "status" in ('past_due', 'trial', 'inactive');
+        where "status"::text in ('past_due', 'trial', 'inactive');
     `);
   }
 
