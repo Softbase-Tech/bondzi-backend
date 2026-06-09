@@ -189,10 +189,10 @@ export enum BillingInterval {
 //   XP_CREDITED — granted via XP redemption rather than payment.
 //                 Lives in the active set for resolution purposes.
 //
-// `TRIAL` and `PAST_DUE` are LEGACY — kept in the enum so older test
-// rows don't blow up TypeORM but never written by current application
-// code. The 1900-PaymentsAndBillingLog migration backfilled any
-// existing rows in those states to EXPIRED. The payments table is now
+// `TRIAL`, `PAST_DUE`, and `INACTIVE` are LEGACY — kept in the enum so
+// older test rows don't blow up TypeORM but never written by current
+// application code. The 1900-PaymentsAndBillingLog migration backfilled
+// any existing rows in those states to EXPIRED. The payments table is now
 // the source of truth for "checkout attempted, not yet paid" and the
 // `subscription.disable` webhook is what flips a Pro subscription to
 // EXPIRED when Paystack gives up on retries.
@@ -204,6 +204,8 @@ export enum SubscriptionStatus {
   TRIAL = 'trial',
   /** @deprecated never write — see header comment. */
   PAST_DUE = 'past_due',
+  /** @deprecated never write — see header comment. */
+  INACTIVE = 'inactive',
   XP_CREDITED = 'xp_credited',
   REFUNDED = 'refunded',
 }

@@ -188,6 +188,10 @@ export class PaymentsAndBillingLog_1900000000000 implements MigrationInterface {
     // production a richer migration would preserve intent.
     // -------------------------------------------------------------------------
     await queryRunner.query(`
+      alter type "subscriptions_status_enum"
+        add value if not exists 'inactive';
+    `);
+    await queryRunner.query(`
       update "subscriptions"
         set "status" = 'expired'
         where "status" in ('past_due', 'trial', 'inactive');
