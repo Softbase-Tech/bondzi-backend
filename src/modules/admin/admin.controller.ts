@@ -21,6 +21,7 @@ import {
 } from '../../common/decorators/current-user.decorator';
 import {
   BillingLogProcessStatus,
+  NotificationChannel,
   PaymentAttemptStatus,
   UserRole,
 } from '../../common/types/enums';
@@ -32,6 +33,7 @@ import { PaymentAttemptsService } from '../payments/payment-attempts.service';
 import { BillingLogService } from '../payments/billing-log.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { BroadcastNotificationDto } from './dto/broadcast-notification.dto';
+import { SendUserPushDto } from './dto/send-user-push.dto';
 
 @ApiTags('admin')
 @ApiExcludeController()
@@ -195,5 +197,42 @@ export class AdminController {
   @Post('notifications')
   broadcastNotification(@Body() dto: BroadcastNotificationDto) {
     return this.adminNotifications.broadcast(dto);
+  }
+
+  /**
+   * Send a push to ONE user. Body carries title + body + optional
+   * deep link; the actor admin id is stamped server-side so the
+   * /admin/notifications log can attribute the row.
+   */
+  @Post('notifications/user/:userId/push')
+  sendPushToUser(
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: SendUserPushDto,
+  ) {
+    return this.adminNotifications.sendToUser(admin.id, userId, dto);
+  }
+
+  /**
+   * Paginated read of every notification ever sent. Used by the
+   * /admin/notifications log viewer. Filters: channel, type
+   * (`data.type`), userId. Rows are auto-pruned after 90 days
+   * (NotificationRetentionJob) so unbounded reads are safe.
+   */
+  @Get('notifications')
+  listNotifications(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('userId') userId?: string,
+    @Query('channel') channel?: NotificationChannel,
+    @Query('type') type?: string,
+  ) {
+    return this.adminNotifications.listAll({
+      limit: limit ? parseInt(limit, 10) : 50,
+      offset: offset ? parseInt(offset, 10) : 0,
+      userId,
+      channel,
+      type,
+    });
   }
 }

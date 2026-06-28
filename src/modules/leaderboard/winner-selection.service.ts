@@ -6,7 +6,10 @@ import { Winner } from './entities/winner.entity';
 import { User } from '../users/entities/user.entity';
 import { ExamAnswer } from '../exams/entities/exam-answer.entity';
 import { Notification } from '../notifications/entities/notification.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import { GamificationService } from '../gamification/gamification.service';
+import { MailService } from '../mail/mail.service';
+import { MailEvent } from '../mail/mail.types';
 import {
   ExamType,
   LeaderboardPeriodType,
@@ -69,6 +72,8 @@ export class WinnerSelectionService {
     private readonly notificationsRepo: Repository<Notification>,
     private readonly gamification: GamificationService,
     private readonly dataSource: DataSource,
+    private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
   ) {}
 
   eventKeyFor(periodType: LeaderboardPeriodType, rank: number): string {
@@ -173,19 +178,57 @@ export class WinnerSelectionService {
           xpIssuedAt: new Date(),
         });
 
-        await this.notificationsRepo.insert({
-          userId: entry.userId,
-          channel: NotificationChannel.IN_APP,
-          title: 'Leaderboard winner!',
-          body: `Congratulations! You ranked #${rank} this ${params.periodType === LeaderboardPeriodType.MONTHLY ? 'month' : 'week'} and earned ${xp.xpAmount} XP.`,
-          data: {
-            type: 'winner',
-            rank,
-            periodType: params.periodType,
-            periodStart: params.periodStart,
-            xpEarned: xp.xpAmount,
-          },
-        });
+        const periodLabel =
+          params.periodType === LeaderboardPeriodType.MONTHLY
+            ? 'month'
+            : 'week';
+
+        // PUSH (was IN_APP). Goes through NotificationsService.send
+        // which writes the row AND queues the Firebase dispatch —
+        // the in-app inbox AND the device notification both fire.
+        await this.notifications
+          .send({
+            userId: entry.userId,
+            channel: NotificationChannel.PUSH,
+            title: 'Leaderboard winner!',
+            body: `You ranked #${rank} this ${periodLabel} and earned ${xp.xpAmount} XP.`,
+            data: {
+              type: 'winner',
+              rank: String(rank),
+              periodType: params.periodType,
+              periodStart: params.periodStart,
+              xpEarned: String(xp.xpAmount),
+            },
+          })
+          .catch((err) =>
+            this.logger.warn(
+              `[winner] push dispatch failed user=${entry.userId} rank=${rank}: ${(err as Error).message}`,
+            ),
+          );
+
+        // Email — best-effort, swallowed on failure so the winner
+        // record still persists (push + in-app inbox already
+        // surface the win).
+        if (entry.user.email) {
+          await this.mail
+            .send(
+              MailEvent.WINNER_ANNOUNCEMENT,
+              entry.user.email,
+              {
+                recipientName: entry.user.fullName.split(' ')[0],
+                period: periodLabel,
+                rank,
+                xpAwarded: xp.xpAmount,
+                level: params.examType.toUpperCase(),
+              },
+              { userId: entry.userId },
+            )
+            .catch((err) =>
+              this.logger.warn(
+                `[winner] email dispatch failed user=${entry.userId} rank=${rank}: ${(err as Error).message}`,
+              ),
+            );
+        }
 
         winners.push({
           userId: entry.userId,

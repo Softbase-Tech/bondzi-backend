@@ -35,6 +35,13 @@ export const CacheKeys = {
   srsDueCount: (userId: string) => `srs_due_count:${userId}`,
   otp: (phone: string) => `otp:${phone}`,
   otpRateLimit: (phone: string) => `otp_rate:${phone}`,
+  /**
+   * Email OTP — pre-registration verification. Keyed by the
+   * lowercased email so casing variations can't be used to bypass
+   * the send-throttle bucket.
+   */
+  emailOtp: (email: string) => `email_otp:${email.toLowerCase()}`,
+  emailOtpRateLimit: (email: string) => `email_otp_rate:${email.toLowerCase()}`,
   loginAttempts: (ipOrIdentifier: string) => `login_attempts:${ipOrIdentifier}`,
   refreshToken: (jti: string) => `refresh_token:${jti}`,
   revokedJti: (jti: string) => `revoked_jti:${jti}`,
@@ -51,4 +58,8 @@ export const CacheKeys = {
     `ai_cost:user:${userId}:${date}`,
   aiUserDailyCalls: (userId: string, date: string) =>
     `ai_calls:user:${userId}:${date}`,
+  emailVerifyToken: (token: string) => `email_verify:${token}`,
+  passwordResetToken: (token: string) => `password_reset:${token}`,
+  forgotPasswordRate: (email: string) =>
+    `forgot_password:${email.toLowerCase()}`,
 } as const;

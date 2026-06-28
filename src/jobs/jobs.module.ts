@@ -30,7 +30,8 @@ import { ReferralsModule } from '../modules/referrals/referrals.module';
 import { AiModule } from '../modules/ai/ai.module';
 import { PaymentsModule } from '../modules/payments/payments.module';
 import { SubscriptionsModule } from '../modules/subscriptions/subscriptions.module';
-import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
+import { EmailProcessor } from './email.processor';
+import { QUEUE_AI_GENERATION, QUEUE_EMAIL } from '../modules/ai/ai.queues';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
       XpTransaction,
     ]),
     BullModule.registerQueue({ name: QUEUE_AI_GENERATION }),
+    BullModule.registerQueue({ name: QUEUE_EMAIL }),
     NotificationsModule,
     LeaderboardModule,
     ReferralsModule,
@@ -71,6 +73,7 @@ import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
     WebhookReconciliationJob,
     StreakAtRiskJob,
     WeeklyDigestJob,
+    EmailProcessor,
   ],
 })
 export class JobsModule {}

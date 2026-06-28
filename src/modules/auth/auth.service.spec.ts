@@ -181,7 +181,7 @@ describe('AuthService', () => {
     it('locks the account after MAX_LOGIN_ATTEMPTS', async () => {
       redis.incr.mockResolvedValueOnce(6); // > 5
       await expect(
-        service.login('jane@example.com', 'pw', { deviceId: 'd1' }),
+        service.login({ email: 'jane@example.com' }, 'pw', { deviceId: 'd1' }),
       ).rejects.toBeInstanceOf(HttpException);
       // Should not even reach the DB on a locked-out IP.
       expect(usersRepo.createQueryBuilder).not.toHaveBeenCalled();
@@ -190,7 +190,9 @@ describe('AuthService', () => {
     it('rejects unknown email with Unauthorized (does not leak existence)', async () => {
       stubFindUserByEmail(null);
       await expect(
-        service.login('nobody@example.com', 'pw', { deviceId: 'd1' }),
+        service.login({ email: 'nobody@example.com' }, 'pw', {
+          deviceId: 'd1',
+        }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
 
@@ -198,7 +200,7 @@ describe('AuthService', () => {
       stubFindUserByEmail(makeUser());
       jest.spyOn(passwordUtil, 'verifyPassword').mockResolvedValueOnce(false);
       await expect(
-        service.login('jane@example.com', 'bad', { deviceId: 'd1' }),
+        service.login({ email: 'jane@example.com' }, 'bad', { deviceId: 'd1' }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
       expect(tokens.issuePair).not.toHaveBeenCalled();
     });
@@ -207,7 +209,7 @@ describe('AuthService', () => {
       stubFindUserByEmail(makeUser({ isActive: false }));
       jest.spyOn(passwordUtil, 'verifyPassword').mockResolvedValueOnce(true);
       await expect(
-        service.login('jane@example.com', 'pw', { deviceId: 'd1' }),
+        service.login({ email: 'jane@example.com' }, 'pw', { deviceId: 'd1' }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
 
@@ -218,7 +220,7 @@ describe('AuthService', () => {
       // on a successful login.
       stubFindUserByEmail(makeUser());
       jest.spyOn(passwordUtil, 'verifyPassword').mockResolvedValueOnce(true);
-      const result = await service.login('jane@example.com', 'pw', {
+      const result = await service.login({ email: 'jane@example.com' }, 'pw', {
         deviceId: 'd1',
         ip: '1.2.3.4',
       });

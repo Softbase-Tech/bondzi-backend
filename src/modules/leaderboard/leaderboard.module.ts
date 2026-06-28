@@ -12,6 +12,7 @@ import { AdminWinnersController } from './admin-winners.controller';
 import { LeaderboardService } from './leaderboard.service';
 import { WinnerSelectionService } from './winner-selection.service';
 import { GamificationModule } from '../gamification/gamification.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -23,6 +24,9 @@ import { GamificationModule } from '../gamification/gamification.module';
       Notification,
     ]),
     GamificationModule,
+    // Winners now get push + email — NotificationsService comes
+    // from here, MailService is @Global so no import needed.
+    NotificationsModule,
   ],
   controllers: [
     LeaderboardController,

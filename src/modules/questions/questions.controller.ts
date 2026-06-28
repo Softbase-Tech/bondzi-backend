@@ -61,6 +61,13 @@ export class QuestionsController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     const isAdmin = this.isAdmin(user);
+    if (query.subjectId && !isAdmin) {
+      await this.subscriptions.assertCanStudySubject(
+        user.id,
+        user.examType,
+        query.subjectId,
+      );
+    }
     const hasActiveSubscription =
       isAdmin ||
       (await this.subscriptions.hasEntitlement(
@@ -119,6 +126,11 @@ export class QuestionsController {
     @Query() query: PastPaperQueryDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    await this.subscriptions.assertCanStudySubject(
+      user.id,
+      user.examType,
+      query.subjectId,
+    );
     // Per-level entitlement — Plus or Pro on the user's CURRENT exam type
     // unlocks elective questions + AI explanations. The serializer reads
     // this and includes/excludes the locked fields accordingly.
@@ -143,6 +155,11 @@ export class QuestionsController {
     @Query() query: AdaptiveQueryDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
+    await this.subscriptions.assertCanStudySubject(
+      user.id,
+      user.examType,
+      query.subjectId,
+    );
     // Per-level entitlement — Plus or Pro on the user's CURRENT exam type
     // unlocks elective questions + AI explanations. The serializer reads
     // this and includes/excludes the locked fields accordingly.

@@ -15,6 +15,7 @@ import { ExamAnswer } from '../exams/entities/exam-answer.entity';
 import { Subject } from '../subjects/entities/subject.entity';
 import { UserSubject } from './entities/user-subject.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateEmailPreferencesDto } from './dto/update-email-preferences.dto';
 import { ChangePasswordDto } from '../auth/dto/change-password.dto';
 
 @Injectable()
@@ -129,6 +130,38 @@ export class UsersService {
     Object.assign(user, dto);
     await this.usersRepo.save(user);
     return user;
+  }
+
+  async updateEmailPreferences(
+    userId: string,
+    dto: UpdateEmailPreferencesDto,
+  ): Promise<{
+    weeklyDigest: boolean;
+    streakNudges: boolean;
+    levelUp: boolean;
+    marketing: boolean;
+  }> {
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+    if (dto.weeklyDigest !== undefined) {
+      user.emailWeeklyDigestEnabled = dto.weeklyDigest;
+    }
+    if (dto.streakNudges !== undefined) {
+      user.emailStreakNudgesEnabled = dto.streakNudges;
+    }
+    if (dto.levelUp !== undefined) {
+      user.emailLevelUpEnabled = dto.levelUp;
+    }
+    if (dto.marketing !== undefined) {
+      user.emailMarketingEnabled = dto.marketing;
+    }
+    await this.usersRepo.save(user);
+    return {
+      weeklyDigest: user.emailWeeklyDigestEnabled,
+      streakNudges: user.emailStreakNudgesEnabled,
+      levelUp: user.emailLevelUpEnabled,
+      marketing: user.emailMarketingEnabled,
+    };
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto): Promise<void> {

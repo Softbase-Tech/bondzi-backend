@@ -29,4 +29,5 @@ export default registerAs('mail', () => ({
    */
   webUrl:
     process.env.MAIL_WEB_URL ?? process.env.APP_URL ?? 'https://bondzi.app',
+  webhookSecret: process.env.RESEND_WEBHOOK_SECRET ?? '',
 }));

@@ -167,11 +167,19 @@ export class ReferralsService {
         where: { id: event.referrerId },
       });
       if (referrer?.email) {
-        await this.mail.send(MailEvent.REFERRAL_QUALIFIED, referrer.email, {
-          recipientName: referrer.fullName ?? undefined,
-          refereeName: friendName,
-          rewardXp: award.xpAmount,
-        });
+        await this.mail.send(
+          MailEvent.REFERRAL_QUALIFIED,
+          referrer.email,
+          {
+            recipientName: referrer.fullName ?? undefined,
+            refereeName: friendName,
+            rewardXp: award.xpAmount,
+          },
+          {
+            userId: event.referrerId,
+            dedupKey: `referral_qualified:${event.referrerId}:${userId}`,
+          },
+        );
       }
       return true;
     } catch (err) {

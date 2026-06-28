@@ -4,12 +4,11 @@ import { Cron } from '@nestjs/schedule';
 import { RedisService } from '../common/redis/redis.service';
 import { CacheKeys } from '../common/utils/cache-keys.util';
 import { todayUtcDateKey } from '../modules/ai/ai-cost.util';
+import { AdminAlertService } from '../modules/mail/admin-alert.service';
 
 /**
  * Spec §6.5 — checks daily AI spend at 23:00 UTC and alerts when we cross
- * 80% of the configured budget. Over 100% disables generation — that's
- * enforced in AiService.checkBudget on every request; this job emits the
- * operational alert so humans know to act.
+ * 80% of the configured budget.
  */
 @Injectable()
 export class AiBudgetAlertJob {
@@ -18,15 +17,11 @@ export class AiBudgetAlertJob {
   constructor(
     private readonly config: ConfigService,
     private readonly redis: RedisService,
+    private readonly adminAlerts: AdminAlertService,
   ) {}
 
   @Cron('0 23 * * *', { timeZone: 'UTC' })
   async check(): Promise<void> {
-    // Cron jobs run on the worker container only — the api container loads
-    // ScheduleModule too (it's wired in AppModule) but should not fire any
-    // scheduled work, otherwise tasks double-execute. Single guard, since
-    // these methods can't be split into a separate module without disturbing
-    // the rest of JobsModule.
     if (process.env.WORKER_MODE !== 'true') return;
     const dateKey = todayUtcDateKey();
     const dailyBudgetUsd = this.config.get<number>('ai.dailyBudgetUsd') ?? 50;
@@ -35,13 +30,13 @@ export class AiBudgetAlertJob {
     const pct = total / dailyBudgetUsd;
 
     if (pct >= 1.0) {
-      this.logger.error(
-        `[ai-budget] 100%+ of daily budget spent (${total.toFixed(2)} / ${dailyBudgetUsd} USD). Generation is disabled for the rest of the day.`,
-      );
+      const msg = `100%+ of daily budget spent (${total.toFixed(2)} / ${dailyBudgetUsd} USD). Generation is disabled for the rest of the day.`;
+      this.logger.error(`[ai-budget] ${msg}`);
+      await this.adminAlerts.send('AI budget exceeded', msg);
     } else if (pct >= 0.8) {
-      this.logger.warn(
-        `[ai-budget] 80%+ daily budget ($${total.toFixed(2)} / $${dailyBudgetUsd}).`,
-      );
+      const msg = `80%+ daily budget ($${total.toFixed(2)} / $${dailyBudgetUsd}).`;
+      this.logger.warn(`[ai-budget] ${msg}`);
+      await this.adminAlerts.send('AI budget warning', msg);
     } else {
       this.logger.log(
         `[ai-budget] daily spend $${total.toFixed(2)} / $${dailyBudgetUsd} (${(pct * 100).toFixed(1)}%).`,

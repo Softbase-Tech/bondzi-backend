@@ -10,24 +10,7 @@ import { MailEvent } from '../modules/mail/mail.types';
 
 /**
  * Cron: Sunday-morning weekly digest. Aggregates the last 7 days of
- * activity per user and emails a personal summary — questions answered,
- * correct rate, XP earned, current streak.
- *
- * Eligibility:
- *   - email IS NOT NULL
- *   - answered at least one question in the last 7 days (zero-activity
- *     digests are noise — we don't email people who haven't shown up)
- *
- * Batched by user with one round-trip each. Capped at 1000 sends per
- * tick: at scale this becomes a queue feed, but for the early-stage
- * userbase a single bounded loop with the per-call dry-run / Resend
- * latency is fine.
- *
- * Rank delta is intentionally a TODO placeholder (0) — wiring it
- * properly needs the leaderboard snapshot table to retain per-user
- * positions across two weeks. Filling it without the snapshot column
- * would either be a second N+1 query loop or fake data. Left at 0 so
- * the template renders cleanly and we surface the gap explicitly.
+ * activity per user and emails a personal summary.
  */
 @Injectable()
 export class WeeklyDigestJob {
@@ -44,7 +27,6 @@ export class WeeklyDigestJob {
     private readonly mail: MailService,
   ) {}
 
-  // Sunday 08:00 server time. Users wake to a recap before the new week.
   @Cron('0 8 * * 0')
   async tick(): Promise<void> {
     if (process.env.WORKER_MODE !== 'true') return;
@@ -61,10 +43,8 @@ export class WeeklyDigestJob {
   private async scan(): Promise<void> {
     const now = Date.now();
     const weekAgo = new Date(now - 7 * 24 * 3600 * 1000);
+    const weekKey = weekAgo.toISOString().slice(0, 10);
 
-    // Active-user shortlist: users who answered ≥1 question in the
-    // last 7 days. The DISTINCT join keeps the user row out of memory
-    // until we know they're worth digesting.
     const activeRows = await this.dataSource.query<{ user_id: string }[]>(
       `SELECT DISTINCT e.user_id
        FROM exam_answers a
@@ -79,24 +59,34 @@ export class WeeklyDigestJob {
       return;
     }
 
-    let sent = 0;
+    let queued = 0;
     for (const row of activeRows) {
       const stats = await this.computeStats(row.user_id, weekAgo);
       if (!stats) continue;
-      sent += 1;
-      await this.mail.send(MailEvent.WEEKLY_DIGEST, stats.email, {
-        recipientName: stats.recipientName,
-        questionsAnswered: stats.questionsAnswered,
-        correctRate: stats.correctRate,
-        xpThisWeek: stats.xpThisWeek,
-        currentStreak: stats.currentStreak,
-        // TODO: wire from leaderboard snapshots once weekly positions
-        // are persisted. Zero renders as "no change" — accurate signal
-        // for "we don't know yet" rather than a fabricated delta.
-        rankDelta: 0,
-      });
+      queued += 1;
+      const unsubscribeUrl = stats.unsubscribeToken
+        ? this.mail.buildUnsubscribeUrl(stats.unsubscribeToken)
+        : undefined;
+      await this.mail.send(
+        MailEvent.WEEKLY_DIGEST,
+        stats.email,
+        {
+          recipientName: stats.recipientName,
+          questionsAnswered: stats.questionsAnswered,
+          correctRate: stats.correctRate,
+          xpThisWeek: stats.xpThisWeek,
+          currentStreak: stats.currentStreak,
+          rankDelta: 0,
+          unsubscribeUrl,
+        },
+        {
+          userId: row.user_id,
+          dedupKey: `weekly_digest:${row.user_id}:${weekKey}`,
+          sync: false,
+        },
+      );
     }
-    this.logger.log(`[digest] dispatched ${sent} weekly digests`);
+    this.logger.log(`[digest] queued ${queued} weekly digests`);
   }
 
   private async computeStats(
@@ -109,13 +99,11 @@ export class WeeklyDigestJob {
     correctRate: number;
     xpThisWeek: number;
     currentStreak: number;
+    unsubscribeToken: string | null;
   } | null> {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user?.email) return null;
 
-    // Answers in the window. We count BOTH correct AND incorrect so a
-    // user who only attempts hard questions and bombs them still gets a
-    // digest — the correct rate is informational, not a gate.
     const answers = await this.answersRepo
       .createQueryBuilder('a')
       .innerJoin('exams', 'e', 'e.id = a.exam_id')
@@ -127,9 +115,6 @@ export class WeeklyDigestJob {
     const correct = answers.filter((a) => a.is_correct === true).length;
     const correctRate = correct / answers.length;
 
-    // XP this week — sum of positive xp_transactions in the window.
-    // Negative txs (XP redemption, refund) are intentionally excluded so
-    // the digest doesn't celebrate negative motion.
     const xpRaw = await this.xpRepo
       .createQueryBuilder('x')
       .where('x.user_id = :uid', { uid: userId })
@@ -146,6 +131,7 @@ export class WeeklyDigestJob {
       correctRate,
       xpThisWeek,
       currentStreak: user.streakDays,
+      unsubscribeToken: user.emailUnsubscribeToken,
     };
   }
 

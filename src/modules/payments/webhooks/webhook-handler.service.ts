@@ -528,13 +528,20 @@ export class WebhookHandlerService {
     // became the single writer of expiresAt — the comparison
     // collapsed to false on the typical event ordering.
     if (isRenewal) {
-      await this.dispatchRenewedEmail({ userId, planId: plan.id }, event);
+      await this.dispatchPaymentReceiptEmail(
+        userId,
+        plan,
+        event,
+        amountDisplay,
+        true,
+      );
     } else {
       await this.dispatchPaymentReceiptEmail(
         userId,
         plan,
         event,
         amountDisplay,
+        false,
       );
     }
   }
@@ -544,6 +551,7 @@ export class WebhookHandlerService {
     plan: SubscriptionPlanEntity,
     event: NormalizedWebhookEvent,
     amountDisplay: number | undefined,
+    isRenewal: boolean,
   ): Promise<void> {
     if (amountDisplay === undefined || !event.reference) return;
     const user = await this.usersRepo.findOne({ where: { id: userId } });
@@ -554,18 +562,35 @@ export class WebhookHandlerService {
       return;
     }
     const validUntil = await this.computeValidUntil(plan, event);
-    await this.mail.send(MailEvent.PAYMENT_SUCCESS, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      account: accountLabel(plan.account),
-      level: plan.level.toUpperCase(),
-      amountDisplay,
-      currency: event.currency ?? plan.currency,
-      vatRatePct: Number(plan.vatRatePct) || 0,
-      paidAt: event.claimedAt ?? new Date(),
-      reference: event.reference,
-      validUntil,
-    });
+    const idempotencyKey = event.reference
+      ? `payment_success:${event.reference}`
+      : undefined;
+    await this.mail.send(
+      MailEvent.PAYMENT_SUCCESS,
+      user.email,
+      {
+        recipientName: user.fullName ?? undefined,
+        planName: plan.name,
+        account: accountLabel(plan.account),
+        level: plan.level.toUpperCase(),
+        amountDisplay,
+        currency: event.currency ?? plan.currency,
+        vatRatePct: Number(plan.vatRatePct) || 0,
+        paidAt: event.claimedAt ?? new Date(),
+        reference: event.reference,
+        validUntil,
+      },
+      {
+        userId,
+        idempotencyKey,
+        dedupKey: idempotencyKey,
+      },
+    );
+    if (isRenewal) {
+      this.logger.log(
+        `[mail] renewal receipt dispatched ref=${event.reference} user=${userId}`,
+      );
+    }
   }
 
   /**
@@ -754,20 +779,22 @@ export class WebhookHandlerService {
       this.plans.getById(sub.planId).catch(() => null),
     ]);
     if (!user?.email || !plan) return;
-    await this.mail.send(MailEvent.SUBSCRIPTION_PAYMENT_FAILED, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      level: plan.level.toUpperCase(),
-      attemptedAt: event.claimedAt ?? new Date(),
-      // Paystack retries on a fixed schedule (usually +1, +3, +5 days).
-      // We don't have the schedule in the webhook payload, so leave NULL —
-      // the template renders generic copy when the retry date is unknown.
-      nextAttemptAt: null,
-      // The user's prepaid access boundary — surfaced in the email
-      // so they have a concrete deadline to fix their card before
-      // losing Pro.
-      accessUntil: sub.expiresAt ?? null,
-    });
+    const dedupKey = event.eventId
+      ? `payment_failed:${event.eventId}`
+      : `payment_failed:${sub.userId}:${event.claimedAt?.toISOString() ?? 'now'}`;
+    await this.mail.send(
+      MailEvent.SUBSCRIPTION_PAYMENT_FAILED,
+      user.email,
+      {
+        recipientName: user.fullName ?? undefined,
+        planName: plan.name,
+        level: plan.level.toUpperCase(),
+        attemptedAt: event.claimedAt ?? new Date(),
+        nextAttemptAt: null,
+        accessUntil: sub.expiresAt ?? null,
+      },
+      { userId: sub.userId, dedupKey },
+    );
   }
 
   private async onSubscriptionNotRenew(
@@ -915,15 +942,28 @@ export class WebhookHandlerService {
         : sub.amountGhs
           ? parseFloat(sub.amountGhs)
           : 0;
-    await this.mail.send(MailEvent.REFUND_CONFIRMATION, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      level: plan.level.toUpperCase(),
-      amountDisplay: amount,
-      currency: event.currency ?? plan.currency,
-      refundedAt: event.claimedAt ?? new Date(),
-      reference: event.reference,
-    });
+    await this.mail.send(
+      MailEvent.REFUND_CONFIRMATION,
+      user.email,
+      {
+        recipientName: user.fullName ?? undefined,
+        planName: plan.name,
+        level: plan.level.toUpperCase(),
+        amountDisplay: amount,
+        currency: event.currency ?? plan.currency,
+        refundedAt: event.claimedAt ?? new Date(),
+        reference: event.reference,
+      },
+      {
+        userId,
+        idempotencyKey: event.eventId
+          ? `refund_confirmation:${event.eventId}`
+          : `refund_confirmation:${event.reference}`,
+        dedupKey: event.eventId
+          ? `refund_confirmation:${event.eventId}`
+          : `refund_confirmation:${event.reference}`,
+      },
+    );
   }
 
   /**
@@ -968,29 +1008,6 @@ export class WebhookHandlerService {
       BillingLogProcessStatus.SUCCESS,
       { subscriptionId: sub.id, userId: sub.userId },
     );
-  }
-
-  private async dispatchRenewedEmail(
-    sub: { userId: string; planId: string | null },
-    event: NormalizedWebhookEvent,
-  ): Promise<void> {
-    if (!sub.planId || !event.nextPaymentDate) return;
-    const [user, plan] = await Promise.all([
-      this.usersRepo.findOne({ where: { id: sub.userId } }),
-      this.plans.getById(sub.planId).catch(() => null),
-    ]);
-    if (!user?.email || !plan) return;
-    const amount =
-      event.amountMinor !== undefined ? event.amountMinor / 100 : 0;
-    await this.mail.send(MailEvent.SUBSCRIPTION_RENEWED, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      level: plan.level.toUpperCase(),
-      amountDisplay: amount,
-      currency: event.currency ?? plan.currency,
-      nextRenewalAt: event.nextPaymentDate,
-      reference: event.reference ?? '',
-    });
   }
 
   private async resolveUserId(

@@ -18,6 +18,7 @@ import {
 } from '../../common/decorators/current-user.decorator';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateEmailPreferencesDto } from './dto/update-email-preferences.dto';
 import { ChangePasswordDto } from '../auth/dto/change-password.dto';
 
 class SetSubjectsDto {
@@ -57,6 +58,15 @@ export class UsersController {
     @Body() dto: UpdateProfileDto,
   ) {
     return this.users.updateProfile(user.id, dto);
+  }
+
+  @Patch('me/email-preferences')
+  @ApiOperation({ summary: 'Update engagement email preferences.' })
+  updateEmailPreferences(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdateEmailPreferencesDto,
+  ) {
+    return this.users.updateEmailPreferences(user.id, dto);
   }
 
   @Patch('me/password')

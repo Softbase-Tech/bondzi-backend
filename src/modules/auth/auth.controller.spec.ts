@@ -58,7 +58,10 @@ describe('AuthController', () => {
       req,
     );
     expect(auth.login).toHaveBeenCalledWith(
-      'a@b.com',
+      // Identifier is now an object — controller forwards both
+      // `email` and `phone` so the service can route on whichever
+      // was supplied.
+      expect.objectContaining({ email: 'a@b.com' }),
       'pw',
       expect.objectContaining({ deviceId: 'from-header' }),
     );
@@ -70,7 +73,7 @@ describe('AuthController', () => {
       makeReq(),
     );
     expect(auth.login).toHaveBeenCalledWith(
-      'a@b.com',
+      expect.objectContaining({ email: 'a@b.com' }),
       'pw',
       expect.objectContaining({ deviceId: 'from-body' }),
     );

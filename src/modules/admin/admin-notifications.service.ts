@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
+import { Notification } from '../notifications/entities/notification.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
   NotificationChannel,
@@ -12,6 +13,7 @@ import {
   BroadcastNotificationDto,
   BroadcastSegment,
 } from './dto/broadcast-notification.dto';
+import { SendUserPushDto } from './dto/send-user-push.dto';
 
 export interface BroadcastResult {
   queued: number;
@@ -39,8 +41,105 @@ export class AdminNotificationsService {
     @InjectRepository(User) private readonly usersRepo: Repository<User>,
     @InjectRepository(Subscription)
     private readonly subsRepo: Repository<Subscription>,
+    @InjectRepository(Notification)
+    private readonly notificationsRepo: Repository<Notification>,
     private readonly notifications: NotificationsService,
   ) {}
+
+  /**
+   * Admin: send a push to ONE user. Records the actor so the
+   * notification log on /admin/notifications can show "sent by
+   * admin X". Returns the created Notification row so the admin
+   * UI can confirm what was sent.
+   */
+  async sendToUser(
+    adminId: string,
+    targetUserId: string,
+    dto: SendUserPushDto,
+  ): Promise<Notification> {
+    const user = await this.usersRepo.findOne({
+      where: { id: targetUserId },
+      select: ['id', 'isActive'],
+    });
+    if (!user) throw new NotFoundException('Target user not found');
+    if (!user.isActive) {
+      throw new NotFoundException(
+        'Target user is inactive — cannot send push.',
+      );
+    }
+    const row = await this.notifications.send({
+      userId: targetUserId,
+      channel: NotificationChannel.PUSH,
+      title: dto.title,
+      body: dto.body,
+      data: {
+        type: 'admin_message',
+        // Stamping actorId here makes the audit log straightforward:
+        // the /admin/notifications viewer surfaces this column on
+        // every row so ops can see who sent what.
+        sentByAdminId: adminId,
+        ...(dto.deepLink ? { deepLink: dto.deepLink } : {}),
+      },
+    });
+    this.logger.log(
+      `[admin-push] admin=${adminId} → user=${targetUserId} notification=${row.id}`,
+    );
+    return row;
+  }
+
+  /**
+   * Paginated read of the notifications table — fuels the admin log
+   * viewer. Channel + type filters let ops drill into "all pushes
+   * sent today" or "every account_credited row this month".
+   */
+  async listAll(opts: {
+    limit?: number;
+    offset?: number;
+    userId?: string;
+    channel?: NotificationChannel;
+    type?: string;
+  }): Promise<{ items: Notification[]; total: number }> {
+    const limit = Math.min(200, Math.max(1, opts.limit ?? 50));
+    const offset = Math.max(0, opts.offset ?? 0);
+    const qb = this.notificationsRepo
+      .createQueryBuilder('n')
+      .leftJoinAndSelect('n.user', 'user')
+      .orderBy('n.created_at', 'DESC')
+      .take(limit)
+      .skip(offset);
+    if (opts.userId) qb.andWhere('n.user_id = :uid', { uid: opts.userId });
+    if (opts.channel) qb.andWhere('n.channel = :ch', { ch: opts.channel });
+    if (opts.type) {
+      // The notification `type` lives inside the JSONB `data` column
+      // — keyed on `type`. We surface this as a top-level filter so
+      // the admin doesn't need to know the column shape.
+      qb.andWhere(`n.data->>'type' = :t`, { t: opts.type });
+    }
+    const [items, total] = await qb.getManyAndCount();
+    return { items, total };
+  }
+
+  /**
+   * Retention: delete notification rows older than `olderThanDays`
+   * (default 90). Returns the affected row count for logging.
+   * Daily cron in NotificationRetentionJob fires this.
+   */
+  async pruneOlderThan(olderThanDays = 90): Promise<number> {
+    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+    const result = await this.notificationsRepo
+      .createQueryBuilder()
+      .delete()
+      .from(Notification)
+      .where('created_at < :cutoff', { cutoff })
+      .execute();
+    const affected = result.affected ?? 0;
+    if (affected > 0) {
+      this.logger.log(
+        `[notifications] pruned ${affected} rows older than ${olderThanDays}d (cutoff=${cutoff.toISOString()})`,
+      );
+    }
+    return affected;
+  }
 
   async broadcast(dto: BroadcastNotificationDto): Promise<BroadcastResult> {
     const userIds = await this.resolveSegment(dto);

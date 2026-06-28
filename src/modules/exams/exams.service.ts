@@ -82,6 +82,12 @@ export class ExamsService {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
 
+    await this.subscriptions.assertCanStudySubjects(
+      userId,
+      user.examType,
+      dto.subjectFilter?.subjectIds,
+    );
+
     const desiredCount =
       dto.questionCount ?? (dto.mode === ExamMode.PAST_PAPER ? 50 : 20);
 

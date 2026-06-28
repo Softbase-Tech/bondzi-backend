@@ -35,6 +35,8 @@ const makeUser = (over: Partial<User> = {}): User =>
     createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30d ago
     email: 'a@b.com',
     phone: null,
+    // Winner notification template greets the user — needs fullName.
+    fullName: 'Jane Doe',
     ...over,
   }) as User;
 
@@ -49,6 +51,8 @@ describe('WinnerSelectionService', () => {
   let usersRepo: Record<string, unknown>;
   let answersRepo: { count: jest.Mock };
   let notificationsRepo: { insert: jest.Mock };
+  let notificationsService: { send: jest.Mock };
+  let mailService: { send: jest.Mock };
   let gamification: { awardXp: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
@@ -76,6 +80,15 @@ describe('WinnerSelectionService', () => {
       ),
     };
 
+    const { NotificationsService } =
+      await import('../notifications/notifications.service');
+    const { MailService } = await import('../mail/mail.service');
+    notificationsService = {
+      send: jest.fn().mockResolvedValue({ id: 'noti-1' }),
+    };
+    mailService = {
+      send: jest.fn().mockResolvedValue({ ok: true }),
+    };
     const moduleRef = await Test.createTestingModule({
       providers: [
         WinnerSelectionService,
@@ -92,6 +105,9 @@ describe('WinnerSelectionService', () => {
         },
         { provide: GamificationService, useValue: gamification },
         { provide: DataSource, useValue: dataSource },
+        // Winner now sends push + email — provide both deps.
+        { provide: NotificationsService, useValue: notificationsService },
+        { provide: MailService, useValue: mailService },
       ],
     }).compile();
     service = moduleRef.get(WinnerSelectionService);
@@ -189,13 +205,17 @@ describe('WinnerSelectionService', () => {
       'w-1',
       expect.objectContaining({ xpIssued: true, xpEarned: 5000 }),
     );
-    // In-app notification fires for the awarded winner.
-    expect(notificationsRepo.insert).toHaveBeenCalledWith(
+    // Push notification fires for the awarded winner — previously
+    // wrote to the in-app channel only; now goes through
+    // NotificationsService.send which also enqueues the FCM dispatch.
+    expect(notificationsService.send).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 'u-good',
-        channel: NotificationChannel.IN_APP,
+        channel: NotificationChannel.PUSH,
       }),
     );
+    // Email-side congratulations also fire.
+    expect(mailService.send).toHaveBeenCalled();
   });
 
   it('treats fewer-than-50-answers as ineligible', async () => {

@@ -34,6 +34,7 @@ export const AI_COST_USD_TOTAL = 'bondzi_ai_cost_usd_total';
 export const PUSH_SENDS_TOTAL = 'bondzi_push_sends_total';
 export const PAYMENT_EVENTS_TOTAL = 'bondzi_payment_events_total';
 export const QUEUE_DEPTH = 'bondzi_queue_depth';
+export const EMAIL_SENDS_TOTAL = 'bondzi_email_sends_total';
 
 export const metricProviders = [
   makeHistogramProvider({
@@ -85,6 +86,11 @@ export const metricProviders = [
     help: 'BullMQ queue depth by queue + state',
     labelNames: ['queue', 'state'], // state: 'waiting' | 'active' | 'failed' | 'delayed'
   }),
+  makeCounterProvider({
+    name: EMAIL_SENDS_TOTAL,
+    help: 'Transactional email dispatch outcomes',
+    labelNames: ['event', 'outcome'], // outcome: 'sent' | 'failed' | 'skipped' | 'dry_run'
+  }),
 ];
 
 @Injectable()
@@ -104,6 +110,8 @@ export class MetricsService {
     @InjectMetric(PAYMENT_EVENTS_TOTAL)
     public readonly paymentEvents: Counter<string>,
     @InjectMetric(QUEUE_DEPTH) public readonly queueDepth: Gauge<string>,
+    @InjectMetric(EMAIL_SENDS_TOTAL)
+    public readonly emailSends: Counter<string>,
   ) {}
 
   /**

@@ -12,11 +12,13 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  IsEmail,
   IsEnum,
   IsInt,
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
   ValidateIf,
 } from 'class-validator';
@@ -35,6 +37,7 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { SendOtpDto, VerifyOtpDto } from './dto/otp.dto';
 import { RefreshDto } from './dto/refresh.dto';
+import { ForgotPasswordDto, ResetPasswordDto } from './dto/email-auth.dto';
 import { GoogleSignInDto } from './dto/google.dto';
 
 const DEVICE_ID_HEADER = 'x-device-id';
@@ -63,6 +66,17 @@ function pickDeviceName(req: Request, bodyValue?: string): string | undefined {
   const header = req.headers[DEVICE_NAME_HEADER];
   const headerStr = Array.isArray(header) ? header[0] : header;
   return (headerStr && headerStr.trim()) || bodyValue;
+}
+
+class SendEmailOtpDto {
+  @IsEmail()
+  email!: string;
+
+  /** Optional display name — used in the greeting line of the OTP email. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  recipientName?: string;
 }
 
 class UpdateExamTypeDto {
@@ -120,13 +134,17 @@ export class AuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 5, ttl: 15 * 60_000 } })
-  @ApiOperation({ summary: 'Email + password login.' })
+  @ApiOperation({ summary: 'Password login — accepts email OR phone.' })
   login(@Body() dto: LoginDto, @Req() req: Request) {
-    return this.auth.login(dto.email, dto.password, {
-      ip: req.ip,
-      deviceId: pickDeviceId(req, dto.deviceId),
-      deviceName: pickDeviceName(req, dto.deviceName),
-    });
+    return this.auth.login(
+      { email: dto.email, phone: dto.phone },
+      dto.password,
+      {
+        ip: req.ip,
+        deviceId: pickDeviceId(req, dto.deviceId),
+        deviceName: pickDeviceName(req, dto.deviceName),
+      },
+    );
   }
 
   @Public()
@@ -149,6 +167,78 @@ export class AuthController {
       deviceId: pickDeviceId(req, dto.deviceId),
       deviceName: pickDeviceName(req, dto.deviceName),
     });
+  }
+
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 15 * 60_000 } })
+  @ApiOperation({ summary: 'Request a password-reset email.' })
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.auth.forgotPassword({
+      email: dto.email,
+      phone: dto.phone,
+    });
+  }
+
+  @Public()
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 15 * 60_000 } })
+  @ApiOperation({ summary: 'Set a new password using a reset token.' })
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.auth.resetPassword({
+      token: dto.token,
+      phone: dto.phone,
+      otp: dto.otp,
+      password: dto.password,
+    });
+  }
+
+  @Public()
+  @Get('email/verify')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Confirm email address from verification link.' })
+  verifyEmail(@Query('token') token?: string) {
+    if (!token?.trim()) {
+      throw new BadRequestException('token is required');
+    }
+    return this.auth.verifyEmail(token.trim());
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Post('email/verify-request')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
+  @ApiOperation({ summary: 'Resend the email verification link.' })
+  requestEmailVerification(@CurrentUser() user: AuthenticatedUser) {
+    return this.auth.requestEmailVerification(user.id);
+  }
+
+  /**
+   * Pre-registration email OTP. Public — there's no account yet. The
+   * returned `expiresInSeconds` lets the mobile show a count-down /
+   * resend cooldown matching the server's window. Anti-enumeration:
+   * we always return 200 with the same payload even when the email
+   * is already registered, so callers can't probe for existing
+   * accounts (the user would get a "this email is already
+   * registered" error on the subsequent /auth/register call
+   * instead).
+   *
+   * Throttled aggressively at the controller level on top of the
+   * per-email bucket inside OtpService (3/10 min).
+   */
+  @Public()
+  @Post('email/otp/send')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 10 * 60_000 } })
+  @ApiOperation({
+    summary: 'Send a 6-digit email OTP for pre-registration verification.',
+  })
+  sendEmailOtp(@Body() dto: SendEmailOtpDto) {
+    return this.auth.sendEmailOtp(dto.email, dto.recipientName);
   }
 
   @Public()

@@ -16,6 +16,19 @@ export enum AuthProvider {
   PHONE = 'phone',
 }
 
+/**
+ * Gender collected at registration. Four canonical values mirror the
+ * `user_gender_enum` Postgres type (migration 1930). `null` on
+ * historical accounts created before the column existed and on any
+ * future flow that doesn't ask for it.
+ */
+export enum Gender {
+  MALE = 'male',
+  FEMALE = 'female',
+  OTHER = 'other',
+  PREFER_NOT_TO_SAY = 'prefer_not_to_say',
+}
+
 // v2: exam platform. First-class across users, subjects, questions, exams.
 // `novdec` (the WAEC re-sit examination for SHS leavers) reuses the WASSCE
 // question pool — entitlement filtering happens at the user-level on

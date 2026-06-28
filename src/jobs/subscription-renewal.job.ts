@@ -138,13 +138,22 @@ export class SubscriptionRenewalJob {
       1,
       Math.ceil(msRemaining / (24 * 3600 * 1000)),
     );
-    await this.mail.send(MailEvent.SUBSCRIPTION_EXPIRING_SOON, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      level: plan.level.toUpperCase(),
-      expiresAt: sub.expiresAt,
-      daysRemaining,
-    });
+    await this.mail.send(
+      MailEvent.SUBSCRIPTION_EXPIRING_SOON,
+      user.email,
+      {
+        recipientName: user.fullName ?? undefined,
+        planName: plan.name,
+        level: plan.level.toUpperCase(),
+        expiresAt: sub.expiresAt,
+        daysRemaining,
+      },
+      {
+        userId: sub.userId,
+        dedupKey: `subscription_expiring:${sub.id}`,
+        sync: false,
+      },
+    );
   }
 
   private async dispatchExpiredEmail(sub: Subscription): Promise<void> {
@@ -154,12 +163,21 @@ export class SubscriptionRenewalJob {
       this.plans.getById(sub.planId).catch(() => null),
     ]);
     if (!user?.email || !plan) return;
-    await this.mail.send(MailEvent.SUBSCRIPTION_EXPIRED, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      level: plan.level.toUpperCase(),
-      expiredAt: sub.expiresAt,
-    });
+    await this.mail.send(
+      MailEvent.SUBSCRIPTION_EXPIRED,
+      user.email,
+      {
+        recipientName: user.fullName ?? undefined,
+        planName: plan.name,
+        level: plan.level.toUpperCase(),
+        expiredAt: sub.expiresAt,
+      },
+      {
+        userId: sub.userId,
+        dedupKey: `subscription_expired:${sub.id}`,
+        sync: false,
+      },
+    );
   }
 
   /**

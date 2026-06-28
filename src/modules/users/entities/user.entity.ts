@@ -12,6 +12,7 @@ import {
 import {
   AuthProvider,
   ExamType,
+  Gender,
   SchoolLevel,
   UserRole,
 } from '../../../common/types/enums';
@@ -77,6 +78,19 @@ export class User {
   @Column({ type: 'text', nullable: true })
   region: string | null;
 
+  // Collected at registration going forward. Nullable to keep accounts
+  // created before migration 1930 functional — they continue to work
+  // and can fill these via Settings → Account later if we add the UI.
+  @Column({ type: 'enum', enum: Gender, nullable: true })
+  gender: Gender | null;
+
+  // Stored as `date` (no time component, no timezone). Validation at
+  // the DTO layer enforces sensible bounds (≥ 8 years old, in the
+  // past). Always nullable at the DB layer for the same backwards-compat
+  // reason as `gender`.
+  @Column({ name: 'date_of_birth', type: 'date', nullable: true })
+  dateOfBirth: string | null;
+
   @Column({ name: 'avatar_url', type: 'text', nullable: true })
   avatarUrl: string | null;
 
@@ -130,6 +144,27 @@ export class User {
 
   @Column({ name: 'last_active_at', type: 'timestamptz', nullable: true })
   lastActiveAt: Date | null;
+
+  @Column({ name: 'email_verified_at', type: 'timestamptz', nullable: true })
+  emailVerifiedAt: Date | null;
+
+  @Column({ name: 'email_bounced_at', type: 'timestamptz', nullable: true })
+  emailBouncedAt: Date | null;
+
+  @Column({ name: 'email_unsubscribe_token', type: 'text', nullable: true })
+  emailUnsubscribeToken: string | null;
+
+  @Column({ name: 'email_weekly_digest_enabled', type: 'bool', default: true })
+  emailWeeklyDigestEnabled: boolean;
+
+  @Column({ name: 'email_streak_nudges_enabled', type: 'bool', default: true })
+  emailStreakNudgesEnabled: boolean;
+
+  @Column({ name: 'email_level_up_enabled', type: 'bool', default: true })
+  emailLevelUpEnabled: boolean;
+
+  @Column({ name: 'email_marketing_enabled', type: 'bool', default: true })
+  emailMarketingEnabled: boolean;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
