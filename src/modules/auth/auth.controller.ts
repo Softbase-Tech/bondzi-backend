@@ -33,6 +33,7 @@ import {
 } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthService } from './auth.service';
+import { UsersService } from '../users/users.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { SendOtpDto, VerifyOtpDto } from './dto/otp.dto';
@@ -112,7 +113,28 @@ class UpdateExamTypeDto {
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly users: UsersService,
+  ) {}
+
+  /**
+   * Public availability check used by the mobile register / profile-edit
+   * "is this handle free?" hint. Format rules also validated here so the
+   * server is the single source of truth — an obviously-invalid input
+   * (`abc`, `with space`) gets an explanatory `reason` without us
+   * inventing a JWT-bearing endpoint just for the typed-as-you-go UI.
+   */
+  @Public()
+  @Get('username/available')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiOperation({
+    summary:
+      'Check whether a username is free. Returns { available, reason?, message? }.',
+  })
+  async checkUsername(@Query('q') q?: string) {
+    return this.users.checkUsernameAvailability(q ?? '');
+  }
 
   @Public()
   @Post('register')

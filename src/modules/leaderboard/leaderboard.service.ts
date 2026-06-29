@@ -10,6 +10,13 @@ const LB_CACHE_TTL_SECONDS = 5 * 60;
 
 export interface LeaderboardRow {
   userId: string;
+  /**
+   * Public handle (when the user has set one — migration 1940). Mobile
+   * prefers this for display; `fullName` is the fallback for accounts
+   * that haven't back-filled yet.
+   */
+  username: string | null;
+  /** Legal name on file. Used as a fallback display name. */
   fullName: string;
   score: number;
   rank: number;
@@ -68,6 +75,7 @@ export class LeaderboardService {
       // `.trim()` on the string). It also has no useful display value.
       .andWhere('u.full_name is not null')
       .select('lb.user_id', 'userId')
+      .addSelect('u.username', 'username')
       .addSelect('u.full_name', 'fullName')
       .addSelect('lb.weekly_xp', 'score')
       .addSelect('lb.rank', 'rank')

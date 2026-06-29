@@ -20,6 +20,7 @@ import { buildEmailOtp } from './templates/email-otp';
 import { buildPasswordReset } from './templates/password-reset';
 import { buildAccountCredited } from './templates/account-credited';
 import { buildWinnerAnnouncement } from './templates/winner-announcement';
+import { buildWinnerSelectionReminder } from './templates/winner-selection-reminder';
 import { buildPaymentSuccess } from './templates/payment-success';
 import { buildRefundConfirmation } from './templates/refund-confirmation';
 import {
@@ -339,6 +340,11 @@ export class MailService implements OnModuleInit {
       case MailEvent.WINNER_ANNOUNCEMENT:
         return buildWinnerAnnouncement(
           payload as MailPayloadByEvent[MailEvent.WINNER_ANNOUNCEMENT],
+          this.webUrl,
+        );
+      case MailEvent.WINNER_SELECTION_REMINDER:
+        return buildWinnerSelectionReminder(
+          payload as MailPayloadByEvent[MailEvent.WINNER_SELECTION_REMINDER],
           this.webUrl,
         );
       case MailEvent.PAYMENT_SUCCESS:

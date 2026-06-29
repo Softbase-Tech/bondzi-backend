@@ -110,6 +110,15 @@ export const envValidationSchema = Joi.object({
   MAIL_REPLY_TO: Joi.string().email().default('support@bondzi.app'),
   MAIL_WEB_URL: Joi.string().uri().allow('').default(''),
   RESEND_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+  /**
+   * Comma-separated list of email addresses that receive the weekly
+   * "select winners" reminder. Defaults to ekow@bondzi.online +
+   * info@bondzi.online when unset. Setting it to an empty string
+   * disables the reminder send.
+   */
+  WINNER_REMINDER_RECIPIENTS: Joi.string()
+    .allow('')
+    .default('ekow@bondzi.online,info@bondzi.online'),
 
   GOOGLE_CLIENT_ID: Joi.string().allow('').default(''),
 

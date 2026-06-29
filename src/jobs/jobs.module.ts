@@ -24,6 +24,7 @@ import { AiBudgetAlertJob } from './ai-budget-alert.job';
 import { WebhookReconciliationJob } from './webhook-reconciliation.job';
 import { StreakAtRiskJob } from './streak-at-risk.job';
 import { WeeklyDigestJob } from './weekly-digest.job';
+import { WinnerSelectionReminderJob } from './winner-selection-reminder.job';
 import { NotificationsModule } from '../modules/notifications/notifications.module';
 import { LeaderboardModule } from '../modules/leaderboard/leaderboard.module';
 import { ReferralsModule } from '../modules/referrals/referrals.module';
@@ -73,6 +74,7 @@ import { QUEUE_AI_GENERATION, QUEUE_EMAIL } from '../modules/ai/ai.queues';
     WebhookReconciliationJob,
     StreakAtRiskJob,
     WeeklyDigestJob,
+    WinnerSelectionReminderJob,
     EmailProcessor,
   ],
 })

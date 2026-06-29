@@ -13,6 +13,9 @@ export const TRANSACTIONAL_MAIL_EVENTS = new Set<MailEvent>([
   // the user explicitly cares about — they bypass marketing prefs.
   MailEvent.ACCOUNT_CREDITED,
   MailEvent.WINNER_ANNOUNCEMENT,
+  // Internal ops reminder — sent to a hardcoded mailing list, not
+  // to end users; preference toggles don't apply.
+  MailEvent.WINNER_SELECTION_REMINDER,
   MailEvent.PAYMENT_SUCCESS,
   MailEvent.REFUND_CONFIRMATION,
   MailEvent.SUBSCRIPTION_RENEWED,

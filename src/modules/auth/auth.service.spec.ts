@@ -241,6 +241,7 @@ describe('AuthService', () => {
   describe('register', () => {
     const baseDto = {
       fullName: 'Kofi Mensah',
+      username: 'kofimensah',
       email: 'kofi@example.com',
       password: 'StrongPass123',
       examType: ExamType.WASSCE,
@@ -263,14 +264,38 @@ describe('AuthService', () => {
 
     it('rejects when deviceId is missing (belt + braces with controller)', async () => {
       usersRepo.findOne.mockResolvedValue(null);
+      // Username uniqueness check uses createQueryBuilder — return a
+      // chain that resolves to "no collision" so the path reaches the
+      // controller's deviceId guard.
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      usersRepo.createQueryBuilder.mockReturnValue(qb);
       jest.spyOn(passwordUtil, 'hashPassword').mockResolvedValueOnce('hash');
       await expect(
         service.register({ ...baseDto, deviceId: undefined } as never, {}),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    // Builds a fresh username-uniqueness queryBuilder mock that
+    // resolves to `null` (i.e. the handle is free). Register also uses
+    // createQueryBuilder for the referral-code clash check inside
+    // allocateReferralCode, so plumb both off the same factory.
+    const mockUsernameFree = () => {
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      usersRepo.createQueryBuilder.mockReturnValue(qb);
+      return qb;
+    };
+
     it('issues tokens and a welcome notification on success', async () => {
       usersRepo.findOne.mockResolvedValue(null);
+      mockUsernameFree();
       jest.spyOn(passwordUtil, 'hashPassword').mockResolvedValueOnce('hash');
       const out = await service.register(baseDto as never, { ip: '1.1.1.1' });
       expect(tokens.issuePair).toHaveBeenCalled();
@@ -287,6 +312,7 @@ describe('AuthService', () => {
         .mockResolvedValueOnce(
           makeUser({ id: 'ref-1', referralCode: 'PM-XXXX-MEN' }),
         ); // referrer lookup
+      mockUsernameFree();
       jest.spyOn(passwordUtil, 'hashPassword').mockResolvedValueOnce('hash');
       await service.register(
         { ...baseDto, referralCode: 'PM-XXXX-MEN' } as never,

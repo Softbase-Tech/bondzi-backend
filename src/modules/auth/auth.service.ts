@@ -26,6 +26,10 @@ import {
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { RegisterDto } from './dto/register.dto';
+import {
+  canonicalUsername,
+  validateUsernameFormat,
+} from '../users/username.rules';
 import { TokensService, TokenPair } from './tokens.service';
 import { OtpService } from './otp.service';
 import { GoogleOAuthService } from './google-oauth.service';
@@ -53,6 +57,18 @@ function schoolLevelFor(examType: ExamType): SchoolLevel {
 export interface SafeUser {
   id: string;
   fullName: string;
+  /**
+   * Public handle used on leaderboards / Hall of Fame. Nullable for
+   * accounts created before migration 1940 — mobile prompts those
+   * users to back-fill on first session post-deploy.
+   */
+  username: string | null;
+  /**
+   * Last time the username was set or changed. NULL = never set. Used
+   * by the mobile client to drive the 90-day "next change available in
+   * N days" hint without re-querying.
+   */
+  usernameChangedAt: string | null;
   email: string | null;
   phone: string | null;
   role: UserRole;
@@ -247,6 +263,26 @@ export class AuthService {
       if (taken) throw new ConflictException('Phone already registered');
     }
 
+    // Username — DTO decorators have already enforced length + charset.
+    // Service runs the reserved-word check and case-insensitive
+    // uniqueness so the same rejection surfaces here as on the
+    // /auth/username/available pre-flight.
+    const fmt = validateUsernameFormat(dto.username);
+    if (!fmt.ok) {
+      throw new BadRequestException(fmt.message ?? 'Invalid username.');
+    }
+    const usernameCanonical = canonicalUsername(dto.username);
+    const usernameTaken = await this.usersRepo
+      .createQueryBuilder('u')
+      .select(['u.id'])
+      .where('lower(u.username) = :canonical', {
+        canonical: usernameCanonical,
+      })
+      .getOne();
+    if (usernameTaken) {
+      throw new ConflictException('Username already taken');
+    }
+
     // Date-of-birth sanity: must be in the past + within plausible
     // student-age bounds. Only checked when supplied (the column is
     // nullable for backwards-compat); DTO ensures the value is a
@@ -278,6 +314,8 @@ export class AuthService {
 
     const user = this.usersRepo.create({
       fullName: dto.fullName,
+      username: dto.username.trim(),
+      usernameChangedAt: new Date(),
       email: dto.email ?? null,
       phone: dto.phone ?? null,
       passwordHash,
@@ -1028,6 +1066,10 @@ export class AuthService {
     return {
       id: user.id,
       fullName: user.fullName,
+      username: user.username ?? null,
+      usernameChangedAt: user.usernameChangedAt
+        ? user.usernameChangedAt.toISOString()
+        : null,
       email: user.email,
       phone: user.phone,
       role: user.role,

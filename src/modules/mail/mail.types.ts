@@ -34,6 +34,12 @@ export enum MailEvent {
    * Carries the period + rank for personalised copy.
    */
   WINNER_ANNOUNCEMENT = 'winner_announcement',
+  /**
+   * Internal reminder to the ops mailing list when one or more
+   * leaderboard periods are still awaiting winner selection. Fired
+   * by WinnerSelectionReminderJob.
+   */
+  WINNER_SELECTION_REMINDER = 'winner_selection_reminder',
 
   // ----- Payments --------------------------------------------------------
   /** Receipt for a successful Plus or Pro charge. Carries PDF attachment. */
@@ -110,6 +116,23 @@ export interface WinnerAnnouncementPayload extends BasePayload {
   xpAwarded: number;
   /** Display label of the exam board (BECE / WASSCE / NOVDEC). */
   level: string;
+}
+
+export interface WinnerSelectionReminderPayload extends BasePayload {
+  /**
+   * Periods awaiting selection. The template renders one line
+   * per row so the recipient sees exactly what's outstanding.
+   * Empty list is a no-op — the job upstream short-circuits in
+   * that case and never sends.
+   */
+  pendingPeriods: Array<{
+    examType: string; // 'BECE' | 'WASSCE' | 'NOVDEC' display label
+    periodType: string; // 'weekly' | 'monthly' | 'yearly'
+    periodStart: string; // YYYY-MM-DD
+    candidateCount: number;
+  }>;
+  /** Absolute URL to the admin /admin/winners page. */
+  selectUrl: string;
 }
 
 export interface PasswordResetPayload extends BasePayload {
@@ -217,6 +240,7 @@ export interface MailPayloadByEvent {
   [MailEvent.PASSWORD_RESET]: PasswordResetPayload;
   [MailEvent.ACCOUNT_CREDITED]: AccountCreditedPayload;
   [MailEvent.WINNER_ANNOUNCEMENT]: WinnerAnnouncementPayload;
+  [MailEvent.WINNER_SELECTION_REMINDER]: WinnerSelectionReminderPayload;
   [MailEvent.PAYMENT_SUCCESS]: PaymentSuccessPayload;
   [MailEvent.REFUND_CONFIRMATION]: RefundConfirmationPayload;
   [MailEvent.SUBSCRIPTION_RENEWED]: SubscriptionRenewedPayload;

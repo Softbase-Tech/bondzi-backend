@@ -66,6 +66,22 @@ export class AdminController {
     return this.admin.getUser(id);
   }
 
+  @Get('users/:id/exams')
+  listUserExams(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Query() p: PaginationDto,
+  ) {
+    return this.admin.listUserExams(id, p.page ?? 1, p.limit ?? 20);
+  }
+
+  @Get('users/:id/exams/:examId')
+  getUserExam(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('examId', new ParseUUIDPipe()) examId: string,
+  ) {
+    return this.admin.getUserExam(id, examId);
+  }
+
   @Patch('users/:id/ban')
   banUser(
     @CurrentUser() admin: AuthenticatedUser,

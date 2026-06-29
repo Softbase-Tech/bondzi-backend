@@ -259,7 +259,7 @@ export class WinnerSelectionService {
     };
   }
 
-  listPast(params: {
+  async listPast(params: {
     examType?: ExamType;
     periodType?: LeaderboardPeriodType;
     periodStart?: string;
@@ -288,7 +288,24 @@ export class WinnerSelectionService {
     if (params.periodStart) {
       qb.andWhere('w.periodStart = :ps', { ps: params.periodStart });
     }
-    return qb.take(200).getMany();
+    const rows = await qb.take(200).getMany();
+    // Flatten the joined user so the admin table can render `w.userName`
+    // and `w.username` directly without spelunking through `w.user`. Mobile
+    // already uses `w.user.username`/`w.user.fullName` so this is purely
+    // additive — both shapes coexist on the wire.
+    //
+    // `selectedAt` is sourced from `createdAt` because confirmation
+    // creates the winner row — they're the same event. `selectedBy`
+    // is null today: we don't yet record which admin clicked Confirm
+    // (no audit column on the table), so the admin table renders the
+    // timestamp without an attribution.
+    return rows.map((w) => ({
+      ...w,
+      userName: w.user?.fullName ?? '',
+      username: w.user?.username ?? null,
+      selectedAt: w.createdAt ? w.createdAt.toISOString() : null,
+      selectedBy: null,
+    }));
   }
 
   /**
@@ -298,6 +315,81 @@ export class WinnerSelectionService {
    * eligibility signals so the UI can render `Verified ✓ / anti-cheat`
    * indicators per row.
    */
+  /**
+   * Every (exam_type, period_type, period_start) that has at least
+   * one `leaderboard_entries` row but ZERO `winners` rows — the
+   * "you forgot to pick winners for last week (or the week before
+   * that)" list.
+   *
+   * The admin dashboard previously surfaced only `now - 7d`, so
+   * once a week rolled over without a manual selection the period
+   * fell off the radar. This query is the authoritative source of
+   * truth for what's still open.
+   *
+   * Returns rows sorted by period_start DESC (most recent first),
+   * capped at `limit` so a long-untouched system can't unbox a
+   * huge JSON blob on the admin home.
+   */
+  async listPendingPeriods(
+    opts: {
+      limit?: number;
+      examType?: ExamType;
+      periodType?: LeaderboardPeriodType;
+    } = {},
+  ): Promise<
+    Array<{
+      examType: ExamType;
+      periodType: LeaderboardPeriodType;
+      periodStart: string;
+      candidateCount: number;
+    }>
+  > {
+    const limit = Math.min(200, Math.max(1, opts.limit ?? 50));
+    const qb = this.entriesRepo
+      .createQueryBuilder('lb')
+      // LEFT JOIN winners on the same period-tuple. Rows in the
+      // group with `w.id` NULL are the unselected periods.
+      .leftJoin(
+        Winner,
+        'w',
+        'w.exam_type = lb.exam_type AND ' +
+          'w.period_type = lb.period_type AND ' +
+          'w.period_start = lb.period_start',
+      )
+      .select('lb.exam_type', 'examType')
+      .addSelect('lb.period_type', 'periodType')
+      .addSelect('lb.period_start', 'periodStart')
+      .addSelect('COUNT(DISTINCT lb.user_id)', 'candidateCount')
+      .where("lb.scope = 'national'")
+      .groupBy('lb.exam_type, lb.period_type, lb.period_start')
+      .having('COUNT(w.id) = 0')
+      .orderBy('lb.period_start', 'DESC')
+      .addOrderBy('lb.exam_type', 'ASC')
+      .limit(limit);
+    if (opts.examType) qb.andWhere('lb.exam_type = :et', { et: opts.examType });
+    if (opts.periodType) {
+      qb.andWhere('lb.period_type = :pt', { pt: opts.periodType });
+    }
+    const rows = await qb.getRawMany<{
+      examType: string;
+      periodType: string;
+      periodStart: string | Date;
+      candidateCount: string;
+    }>();
+    return rows.map((r) => ({
+      examType: r.examType as ExamType,
+      periodType: r.periodType as LeaderboardPeriodType,
+      // `period_start` is a DATE column — node-pg surfaces it as a
+      // Date in some configs and a string in others. Normalise to
+      // `YYYY-MM-DD` so the wire shape matches everywhere.
+      periodStart:
+        typeof r.periodStart === 'string'
+          ? r.periodStart.slice(0, 10)
+          : r.periodStart.toISOString().slice(0, 10),
+      candidateCount: parseInt(r.candidateCount, 10) || 0,
+    }));
+  }
+
   async listCandidates(params: {
     examType: ExamType;
     periodType: LeaderboardPeriodType;
@@ -343,6 +435,11 @@ export class WinnerSelectionService {
         return {
           userId: user.id,
           fullName: user.fullName,
+          // Username is the public display name. Surfacing it alongside
+          // `fullName` lets admin reviewers see exactly what the
+          // leaderboard / winners-announcement post will show without
+          // them having to cross-reference the user detail page.
+          username: user.username ?? null,
           avatarUrl: user.avatarUrl ?? null,
           rank: index + 1,
           weeklyXp: entry.weeklyXp,
@@ -371,26 +468,36 @@ export class WinnerSelectionService {
       .innerJoin('w.user', 'u')
       .select('w.user_id', 'user_id')
       .addSelect('u.full_name', 'full_name')
+      .addSelect('u.username', 'username')
       .addSelect('COUNT(w.id)', 'wins')
       .addSelect('SUM(w.xp_earned)', 'total_xp')
       .where('w.exam_type = :et', { et: examType })
       .andWhere('w.xp_issued = true')
       .groupBy('w.user_id')
       .addGroupBy('u.full_name')
+      .addGroupBy('u.username')
       .orderBy('wins', 'DESC')
       .addOrderBy('total_xp', 'DESC')
       .limit(20)
       .getRawMany<{
         user_id: string;
         full_name: string;
+        username: string | null;
         wins: string;
         total_xp: string;
       }>();
+    // Admin `HallOfFameRow` shape: examType (= filter), totalWins,
+    // totalXpFromPrizes. The previous shape used `wins` / `totalXp`
+    // which the admin table read as undefined, leaving those columns
+    // empty. Echo the requested examType on each row so the admin
+    // filter chip + the column align.
     return rows.map((r) => ({
       userId: r.user_id,
       fullName: r.full_name,
-      wins: parseInt(r.wins, 10) || 0,
-      totalXp: parseInt(r.total_xp, 10) || 0,
+      username: r.username ?? null,
+      examType,
+      totalWins: parseInt(r.wins, 10) || 0,
+      totalXpFromPrizes: parseInt(r.total_xp, 10) || 0,
     }));
   }
 

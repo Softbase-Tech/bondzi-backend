@@ -19,6 +19,7 @@ import {
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateEmailPreferencesDto } from './dto/update-email-preferences.dto';
+import { UpdateUsernameDto } from './dto/update-username.dto';
 import { ChangePasswordDto } from '../auth/dto/change-password.dto';
 
 class SetSubjectsDto {
@@ -58,6 +59,18 @@ export class UsersController {
     @Body() dto: UpdateProfileDto,
   ) {
     return this.users.updateProfile(user.id, dto);
+  }
+
+  @Patch('me/username')
+  @ApiOperation({
+    summary:
+      'Set or change the public username. Allowed at most once every 90 days after the initial back-fill.',
+  })
+  updateUsername(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdateUsernameDto,
+  ) {
+    return this.users.updateUsername(user.id, dto.username);
   }
 
   @Patch('me/email-preferences')

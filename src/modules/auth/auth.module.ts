@@ -17,6 +17,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { ReferralsModule } from '../referrals/referrals.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
@@ -34,6 +35,11 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
     // Without this import the DI container can't resolve TokensService,
     // which boot-fails the entire backend.
     SubscriptionsModule,
+    // Public username-availability check on AuthController calls
+    // UsersService.checkUsernameAvailability — exposing it from the
+    // pre-auth namespace lets the mobile register screen query before
+    // a JWT exists.
+    UsersModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],

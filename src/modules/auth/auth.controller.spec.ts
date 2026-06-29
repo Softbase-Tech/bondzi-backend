@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { UsersService } from '../users/users.service';
 import { ExamType } from '../../common/types/enums';
 import type { Request } from 'express';
 
@@ -41,9 +42,17 @@ describe('AuthController', () => {
       updateExamType: jest.fn(),
     } as unknown as jest.Mocked<AuthService>;
 
+    const users = {
+      checkUsernameAvailability: jest.fn(),
+      updateUsername: jest.fn(),
+    } as unknown as jest.Mocked<UsersService>;
+
     const moduleRef = await Test.createTestingModule({
       controllers: [AuthController],
-      providers: [{ provide: AuthService, useValue: auth }],
+      providers: [
+        { provide: AuthService, useValue: auth },
+        { provide: UsersService, useValue: users },
+      ],
     }).compile();
 
     controller = moduleRef.get(AuthController);

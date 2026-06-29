@@ -25,6 +25,14 @@ import {
 import { WinnerSelectionService } from './winner-selection.service';
 import type { Winner } from './entities/winner.entity';
 
+/** Flattened winner shape returned to the admin — adds `userName` and
+ * `username` lifted from the joined user so the admin table can render
+ * a single object. Mobile reads through `w.user` instead. */
+type WinnerWithUserSummary = Winner & {
+  userName: string;
+  username: string | null;
+};
+
 /**
  * Admin "Winners" page surface. The public `/leaderboard/winners`
  * controller is consumer-facing (mobile renders past winners on the
@@ -51,7 +59,11 @@ export class AdminWinnersController {
     @Query('examType') examTypeParam?: string,
     @Query('periodType') periodTypeParam?: string,
     @Query('periodStart') periodStartParam?: string,
-  ): Promise<{ items: Winner[]; total: number; nextCursor: string | null }> {
+  ): Promise<{
+    items: WinnerWithUserSummary[];
+    total: number;
+    nextCursor: string | null;
+  }> {
     const examType =
       examTypeParam &&
       Object.values(ExamType).includes(examTypeParam as ExamType)
@@ -84,6 +96,41 @@ export class AdminWinnersController {
         ? (examTypeParam as ExamType)
         : ExamType.WASSCE;
     return this.winners.allTimeHallOfFame(examType);
+  }
+
+  /**
+   * Every (exam_type, period_type, period_start) tuple that has
+   * leaderboard entries but NO winners selected yet. Used by the
+   * admin /admin/winners page to render the full pending list —
+   * not just last week. So "I forgot to pick winners three weeks
+   * ago" is still actionable.
+   */
+  @Get('pending-periods')
+  @ApiOperation({
+    summary:
+      'List every period (current + past) that still needs winner selection.',
+  })
+  pendingPeriods(
+    @Query('limit') limit?: string,
+    @Query('examType') examTypeParam?: string,
+    @Query('periodType') periodTypeParam?: string,
+  ) {
+    const examType =
+      examTypeParam &&
+      Object.values(ExamType).includes(examTypeParam as ExamType)
+        ? (examTypeParam as ExamType)
+        : undefined;
+    const periodType =
+      periodTypeParam === (LeaderboardPeriodType.MONTHLY as string)
+        ? LeaderboardPeriodType.MONTHLY
+        : periodTypeParam === (LeaderboardPeriodType.WEEKLY as string)
+          ? LeaderboardPeriodType.WEEKLY
+          : undefined;
+    return this.winners.listPendingPeriods({
+      limit: limit ? parseInt(limit, 10) : 50,
+      examType,
+      periodType,
+    });
   }
 
   @Get('candidates')

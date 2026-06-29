@@ -16,6 +16,11 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { ExamType, Gender } from '../../../common/types/enums';
+import {
+  USERNAME_MAX_LENGTH,
+  USERNAME_MIN_LENGTH,
+  USERNAME_REGEX,
+} from '../../users/username.rules';
 
 export class RegisterDto {
   @ApiProperty()
@@ -23,6 +28,28 @@ export class RegisterDto {
   @MinLength(2)
   @MaxLength(120)
   fullName!: string;
+
+  /**
+   * Public handle shown on leaderboards. Required for new sign-ups
+   * going forward. Format-only validation here (length + character
+   * set); reserved-word and uniqueness checks happen in AuthService
+   * after the body is validated, so the error surfaces against the
+   * `username` key consistently regardless of which gate trips.
+   */
+  @ApiProperty({
+    description:
+      'Public handle. Letters and digits only, 6-24 chars, case-insensitive uniqueness.',
+    minLength: USERNAME_MIN_LENGTH,
+    maxLength: USERNAME_MAX_LENGTH,
+    example: 'ekowmensah',
+  })
+  @IsString()
+  @MinLength(USERNAME_MIN_LENGTH)
+  @MaxLength(USERNAME_MAX_LENGTH)
+  @Matches(USERNAME_REGEX, {
+    message: 'username must be letters and numbers only (no spaces or symbols)',
+  })
+  username!: string;
 
   @ApiPropertyOptional()
   @ValidateIf((o: RegisterDto) => !o.phone)

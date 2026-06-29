@@ -31,6 +31,21 @@ export class User {
   @Column({ name: 'full_name', type: 'text' })
   fullName: string;
 
+  // Public handle used on leaderboards / Hall of Fame / referrals.
+  // Nullable for accounts predating migration 1940 — the mobile client
+  // forces a back-fill modal on first session post-deploy so they're
+  // populated organically. Uniqueness enforced case-insensitively via
+  // a partial unique index on `lower(username)`, not at the column
+  // level — see 1940000000000-AddUsername.ts.
+  @Column({ type: 'text', nullable: true })
+  username: string | null;
+
+  // Powers the 90-day "username can only change once per quarter"
+  // cooldown. NULL means never set; first-time back-fill is free, the
+  // window starts ticking on that first save.
+  @Column({ name: 'username_changed_at', type: 'timestamptz', nullable: true })
+  usernameChangedAt: Date | null;
+
   @Column({ type: 'text', unique: true, nullable: true })
   email: string | null;
 
