@@ -207,9 +207,39 @@ describe('AdminService', () => {
   });
 
   it('listUsers defaults to limit=20 newest-first', async () => {
+    // Switched from findAndCount to createQueryBuilder so the optional
+    // `search` param can compose case-insensitive LIKE clauses. The
+    // unfiltered path still goes through the same query builder — assert
+    // on the orderBy + take to lock in the defaults.
+    const qb = {
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+    };
+    (usersRepo as unknown as { createQueryBuilder: jest.Mock }).createQueryBuilder =
+      jest.fn().mockReturnValue(qb);
     await service.listUsers({} as never);
-    expect(usersRepo.findAndCount).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 20, order: { createdAt: 'DESC' } }),
+    expect(qb.orderBy).toHaveBeenCalledWith('u.createdAt', 'DESC');
+    expect(qb.take).toHaveBeenCalledWith(20);
+    expect(qb.andWhere).not.toHaveBeenCalled();
+  });
+
+  it('listUsers wires the search param into a case-insensitive LIKE', async () => {
+    const qb = {
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+    };
+    (usersRepo as unknown as { createQueryBuilder: jest.Mock }).createQueryBuilder =
+      jest.fn().mockReturnValue(qb);
+    await service.listUsers({ search: 'Ekow' } as never);
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('like :q'),
+      { q: '%ekow%' },
     );
   });
 

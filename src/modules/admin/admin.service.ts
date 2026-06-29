@@ -295,14 +295,31 @@ export class AdminService {
     return { items: enriched, total, nextCursor: null };
   }
 
-  async listUsers(p: PaginationDto): Promise<PaginatedResult<User>> {
+  async listUsers(
+    p: PaginationDto & { search?: string },
+  ): Promise<PaginatedResult<User>> {
     const page = p.page ?? 1;
     const limit = p.limit ?? 20;
-    const [items, total] = await this.usersRepo.findAndCount({
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    // Optional search: matches against full_name / email / phone /
+    // username with case-insensitive LIKE. Powers the admin "send push
+    // to a specific user" picker — the operator types a name, the UI
+    // shows the top N matches. Empty / undefined search falls through
+    // to the unfiltered list so existing callers (the users index page)
+    // don't change behaviour.
+    const search = p.search?.trim();
+    const qb = this.usersRepo
+      .createQueryBuilder('u')
+      .orderBy('u.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+    if (search) {
+      const needle = `%${search.toLowerCase()}%`;
+      qb.andWhere(
+        '(lower(u.full_name) like :q OR lower(u.email) like :q OR lower(u.username) like :q OR u.phone like :q)',
+        { q: needle },
+      );
+    }
+    const [items, total] = await qb.getManyAndCount();
     return { items, total, nextCursor: null };
   }
 

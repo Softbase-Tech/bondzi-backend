@@ -57,8 +57,8 @@ export class AdminController {
   }
 
   @Get('users')
-  listUsers(@Query() p: PaginationDto) {
-    return this.admin.listUsers(p);
+  listUsers(@Query() p: PaginationDto, @Query('search') search?: string) {
+    return this.admin.listUsers({ ...p, search });
   }
 
   @Get('users/:id')
