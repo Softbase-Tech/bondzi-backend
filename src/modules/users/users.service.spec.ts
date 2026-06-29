@@ -204,7 +204,20 @@ describe('UsersService', () => {
   // ----------------------------- getStats -----------------------------
 
   describe('getStats', () => {
-    function stubAggregate(row: Record<string, string> | null) {
+    function stubUserAndAggregate(
+      row: Record<string, string> | null,
+      userOverrides: Partial<User> = {},
+    ) {
+      usersRepo.findOne.mockResolvedValueOnce(
+        makeUser({
+          streakDays: 0,
+          longestStreak: 0,
+          lastStudyDate: null,
+          levelXp: '0',
+          currentLevel: 1,
+          ...userOverrides,
+        }),
+      );
       answersRepo.createQueryBuilder.mockReturnValueOnce({
         innerJoin: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
@@ -213,19 +226,35 @@ describe('UsersService', () => {
         setParameters: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue(row),
       });
+      // activeDaysLast7 reads exam_answers via manager.query — return an
+      // empty day list so the mask defaults to all-false, decoupling
+      // these existing tests from the new field's exact shape.
+      (answersRepo as unknown as { manager: { query: jest.Mock } }).manager = {
+        query: jest.fn().mockResolvedValue([]),
+      };
     }
 
     it('returns zero-state when the user has no exam answers', async () => {
-      stubAggregate(null);
+      stubUserAndAggregate(null);
       const out = await service.getStats('user-1');
       expect(out.totalQuestionsAttempted).toBe(0);
       expect(out.accuracy).toBe(0);
       expect(out.xp).toBe(0);
       expect(out.level).toBe(1);
+      expect(out.streakDays).toBe(0);
+      expect(out.activeDaysLast7).toEqual([
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+      ]);
     });
 
     it('computes accuracy as a 0-100 rounded-1dp number', async () => {
-      stubAggregate({
+      stubUserAndAggregate({
         total: '40',
         correct: '30',
         timeMs: '0',
@@ -239,7 +268,7 @@ describe('UsersService', () => {
     });
 
     it('caps dailyGoalProgress at the configured dailyGoal (20)', async () => {
-      stubAggregate({
+      stubUserAndAggregate({
         total: '100',
         correct: '90',
         timeMs: '0',
@@ -252,7 +281,7 @@ describe('UsersService', () => {
     });
 
     it('returns studyMinutesToday converted from ms', async () => {
-      stubAggregate({
+      stubUserAndAggregate({
         total: '1',
         correct: '0',
         timeMs: '0',
@@ -264,18 +293,53 @@ describe('UsersService', () => {
       expect(out.studyMinutesToday).toBe(10);
     });
 
-    it('awards 10 XP per correct answer and resolves the level band', async () => {
-      stubAggregate({
-        total: '20',
-        correct: '15', // 150 XP — past level 1's 100
-        timeMs: '0',
-        today: '0',
-        week: '0',
-        todayMs: '0',
-      });
+    it('reports xp + level from the persisted user.levelXp / currentLevel', async () => {
+      // /users/me/stats now reads the canonical XP wallet off the User
+      // row — the legacy `correct * 10` recompute used a different level
+      // curve than gamification/level.util and drifted from /auth/me.
+      stubUserAndAggregate(
+        {
+          total: '20',
+          correct: '15',
+          timeMs: '0',
+          today: '0',
+          week: '0',
+          todayMs: '0',
+        },
+        { levelXp: '300', currentLevel: 3 },
+      );
       const out = await service.getStats('user-1');
-      expect(out.xp).toBe(150);
-      expect(out.level).toBe(2);
+      expect(out.xp).toBe(300);
+      expect(out.level).toBe(3);
+    });
+
+    it('passes streak fields straight through from the user row', async () => {
+      stubUserAndAggregate(
+        {
+          total: '0',
+          correct: '0',
+          timeMs: '0',
+          today: '0',
+          week: '0',
+          todayMs: '0',
+        },
+        {
+          streakDays: 12,
+          longestStreak: 30,
+          lastStudyDate: '2099-01-01',
+        },
+      );
+      const out = await service.getStats('user-1');
+      expect(out.streakDays).toBe(12);
+      expect(out.longestStreak).toBe(30);
+      expect(out.lastStudyDate).toBe('2099-01-01');
+    });
+
+    it('throws NotFound when the user does not exist', async () => {
+      usersRepo.findOne.mockResolvedValueOnce(null);
+      await expect(service.getStats('ghost')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 

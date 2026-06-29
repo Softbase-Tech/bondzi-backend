@@ -218,8 +218,9 @@ describe('AdminService', () => {
       andWhere: jest.fn().mockReturnThis(),
       getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
     };
-    (usersRepo as unknown as { createQueryBuilder: jest.Mock }).createQueryBuilder =
-      jest.fn().mockReturnValue(qb);
+    (
+      usersRepo as unknown as { createQueryBuilder: jest.Mock }
+    ).createQueryBuilder = jest.fn().mockReturnValue(qb);
     await service.listUsers({} as never);
     expect(qb.orderBy).toHaveBeenCalledWith('u.createdAt', 'DESC');
     expect(qb.take).toHaveBeenCalledWith(20);
@@ -234,8 +235,9 @@ describe('AdminService', () => {
       andWhere: jest.fn().mockReturnThis(),
       getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
     };
-    (usersRepo as unknown as { createQueryBuilder: jest.Mock }).createQueryBuilder =
-      jest.fn().mockReturnValue(qb);
+    (
+      usersRepo as unknown as { createQueryBuilder: jest.Mock }
+    ).createQueryBuilder = jest.fn().mockReturnValue(qb);
     await service.listUsers({ search: 'Ekow' } as never);
     expect(qb.andWhere).toHaveBeenCalledWith(
       expect.stringContaining('like :q'),
