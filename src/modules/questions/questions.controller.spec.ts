@@ -21,7 +21,11 @@ import { ExamType, UserRole } from '../../common/types/enums';
 describe('QuestionsController', () => {
   let controller: QuestionsController;
   let questions: jest.Mocked<QuestionsService>;
-  let subscriptions: { hasEntitlement: jest.Mock };
+  let subscriptions: {
+    hasEntitlement: jest.Mock;
+    assertCanStudySubject: jest.Mock;
+    assertCanStudySubjects: jest.Mock;
+  };
 
   beforeEach(async () => {
     questions = {
@@ -39,6 +43,13 @@ describe('QuestionsController', () => {
     } as unknown as jest.Mocked<QuestionsService>;
     subscriptions = {
       hasEntitlement: jest.fn().mockResolvedValue(false),
+      // assertCanStudySubject* are entitlement-gate helpers called
+      // by the past-paper + adaptive endpoints. The tests in this
+      // file don't assert on them — a resolved promise lets the
+      // controller proceed past the gate, then assertions on the
+      // downstream service mocks run as before.
+      assertCanStudySubject: jest.fn().mockResolvedValue(undefined),
+      assertCanStudySubjects: jest.fn().mockResolvedValue(undefined),
     };
     const moduleRef = await Test.createTestingModule({
       controllers: [QuestionsController],

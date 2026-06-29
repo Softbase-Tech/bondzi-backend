@@ -142,6 +142,27 @@ async function bootstrap() {
       next();
     },
   );
+  app.use(
+    '/api/v1/mail/webhooks',
+    raw({ type: '*/*' }),
+    (
+      req: Request & { rawBody?: Buffer },
+      _res: Response,
+      next: NextFunction,
+    ) => {
+      const buf = req.body as Buffer | undefined;
+      req.rawBody = buf;
+      try {
+        req.body =
+          buf && buf.length > 0
+            ? (JSON.parse(buf.toString('utf8')) as unknown)
+            : {};
+      } catch {
+        req.body = {};
+      }
+      next();
+    },
+  );
   // Body-size cap. Two layers (nginx `client_max_body_size 4m;` and the
   // Express parser below) must match or the layer with the tighter cap
   // silently truncates and the other layer returns a confusing error.

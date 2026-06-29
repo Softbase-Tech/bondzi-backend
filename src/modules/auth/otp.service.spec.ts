@@ -37,11 +37,16 @@ describe('OtpService', () => {
       raw: { getdel: jest.fn() },
     };
     sms = { send: jest.fn() };
+    const { MailService } = await import('../mail/mail.service');
+    const mail = { send: jest.fn().mockResolvedValue({ ok: true }) };
     const moduleRef = await Test.createTestingModule({
       providers: [
         OtpService,
         { provide: RedisService, useValue: redis },
         { provide: AfricasTalkingSmsProvider, useValue: sms },
+        // sendEmail goes through MailService — phone-OTP specs don't
+        // exercise it, but the DI graph still needs the provider.
+        { provide: MailService, useValue: mail },
       ],
     }).compile();
     service = moduleRef.get(OtpService);

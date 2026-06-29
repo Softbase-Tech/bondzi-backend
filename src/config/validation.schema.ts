@@ -97,10 +97,28 @@ export const envValidationSchema = Joi.object({
   // (mail.config no longer reads them). Existing rows in .env can stay
   // for the cutover; they're just ignored.
   MAIL_ENABLED: Joi.string().valid('true', 'false').default('true'),
-  RESEND_API_KEY: Joi.string().allow('').default(''),
+  RESEND_API_KEY: Joi.when('NODE_ENV', {
+    is: 'production',
+    then: Joi.when('MAIL_ENABLED', {
+      is: 'true',
+      then: Joi.string().min(10).required(),
+      otherwise: Joi.string().allow('').default(''),
+    }),
+    otherwise: Joi.string().allow('').default(''),
+  }),
   MAIL_FROM: Joi.string().default('Bondzi <noreply@bondzi.app>'),
   MAIL_REPLY_TO: Joi.string().email().default('support@bondzi.app'),
   MAIL_WEB_URL: Joi.string().uri().allow('').default(''),
+  RESEND_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+  /**
+   * Comma-separated list of email addresses that receive the weekly
+   * "select winners" reminder. Defaults to ekow@bondzi.online +
+   * info@bondzi.online when unset. Setting it to an empty string
+   * disables the reminder send.
+   */
+  WINNER_REMINDER_RECIPIENTS: Joi.string()
+    .allow('')
+    .default('ekow@bondzi.online,info@bondzi.online'),
 
   GOOGLE_CLIENT_ID: Joi.string().allow('').default(''),
 

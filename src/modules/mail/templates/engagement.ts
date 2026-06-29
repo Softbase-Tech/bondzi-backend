@@ -14,7 +14,13 @@ import {
   StreakAtRiskPayload,
   WeeklyDigestPayload,
 } from '../mail.types';
-import { brand, escapeText, formatDate, renderLayout } from './_layout';
+import {
+  brand,
+  escapeAttr,
+  escapeText,
+  formatDate,
+  renderLayout,
+} from './_layout';
 
 function greet(name: string | undefined): string {
   return name ? `Hi ${escapeText(name)},` : 'Hi there,';
@@ -45,6 +51,11 @@ export function buildStreakAtRisk(
       cta: { label: 'Practise now', url: webUrl },
       webUrl,
     }),
+    text:
+      `${greet(payload.recipientName).replace(/<[^>]+>/g, '')}\n\n` +
+      `Your ${payload.streakDays}-day Bondzi streak is about to reset. ` +
+      `Answer one question before ${formatDate(payload.expiresAt)} to keep it alive.\n\n` +
+      `Open Bondzi: ${webUrl}`,
   };
 }
 
@@ -73,6 +84,9 @@ export function buildLevelUp(
       cta: { label: 'See your profile', url: webUrl },
       webUrl,
     }),
+    text:
+      `You earned ${payload.xpEarned} XP and reached Level ${payload.newLevel}. ` +
+      `Open Bondzi: ${webUrl}`,
   };
 }
 
@@ -105,6 +119,9 @@ export function buildReferralQualified(
       cta: { label: 'Share your code', url: webUrl },
       webUrl,
     }),
+    text:
+      `${payload.refereeName} upgraded using your referral code — +${payload.rewardXp} XP credited.\n\n` +
+      `Open Bondzi: ${webUrl}`,
   };
 }
 
@@ -143,8 +160,19 @@ export function buildWeeklyDigest(
     </table>
 
     <p style="margin:0 0 14px;">Keep at it — exam prep is a marathon, not a sprint.</p>
+    ${
+      payload.unsubscribeUrl
+        ? `<p style="margin:16px 0 0;font-size:11px;color:${brand.muted};">
+             <a href="${escapeAttr(payload.unsubscribeUrl)}" style="color:${brand.muted};">Unsubscribe</a>
+             from weekly digests and engagement emails.
+           </p>`
+        : ''
+    }
     <p style="margin:0 0 6px;">— The Bondzi team</p>
   `;
+  const textUnsub = payload.unsubscribeUrl
+    ? `\n\nUnsubscribe: ${payload.unsubscribeUrl}`
+    : '';
   return {
     subject: `📈 ${payload.questionsAnswered} questions, ${payload.xpThisWeek} XP this week`,
     html: renderLayout({
@@ -154,5 +182,9 @@ export function buildWeeklyDigest(
       cta: { label: 'Open Bondzi', url: webUrl },
       webUrl,
     }),
+    text:
+      `Questions: ${payload.questionsAnswered}, correct rate: ${Math.round(payload.correctRate * 100)}%, ` +
+      `XP: ${payload.xpThisWeek}, streak: ${payload.currentStreak} days.\n\n` +
+      `Open Bondzi: ${webUrl}${textUnsub}`,
   };
 }

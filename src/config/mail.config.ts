@@ -29,4 +29,25 @@ export default registerAs('mail', () => ({
    */
   webUrl:
     process.env.MAIL_WEB_URL ?? process.env.APP_URL ?? 'https://bondzi.app',
+  webhookSecret: process.env.RESEND_WEBHOOK_SECRET ?? '',
+  /**
+   * Ops mailing list for the weekly "select winners" reminder
+   * (WinnerSelectionReminderJob). Comma-separated emails. Empty
+   * env → the default two addresses below; pass an empty string
+   * explicitly to disable the reminder send.
+   *
+   * Each address must be a real inbox someone reads — the cron is
+   * a poke, not an alert, and bouncing it does no good.
+   */
+  winnerReminderRecipients: parseRecipients(
+    process.env.WINNER_REMINDER_RECIPIENTS ??
+      'ekow@bondzi.online,info@bondzi.online',
+  ),
 }));
+
+function parseRecipients(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s.includes('@'));
+}

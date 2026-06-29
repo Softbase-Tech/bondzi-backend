@@ -11,6 +11,7 @@ import {
   AccountType,
   EntitlementAuditAction,
   ExamType,
+  NotificationChannel,
   PaymentKind,
   SubscriptionStatus,
 } from '../../common/types/enums';
@@ -22,6 +23,10 @@ import {
   GrantEntitlementDto,
   RevokeEntitlementDto,
 } from './dto/entitlement-admin.dto';
+import { User } from '../users/entities/user.entity';
+import { NotificationsService } from '../notifications/notifications.service';
+import { MailService } from '../mail/mail.service';
+import { MailEvent } from '../mail/mail.types';
 
 /**
  * Admin entitlement service. Centralises the manual grant / revoke /
@@ -57,7 +62,11 @@ export class EntitlementsAdminService {
     private readonly plansRepo: Repository<SubscriptionPlanEntity>,
     @InjectRepository(AuditLog)
     private readonly auditRepo: Repository<AuditLog>,
+    @InjectRepository(User)
+    private readonly usersRepo: Repository<User>,
     private readonly subs: SubscriptionsService,
+    private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
   ) {}
 
   /**
@@ -187,7 +196,84 @@ export class EntitlementsAdminService {
     this.logger.log(
       `[entitlement-admin] grant by ${adminId}: user=${dto.userId} level=${dto.level} account=${dto.account}`,
     );
+
+    // Notify the user — push + email — so a manual grant doesn't
+    // arrive silently. Both dispatches are best-effort: a Firebase
+    // or Resend outage must not roll back the grant itself (the
+    // audit row already records it for ops). Each catches its own
+    // errors to keep them independent.
+    await this.notifyGrant(saved, plan, dto.reason);
+
     return saved;
+  }
+
+  /**
+   * Side-effect of `grant`: push + email to the credited user.
+   * Centralised so the same routine fires on any future grant call
+   * site (e.g. promo-redemption / partnership ingest jobs).
+   */
+  private async notifyGrant(
+    sub: Subscription,
+    plan: SubscriptionPlanEntity,
+    adminNote: string | undefined,
+  ): Promise<void> {
+    const user = await this.usersRepo.findOne({ where: { id: sub.userId } });
+    if (!user) return;
+
+    const accountLabel = plan.account === AccountType.PRO ? 'Pro' : 'Plus';
+    const levelLabel = plan.level.toUpperCase();
+    const validUntil = sub.expiresAt
+      ? sub.expiresAt.toLocaleDateString('en-GB', {
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric',
+        })
+      : 'Lifetime';
+
+    // Push first (instant in-app surface), email second (durable
+    // record). Each in its own try/catch so a failure on one side
+    // doesn't suppress the other.
+    await this.notifications
+      .send({
+        userId: user.id,
+        channel: NotificationChannel.PUSH,
+        title: `${accountLabel} unlocked on ${levelLabel}`,
+        body: adminNote
+          ? `${adminNote.slice(0, 110)}`
+          : `Our team has credited your account. Tap to start using premium features.`,
+        data: {
+          type: 'account_credited',
+          account: plan.account,
+          level: plan.level,
+          subscriptionId: sub.id,
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(
+          `[entitlement-admin] push notify failed for user=${user.id}: ${(err as Error).message}`,
+        ),
+      );
+
+    if (user.email) {
+      await this.mail
+        .send(
+          MailEvent.ACCOUNT_CREDITED,
+          user.email,
+          {
+            recipientName: user.fullName.split(' ')[0],
+            account: accountLabel,
+            level: levelLabel,
+            validUntil,
+            adminNote: adminNote?.slice(0, 500),
+          },
+          { userId: user.id },
+        )
+        .catch((err) =>
+          this.logger.warn(
+            `[entitlement-admin] email notify failed for user=${user.id}: ${(err as Error).message}`,
+          ),
+        );
+    }
   }
 
   /**

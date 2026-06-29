@@ -12,8 +12,34 @@ export enum MailEvent {
   WELCOME = 'welcome',
   /** Verify-email link (post-registration or email change). */
   EMAIL_VERIFICATION = 'email_verification',
+  /**
+   * Pre-registration email OTP. The user types this 6-digit code into
+   * the mobile signup screen; the server verifies it before creating
+   * the user row, which proves they control the address. Lives next
+   * to EMAIL_VERIFICATION but is functionally different: OTP is
+   * pre-account, verify-link is post-account.
+   */
+  EMAIL_OTP = 'email_otp',
   /** Time-bounded password-reset link. */
   PASSWORD_RESET = 'password_reset',
+  /**
+   * Admin manually credited the user with Plus/Pro entitlement.
+   * Distinct from PAYMENT_SUCCESS — there's no transaction, no
+   * receipt, no Paystack reference; copy explains the grant + how
+   * long it lasts.
+   */
+  ACCOUNT_CREDITED = 'account_credited',
+  /**
+   * Leaderboard winner notification (weekly / monthly / yearly).
+   * Carries the period + rank for personalised copy.
+   */
+  WINNER_ANNOUNCEMENT = 'winner_announcement',
+  /**
+   * Internal reminder to the ops mailing list when one or more
+   * leaderboard periods are still awaiting winner selection. Fired
+   * by WinnerSelectionReminderJob.
+   */
+  WINNER_SELECTION_REMINDER = 'winner_selection_reminder',
 
   // ----- Payments --------------------------------------------------------
   /** Receipt for a successful Plus or Pro charge. Carries PDF attachment. */
@@ -62,6 +88,51 @@ export interface WelcomePayload extends BasePayload {
 export interface EmailVerificationPayload extends BasePayload {
   verificationUrl: string;
   expiresInMinutes: number;
+}
+
+export interface EmailOtpPayload extends BasePayload {
+  /** The 6-digit code rendered prominently in the mail body. */
+  code: string;
+  expiresInMinutes: number;
+}
+
+export interface AccountCreditedPayload extends BasePayload {
+  /** 'Plus' or 'Pro' — display label. */
+  account: string;
+  /** 'BECE' / 'WASSCE' / 'NOVDEC' — display label. */
+  level: string;
+  /** ISO date of grant expiry, or 'Lifetime' for Plus. */
+  validUntil: string;
+  /** Free-form note the admin attached at grant time. Optional. */
+  adminNote?: string;
+}
+
+export interface WinnerAnnouncementPayload extends BasePayload {
+  /** 'weekly' | 'monthly' | 'yearly' — display label. */
+  period: string;
+  /** 1-based rank within the period (1 = first place). */
+  rank: number;
+  /** XP awarded with this win. */
+  xpAwarded: number;
+  /** Display label of the exam board (BECE / WASSCE / NOVDEC). */
+  level: string;
+}
+
+export interface WinnerSelectionReminderPayload extends BasePayload {
+  /**
+   * Periods awaiting selection. The template renders one line
+   * per row so the recipient sees exactly what's outstanding.
+   * Empty list is a no-op — the job upstream short-circuits in
+   * that case and never sends.
+   */
+  pendingPeriods: Array<{
+    examType: string; // 'BECE' | 'WASSCE' | 'NOVDEC' display label
+    periodType: string; // 'weekly' | 'monthly' | 'yearly'
+    periodStart: string; // YYYY-MM-DD
+    candidateCount: number;
+  }>;
+  /** Absolute URL to the admin /admin/winners page. */
+  selectUrl: string;
 }
 
 export interface PasswordResetPayload extends BasePayload {
@@ -158,13 +229,18 @@ export interface WeeklyDigestPayload extends BasePayload {
   xpThisWeek: number;
   currentStreak: number;
   rankDelta: number; // +5 / -3
+  unsubscribeUrl?: string;
 }
 
 /** Map from event → payload type for compile-time checking. */
 export interface MailPayloadByEvent {
   [MailEvent.WELCOME]: WelcomePayload;
   [MailEvent.EMAIL_VERIFICATION]: EmailVerificationPayload;
+  [MailEvent.EMAIL_OTP]: EmailOtpPayload;
   [MailEvent.PASSWORD_RESET]: PasswordResetPayload;
+  [MailEvent.ACCOUNT_CREDITED]: AccountCreditedPayload;
+  [MailEvent.WINNER_ANNOUNCEMENT]: WinnerAnnouncementPayload;
+  [MailEvent.WINNER_SELECTION_REMINDER]: WinnerSelectionReminderPayload;
   [MailEvent.PAYMENT_SUCCESS]: PaymentSuccessPayload;
   [MailEvent.REFUND_CONFIRMATION]: RefundConfirmationPayload;
   [MailEvent.SUBSCRIPTION_RENEWED]: SubscriptionRenewedPayload;

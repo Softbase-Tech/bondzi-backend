@@ -260,11 +260,16 @@ export class GamificationService {
       // notification" backstop a few hours later.
       const userRow = await this.usersRepo.findOne({ where: { id: userId } });
       if (userRow?.email) {
-        await this.mail.send(MailEvent.LEVEL_UP, userRow.email, {
-          recipientName: userRow.fullName ?? undefined,
-          newLevel: txResult.newLevel,
-          xpEarned: amount,
-        });
+        await this.mail.send(
+          MailEvent.LEVEL_UP,
+          userRow.email,
+          {
+            recipientName: userRow.fullName ?? undefined,
+            newLevel: txResult.newLevel,
+            xpEarned: amount,
+          },
+          { userId, dedupKey: `level_up:${userId}:${txResult.newLevel}` },
+        );
       }
     }
 

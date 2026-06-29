@@ -48,11 +48,31 @@ describe('AdminNotificationsService', () => {
     subsRepo = { createQueryBuilder: jest.fn() };
     notifications = { send: jest.fn().mockResolvedValue(undefined) };
 
+    const { Notification } =
+      await import('../notifications/entities/notification.entity');
+    const notificationsRepo = {
+      createQueryBuilder: jest.fn(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        delete: jest.fn().mockReturnThis(),
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+        execute: jest.fn().mockResolvedValue({ affected: 0 }),
+      })),
+    };
     const moduleRef = await Test.createTestingModule({
       providers: [
         AdminNotificationsService,
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: getRepositoryToken(Subscription), useValue: subsRepo },
+        {
+          provide: getRepositoryToken(Notification),
+          useValue: notificationsRepo,
+        },
         { provide: NotificationsService, useValue: notifications },
       ],
     }).compile();

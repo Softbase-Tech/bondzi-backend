@@ -19,12 +19,17 @@ import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import {
   AuthProvider,
   ExamType,
+  Gender,
   SchoolLevel,
   UserRole,
 } from '../../common/types/enums';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { RegisterDto } from './dto/register.dto';
+import {
+  canonicalUsername,
+  validateUsernameFormat,
+} from '../users/username.rules';
 import { TokensService, TokenPair } from './tokens.service';
 import { OtpService } from './otp.service';
 import { GoogleOAuthService } from './google-oauth.service';
@@ -52,6 +57,18 @@ function schoolLevelFor(examType: ExamType): SchoolLevel {
 export interface SafeUser {
   id: string;
   fullName: string;
+  /**
+   * Public handle used on leaderboards / Hall of Fame. Nullable for
+   * accounts created before migration 1940 — mobile prompts those
+   * users to back-fill on first session post-deploy.
+   */
+  username: string | null;
+  /**
+   * Last time the username was set or changed. NULL = never set. Used
+   * by the mobile client to drive the 90-day "next change available in
+   * N days" hint without re-querying.
+   */
+  usernameChangedAt: string | null;
   email: string | null;
   phone: string | null;
   role: UserRole;
@@ -72,6 +89,26 @@ export interface SafeUser {
   longestStreak: number;
   countryCode: string;
   isActive: boolean;
+  emailVerified: boolean;
+  /**
+   * Engagement email preferences. Mirrored from the User entity so
+   * mobile can render the Settings → Notifications toggles without a
+   * second roundtrip. Backend defaults each to `true` at user
+   * creation; users opt out per-channel via PATCH /users/me/email-preferences.
+   */
+  emailWeeklyDigestEnabled: boolean;
+  emailStreakNudgesEnabled: boolean;
+  emailLevelUpEnabled: boolean;
+  emailMarketingEnabled: boolean;
+  /**
+   * Demographic fields collected at registration (migration 1930).
+   * Both nullable: historical accounts created before the columns
+   * existed never filled them in, and we keep them readable so the
+   * mobile profile screen can render "not set" rather than crash.
+   */
+  gender: Gender | null;
+  /** ISO date string `YYYY-MM-DD` — no time, no zone. */
+  dateOfBirth: string | null;
   createdAt: Date;
 }
 
@@ -225,6 +262,47 @@ export class AuthService {
       });
       if (taken) throw new ConflictException('Phone already registered');
     }
+
+    // Username — DTO decorators have already enforced length + charset.
+    // Service runs the reserved-word check and case-insensitive
+    // uniqueness so the same rejection surfaces here as on the
+    // /auth/username/available pre-flight.
+    const fmt = validateUsernameFormat(dto.username);
+    if (!fmt.ok) {
+      throw new BadRequestException(fmt.message ?? 'Invalid username.');
+    }
+    const usernameCanonical = canonicalUsername(dto.username);
+    const usernameTaken = await this.usersRepo
+      .createQueryBuilder('u')
+      .select(['u.id'])
+      .where('lower(u.username) = :canonical', {
+        canonical: usernameCanonical,
+      })
+      .getOne();
+    if (usernameTaken) {
+      throw new ConflictException('Username already taken');
+    }
+
+    // Date-of-birth sanity: must be in the past + within plausible
+    // student-age bounds. Only checked when supplied (the column is
+    // nullable for backwards-compat); DTO ensures the value is a
+    // strict ISO date string before we get here.
+    if (dto.dateOfBirth) {
+      this.assertPlausibleDateOfBirth(dto.dateOfBirth);
+    }
+
+    // Email OTP verification — proves the signup device controls the
+    // email BEFORE the user row is created. Mobile signups always
+    // include this; phone-only backend signups don't have an email
+    // so we skip. If verification fails, the OTP is consumed by
+    // OtpService.verifyEmail throwing — the caller has to /send a
+    // fresh code to retry.
+    let emailOtpVerified = false;
+    if (dto.email && dto.emailOtp) {
+      await this.otp.verifyEmail(dto.email, dto.emailOtp);
+      emailOtpVerified = true;
+    }
+
     const passwordHash = dto.password ? await hashPassword(dto.password) : null;
 
     // NOVDEC users have no form level — remedial students aren't enrolled
@@ -236,6 +314,8 @@ export class AuthService {
 
     const user = this.usersRepo.create({
       fullName: dto.fullName,
+      username: dto.username.trim(),
+      usernameChangedAt: new Date(),
       email: dto.email ?? null,
       phone: dto.phone ?? null,
       passwordHash,
@@ -250,6 +330,13 @@ export class AuthService {
       schoolName: dto.schoolName ?? null,
       region: dto.region ?? null,
       role: UserRole.STUDENT,
+      emailUnsubscribeToken: randomBytes(24).toString('hex'),
+      gender: dto.gender ?? null,
+      dateOfBirth: dto.dateOfBirth ?? null,
+      // Email OTP proved the user controls the address — set verified
+      // immediately so the in-app banner doesn't show and we skip the
+      // verify-link email below.
+      emailVerifiedAt: emailOtpVerified ? new Date() : null,
     });
     await this.usersRepo.save(user);
 
@@ -273,55 +360,86 @@ export class AuthService {
       ip: req.ip,
     });
 
-    // Spec §2.3 step 6: welcome push notification.
-    await this.notifications
-      .send({
-        userId: user.id,
-        channel: NotificationChannel.PUSH,
-        title: `Welcome to Bondzi, ${user.fullName.split(' ')[0]}!`,
-        body: 'Answer your first question to start earning XP.',
-        data: { type: 'welcome' },
-      })
-      .catch(() => void 0);
-
-    // Welcome email — best-effort. MailService never throws (see its
-    // contract), so a Resend outage here can't fail registration. Only
-    // sent when the user gave us an email address (phone-only signups
-    // get the push above and skip email until they add one in settings).
-    if (user.email) {
-      await this.mail.send(MailEvent.WELCOME, user.email, {
-        recipientName: user.fullName.split(' ')[0],
-        examType: user.examType.toUpperCase(),
-      });
+    // Spec §2.3 step 6: welcome push + email (+ verification for email
+    // signups without OTP — OTP-verified signups don't need the
+    // verify-link email since `email_verified_at` is already set).
+    await this.sendWelcomeOnboarding(user);
+    if (user.email && !emailOtpVerified) {
+      await this.sendEmailVerification(user).catch(() => void 0);
     }
 
     return { user: this.toSafeUser(user), tokens };
   }
 
+  /**
+   * Reject dates of birth that are nonsensical for our user base.
+   * The mobile registration form should already catch these client-side
+   * — this is the server-side belt to keep bad analytics out of the DB.
+   */
+  private assertPlausibleDateOfBirth(iso: string): void {
+    const parsed = new Date(`${iso}T00:00:00.000Z`);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException('dateOfBirth must be a valid ISO date');
+    }
+    const now = Date.now();
+    // Anyone younger than 8 likely isn't a real student; anyone
+    // older than 100 is almost certainly a typo. These are guard
+    // rails, not legal age gates.
+    const eightYearsAgo = now - 8 * 365.25 * 24 * 60 * 60 * 1000;
+    const hundredYearsAgo = now - 100 * 365.25 * 24 * 60 * 60 * 1000;
+    if (parsed.getTime() > eightYearsAgo) {
+      throw new BadRequestException(
+        'dateOfBirth: students must be at least 8 years old',
+      );
+    }
+    if (parsed.getTime() < hundredYearsAgo) {
+      throw new BadRequestException(
+        'dateOfBirth: please check the year you entered',
+      );
+    }
+  }
+
+  /**
+   * Password login. Accepts EITHER `email` or `phone` — controllers
+   * must supply exactly one (DTO enforces this). The chosen
+   * identifier is used both for the per-identifier lockout bucket
+   * and the user lookup; the password verification path is
+   * identical for both.
+   *
+   * Phone-OTP login was removed at launch: OTP is now reserved for
+   * password reset. Existing phone-only users continue to log in
+   * via the password they set at registration.
+   */
   async login(
-    email: string,
+    identifier: { email?: string; phone?: string },
     password: string,
     req: { ip?: string; deviceId: string; deviceName?: string },
   ): Promise<{ user: SafeUser; tokens: TokenPair }> {
-    // CRITICAL: two independent lockout buckets — by IP AND by email.
+    const email = identifier.email?.trim().toLowerCase();
+    const phone = identifier.phone?.trim();
+    if (!email && !phone) {
+      throw new BadRequestException('Either email or phone is required');
+    }
+    // Stable bucket key — lowercased email or raw phone. The
+    // attempt-rate-limit is per-identifier so a brute-force on
+    // phone:+233xx doesn't lock email:bob@x.com (and vice versa).
+    const idBucket = email ? `email:${email}` : `phone:${phone ?? ''}`;
+    // CRITICAL: two independent lockout buckets — by IP AND by identifier.
     // The previous shape used `ip || email`, so once `trust proxy` was
     // fixed, every legitimate user behind the same NAT (a school's
     // internet share) collided with each other; conversely, an attacker
-    // rotating IPs trivially evaded the per-email count. Both buckets
-    // get tripped before we let the request through.
+    // rotating IPs trivially evaded the per-identifier count. Both
+    // buckets get tripped before we let the request through.
     const ipKey = req.ip ? CacheKeys.loginAttempts(`ip:${req.ip}`) : null;
-    const emailKey = CacheKeys.loginAttempts(`email:${email.toLowerCase()}`);
+    const idKey = CacheKeys.loginAttempts(idBucket);
     const ipAttempts = ipKey
       ? await this.redis.incr(ipKey, LOGIN_LOCKOUT_TTL_SECONDS)
       : 0;
-    const emailAttempts = await this.redis.incr(
-      emailKey,
-      LOGIN_LOCKOUT_TTL_SECONDS,
-    );
+    const idAttempts = await this.redis.incr(idKey, LOGIN_LOCKOUT_TTL_SECONDS);
     if (
-      emailAttempts > MAX_LOGIN_ATTEMPTS ||
+      idAttempts > MAX_LOGIN_ATTEMPTS ||
       // IP bucket is wider so a single bad actor doesn't lock the whole
-      // NAT — 10× the per-email cap.
+      // NAT — 10× the per-identifier cap.
       ipAttempts > MAX_LOGIN_ATTEMPTS * 10
     ) {
       throw new HttpException(
@@ -330,11 +448,12 @@ export class AuthService {
       );
     }
 
-    const user = await this.usersRepo
+    const qb = this.usersRepo
       .createQueryBuilder('u')
-      .addSelect('u.passwordHash')
-      .where('u.email = :email', { email })
-      .getOne();
+      .addSelect('u.passwordHash');
+    if (email) qb.where('u.email = :email', { email });
+    else qb.where('u.phone = :phone', { phone });
+    const user = await qb.getOne();
     if (!user || !user.passwordHash || !user.isActive) {
       throw new UnauthorizedException('Invalid credentials');
     }
@@ -343,7 +462,7 @@ export class AuthService {
 
     // Clear both buckets on success.
     if (ipKey) await this.redis.del(ipKey);
-    await this.redis.del(emailKey);
+    await this.redis.del(idKey);
     const tokens = await this.tokens.issuePair(user, {
       deviceId: req.deviceId,
       deviceName: req.deviceName,
@@ -420,6 +539,8 @@ export class AuthService {
         schoolLevel: schoolLevelFor(req.examType),
         formLevel: resolvedFormLevel,
         referralCode: await this.allocateReferralCode(profile.name),
+        emailVerifiedAt: new Date(),
+        emailUnsubscribeToken: randomBytes(24).toString('hex'),
       });
       await this.usersRepo.save(user);
       if (req.referralCode) {
@@ -427,6 +548,7 @@ export class AuthService {
         await this.referrals.issueSignupRewards(user.id);
       }
       isNew = true;
+      await this.sendWelcomeOnboarding(user).catch(() => void 0);
     }
     if (!user.isActive) throw new ForbiddenException('Account disabled');
     const tokens = await this.tokens.issuePair(user, {
@@ -435,6 +557,222 @@ export class AuthService {
       ip: req.ip,
     });
     return { user: this.toSafeUser(user), tokens, isNew };
+  }
+
+  /**
+   * Pre-registration email OTP — issues a 6-digit code via email.
+   * Anti-enumeration: always returns `{ expiresInSeconds }` whether
+   * or not the address is already registered, so an attacker can't
+   * probe for existing accounts via the OTP endpoint. The collision
+   * check happens later at /auth/register, where a duplicate fails
+   * with ConflictException AFTER the OTP has been verified.
+   */
+  async sendEmailOtp(
+    email: string,
+    recipientName?: string,
+  ): Promise<{ expiresInSeconds: number }> {
+    return this.otp.sendEmail(email, recipientName);
+  }
+
+  async requestEmailVerification(userId: string): Promise<{ sent: boolean }> {
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user?.email) {
+      throw new BadRequestException('No email on file');
+    }
+    if (user.emailVerifiedAt) {
+      return { sent: false };
+    }
+    await this.sendEmailVerification(user);
+    return { sent: true };
+  }
+
+  async verifyEmail(token: string): Promise<{ verified: boolean }> {
+    const consumed = await this.mail.consumeEmailVerificationToken(token);
+    if (!consumed) {
+      throw new BadRequestException('Invalid or expired verification link');
+    }
+    const user = await this.usersRepo.findOne({
+      where: { id: consumed.userId },
+    });
+    if (!user) {
+      throw new BadRequestException('Invalid or expired verification link');
+    }
+    if (!user.emailVerifiedAt) {
+      user.emailVerifiedAt = new Date();
+      await this.usersRepo.save(user);
+    }
+    return { verified: true };
+  }
+
+  /** Always returns success — do not leak whether the email exists. */
+  /**
+   * Begin a password reset. Accepts either an email (sends the
+   * standard reset link) OR a phone (sends a 6-digit SMS OTP). The
+   * response is anti-enumeration — always `{ ok: true }` regardless
+   * of whether the identifier matches a user, so callers can't probe
+   * for registered accounts.
+   *
+   * Rate-limited per-identifier — phone bucket is the existing OTP
+   * send bucket inside OtpService (3 / 10 min); email bucket lives
+   * here (5 / 15 min).
+   */
+  async forgotPassword(input: {
+    email?: string;
+    phone?: string;
+  }): Promise<{ ok: true }> {
+    if (input.email) {
+      const normalized = input.email.toLowerCase().trim();
+      const rateKey = CacheKeys.forgotPasswordRate(normalized);
+      const attempts = await this.redis.incr(rateKey, 15 * 60);
+      if (attempts > 5) {
+        return { ok: true };
+      }
+
+      const user = await this.usersRepo
+        .createQueryBuilder('u')
+        .addSelect('u.passwordHash')
+        .where('lower(u.email) = lower(:email)', { email: normalized })
+        .getOne();
+
+      if (!user?.email || !user.passwordHash || !user.isActive) {
+        return { ok: true };
+      }
+
+      const token = await this.mail.createPasswordResetToken(user.id);
+      const resetUrl = this.mail.buildResetUrl(token);
+      await this.mail.send(
+        MailEvent.PASSWORD_RESET,
+        user.email,
+        {
+          recipientName: user.fullName.split(' ')[0],
+          resetUrl,
+          expiresInMinutes: 60,
+        },
+        { userId: user.id },
+      );
+      return { ok: true };
+    }
+
+    if (input.phone) {
+      // OtpService.send handles its own throttling (3 sends per
+      // phone per 10 min) AND short-circuits the SMS dispatch if
+      // the rate is exceeded. We always return `{ ok: true }` —
+      // anti-enumeration — but only actually generate+send the
+      // code when the phone resolves to an active user with a
+      // password. Sending OTPs to unregistered numbers would
+      // burn SMS budget on attackers iterating the phone space.
+      const user = await this.usersRepo
+        .createQueryBuilder('u')
+        .addSelect('u.passwordHash')
+        .where('u.phone = :phone', { phone: input.phone.trim() })
+        .getOne();
+      if (user?.passwordHash && user.isActive) {
+        // Swallow rate-limit / SMS-provider errors — the caller
+        // mustn't be able to distinguish "you exist + we sent SMS"
+        // from "you don't exist" from "we couldn't send".
+        await this.otp
+          .send(input.phone.trim())
+          .catch((err) =>
+            this.logger.warn(
+              `[forgot-password] SMS dispatch failed for phone bucket: ${(err as Error).message}`,
+            ),
+          );
+      }
+      return { ok: true };
+    }
+
+    throw new BadRequestException('Either email or phone is required');
+  }
+
+  /**
+   * Complete a password reset. Two shapes accepted:
+   *   1. Email-link reset: `{ token, password }` — token is the
+   *      cryptographically-secure value embedded in the reset email
+   *      URL.
+   *   2. Phone-OTP reset: `{ phone, otp, password }` — the OTP
+   *      came from the SMS sent by `forgotPassword({phone})`.
+   */
+  async resetPassword(input: {
+    token?: string;
+    phone?: string;
+    otp?: string;
+    password: string;
+  }): Promise<{ ok: true }> {
+    let userId: string | null = null;
+
+    if (input.token) {
+      const consumed = await this.mail.consumePasswordResetToken(input.token);
+      if (!consumed) {
+        throw new BadRequestException('Invalid or expired reset link');
+      }
+      userId = consumed.userId;
+    } else if (input.phone && input.otp) {
+      // OTPService.verify is single-use + atomic — the same code
+      // can't be replayed for a second reset.
+      await this.otp.verify(input.phone.trim(), input.otp);
+      const user = await this.usersRepo.findOne({
+        where: { phone: input.phone.trim() },
+      });
+      if (!user || !user.isActive) {
+        throw new BadRequestException('Invalid or expired reset code');
+      }
+      userId = user.id;
+    } else {
+      throw new BadRequestException(
+        'Provide either an email-reset token or phone + otp',
+      );
+    }
+
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user || !user.isActive) {
+      throw new BadRequestException('Invalid or expired reset request');
+    }
+    user.passwordHash = await hashPassword(input.password);
+    await this.usersRepo.save(user);
+    // Log out every active session so a stolen-token actor can't
+    // continue using a previously-issued access token.
+    await this.tokens.logoutAll(user.id);
+    return { ok: true };
+  }
+
+  private async sendWelcomeOnboarding(user: User): Promise<void> {
+    await this.notifications
+      .send({
+        userId: user.id,
+        channel: NotificationChannel.PUSH,
+        title: `Welcome to Bondzi, ${user.fullName.split(' ')[0]}!`,
+        body: 'Answer your first question to start earning XP.',
+        data: { type: 'welcome' },
+      })
+      .catch(() => void 0);
+
+    if (user.email) {
+      await this.mail.send(
+        MailEvent.WELCOME,
+        user.email,
+        {
+          recipientName: user.fullName.split(' ')[0],
+          examType: user.examType.toUpperCase(),
+        },
+        { userId: user.id },
+      );
+    }
+  }
+
+  private async sendEmailVerification(user: User): Promise<void> {
+    if (!user.email || user.emailVerifiedAt) return;
+    const token = await this.mail.createEmailVerificationToken(user.id);
+    const verificationUrl = this.mail.buildVerifyUrl(token);
+    await this.mail.send(
+      MailEvent.EMAIL_VERIFICATION,
+      user.email,
+      {
+        recipientName: user.fullName.split(' ')[0],
+        verificationUrl,
+        expiresInMinutes: 24 * 60,
+      },
+      { userId: user.id },
+    );
   }
 
   async refresh(
@@ -728,6 +1066,10 @@ export class AuthService {
     return {
       id: user.id,
       fullName: user.fullName,
+      username: user.username ?? null,
+      usernameChangedAt: user.usernameChangedAt
+        ? user.usernameChangedAt.toISOString()
+        : null,
       email: user.email,
       phone: user.phone,
       role: user.role,
@@ -746,6 +1088,13 @@ export class AuthService {
       longestStreak: user.longestStreak,
       countryCode: user.countryCode,
       isActive: user.isActive,
+      emailVerified: Boolean(user.emailVerifiedAt),
+      emailWeeklyDigestEnabled: user.emailWeeklyDigestEnabled,
+      emailStreakNudgesEnabled: user.emailStreakNudgesEnabled,
+      emailLevelUpEnabled: user.emailLevelUpEnabled,
+      emailMarketingEnabled: user.emailMarketingEnabled,
+      gender: user.gender ?? null,
+      dateOfBirth: user.dateOfBirth ?? null,
       createdAt: user.createdAt,
     };
   }

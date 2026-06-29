@@ -9,6 +9,7 @@ import { DataSource } from 'typeorm';
 import { SubscriptionsService } from './subscriptions.service';
 import { Subscription } from './entities/subscription.entity';
 import { User } from '../users/entities/user.entity';
+import { Subject } from '../subjects/entities/subject.entity';
 import { PlansService } from './plans/plans.service';
 import { PaymentProviderRegistry } from '../payments/providers/payment-provider.registry';
 import { PaymentAttemptsService } from '../payments/payment-attempts.service';
@@ -156,6 +157,14 @@ describe('SubscriptionsService', () => {
         SubscriptionsService,
         { provide: getRepositoryToken(Subscription), useValue: subsRepo },
         { provide: getRepositoryToken(User), useValue: usersRepo },
+        // Subjects repo is injected by the assertCanStudySubject /
+        // assertCanStudySubjects entitlement-gate helpers. None of the
+        // tests in this file exercise those code paths, so a noop
+        // mock is sufficient — it just needs to be DI-resolvable.
+        {
+          provide: getRepositoryToken(Subject),
+          useValue: { findOne: jest.fn(), find: jest.fn() },
+        },
         { provide: PlansService, useValue: plans },
         { provide: PaymentProviderRegistry, useValue: providers },
         { provide: RedisService, useValue: redis },

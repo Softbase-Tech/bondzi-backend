@@ -38,7 +38,7 @@ export function buildSubscriptionRenewed(
     <p style="margin:0 0 14px;">
       Your <strong>${escapeText(payload.planName)}</strong> subscription renewed for
       <strong>${escapeText(formatMoney(payload.amountDisplay, payload.currency))}</strong>.
-      A separate receipt with the PDF breakdown will follow.
+      Your receipt is attached to this email.
     </p>
     <p style="margin:0 0 14px;">Next renewal: <strong>${escapeText(formatDate(payload.nextRenewalAt))}</strong></p>
     <p style="margin:0 0 14px;color:${brand.muted};font-size:13px;">Reference: ${escapeText(payload.reference)}</p>

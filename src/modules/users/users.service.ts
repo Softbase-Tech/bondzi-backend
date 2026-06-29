@@ -15,7 +15,13 @@ import { ExamAnswer } from '../exams/entities/exam-answer.entity';
 import { Subject } from '../subjects/entities/subject.entity';
 import { UserSubject } from './entities/user-subject.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateEmailPreferencesDto } from './dto/update-email-preferences.dto';
 import { ChangePasswordDto } from '../auth/dto/change-password.dto';
+import {
+  canonicalUsername,
+  daysUntilUsernameCooldownEnds,
+  validateUsernameFormat,
+} from './username.rules';
 
 @Injectable()
 export class UsersService {
@@ -131,6 +137,38 @@ export class UsersService {
     return user;
   }
 
+  async updateEmailPreferences(
+    userId: string,
+    dto: UpdateEmailPreferencesDto,
+  ): Promise<{
+    weeklyDigest: boolean;
+    streakNudges: boolean;
+    levelUp: boolean;
+    marketing: boolean;
+  }> {
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+    if (dto.weeklyDigest !== undefined) {
+      user.emailWeeklyDigestEnabled = dto.weeklyDigest;
+    }
+    if (dto.streakNudges !== undefined) {
+      user.emailStreakNudgesEnabled = dto.streakNudges;
+    }
+    if (dto.levelUp !== undefined) {
+      user.emailLevelUpEnabled = dto.levelUp;
+    }
+    if (dto.marketing !== undefined) {
+      user.emailMarketingEnabled = dto.marketing;
+    }
+    await this.usersRepo.save(user);
+    return {
+      weeklyDigest: user.emailWeeklyDigestEnabled,
+      streakNudges: user.emailStreakNudgesEnabled,
+      levelUp: user.emailLevelUpEnabled,
+      marketing: user.emailMarketingEnabled,
+    };
+  }
+
   async changePassword(userId: string, dto: ChangePasswordDto): Promise<void> {
     const user = await this.usersRepo
       .createQueryBuilder('u')
@@ -152,6 +190,134 @@ export class UsersService {
 
   async softDelete(userId: string): Promise<void> {
     await this.usersRepo.softDelete({ id: userId });
+  }
+
+  /**
+   * Returns whether a username is currently claimable. Cheap public
+   * check that powers the mobile registration / profile-edit
+   * "available ✓ / taken ✗" hint as the user types.
+   *
+   * Three outcomes:
+   *   - format invalid → { available: false, reason: 'invalid_chars' | ... }
+   *   - format valid + collides (case-insensitive) → { available: false, reason: 'taken' }
+   *   - format valid + free → { available: true }
+   *
+   * `currentUserId` lets the profile-edit flow check their CURRENT
+   * username and still see `available: true` — otherwise the field
+   * would always read "taken" when re-typing what they already own.
+   */
+  async checkUsernameAvailability(
+    input: string,
+    currentUserId?: string,
+  ): Promise<{
+    available: boolean;
+    reason?: 'too_short' | 'too_long' | 'invalid_chars' | 'reserved' | 'taken';
+    message?: string;
+  }> {
+    const fmt = validateUsernameFormat(input);
+    if (!fmt.ok) {
+      return { available: false, reason: fmt.reason, message: fmt.message };
+    }
+    const canonical = canonicalUsername(input);
+    const owner = await this.usersRepo
+      .createQueryBuilder('u')
+      .select(['u.id'])
+      .where('lower(u.username) = :canonical', { canonical })
+      .getOne();
+    if (owner && owner.id !== currentUserId) {
+      return {
+        available: false,
+        reason: 'taken',
+        message: 'This username is already taken.',
+      };
+    }
+    return { available: true };
+  }
+
+  /**
+   * Self-service username change. Same path is used for the first-time
+   * back-fill (old accounts whose `username` is still NULL) and for
+   * subsequent rename. The 90-day cooldown applies to the SECOND and
+   * later change only — the first save sets the timer running.
+   *
+   * Race protection: relies on the partial unique index on
+   * `lower(username)` (migration 1940). Two clients claiming the same
+   * handle at the same millisecond → one save succeeds, the other hits
+   * a Postgres UNIQUE violation that we translate into a 400 with
+   * `reason: 'taken'`.
+   */
+  async updateUsername(
+    userId: string,
+    rawUsername: string,
+  ): Promise<{ username: string; usernameChangedAt: Date }> {
+    const fmt = validateUsernameFormat(rawUsername);
+    if (!fmt.ok) {
+      throw new BadRequestException(fmt.message ?? 'Invalid username.');
+    }
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const now = new Date();
+
+    // 90-day cooldown: applies only when the user is CHANGING (not back-filling).
+    if (user.username !== null) {
+      const daysLeft = daysUntilUsernameCooldownEnds(
+        user.usernameChangedAt,
+        now,
+      );
+      if (daysLeft > 0) {
+        throw new BadRequestException(
+          `You can change your username again in ${daysLeft} day${daysLeft === 1 ? '' : 's'}.`,
+        );
+      }
+    }
+
+    const canonical = canonicalUsername(rawUsername);
+    const trimmed = rawUsername.trim();
+
+    // If they're "changing" to the same handle (just a case-tweak,
+    // e.g. ekowmensah → EkowMensah), allow it WITHOUT consuming the
+    // cooldown — it's effectively a display preference, not a new
+    // identity. The unique-index check below would otherwise treat
+    // their own row as a collision.
+    if (user.username && canonicalUsername(user.username) === canonical) {
+      if (user.username === trimmed) {
+        // No-op: same string verbatim. Return current state.
+        return {
+          username: user.username,
+          usernameChangedAt: user.usernameChangedAt ?? now,
+        };
+      }
+      user.username = trimmed;
+      await this.usersRepo.save(user);
+      return {
+        username: user.username,
+        usernameChangedAt: user.usernameChangedAt ?? now,
+      };
+    }
+
+    // Uniqueness pre-check (cheaper failure path than the DB error).
+    const collision = await this.usersRepo
+      .createQueryBuilder('u')
+      .select(['u.id'])
+      .where('lower(u.username) = :canonical', { canonical })
+      .getOne();
+    if (collision) {
+      throw new BadRequestException('This username is already taken.');
+    }
+
+    user.username = trimmed;
+    user.usernameChangedAt = now;
+    try {
+      await this.usersRepo.save(user);
+    } catch (err: unknown) {
+      const message = (err as { message?: string })?.message ?? '';
+      if (message.includes('users_username_lower_unique')) {
+        throw new BadRequestException('This username is already taken.');
+      }
+      throw err;
+    }
+    return { username: user.username, usernameChangedAt: now };
   }
 
   async getProgress(userId: string): Promise<UserSubjectProgress[]> {

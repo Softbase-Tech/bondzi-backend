@@ -1,13 +1,14 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomUUID } from 'crypto';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { RedisService } from '../../common/redis/redis.service';
 import {
@@ -23,6 +24,7 @@ import { User } from '../users/entities/user.entity';
 import { Subscription } from './entities/subscription.entity';
 import { PlansService } from './plans/plans.service';
 import { SubscriptionPlanEntity } from './plans/entities/subscription-plan.entity';
+import { Subject } from '../subjects/entities/subject.entity';
 import { MailService } from '../mail/mail.service';
 import { MailEvent } from '../mail/mail.types';
 import { PromoCodesService } from '../promo-codes/promo-codes.service';
@@ -142,6 +144,8 @@ export class SubscriptionsService {
     @InjectRepository(Subscription)
     private readonly subsRepo: Repository<Subscription>,
     @InjectRepository(User) private readonly usersRepo: Repository<User>,
+    @InjectRepository(Subject)
+    private readonly subjectsRepo: Repository<Subject>,
     private readonly plans: PlansService,
     private readonly providers: PaymentProviderRegistry,
     private readonly redis: RedisService,
@@ -328,6 +332,61 @@ export class SubscriptionsService {
     if (!level) return false;
     const ent = await this.entitlementFor(userId, level);
     return accountRank(ent.account) >= accountRank(minAccount);
+  }
+
+  /**
+   * Free users may practice core subjects only on a level. Plus or Pro
+   * unlocks electives. No-op for core subjects; throws 403 for electives
+   * when the user lacks a paid entitlement on `level`.
+   */
+  async assertCanStudySubject(
+    userId: string,
+    level: ExamType | null | undefined,
+    subjectId: string,
+  ): Promise<void> {
+    if (!level) {
+      throw new ForbiddenException(
+        'Complete onboarding before accessing subjects.',
+      );
+    }
+    const subject = await this.subjectsRepo.findOne({
+      where: { id: subjectId },
+    });
+    if (!subject) throw new NotFoundException('Subject not found');
+    if (subject.isCore) return;
+    const ok = await this.hasEntitlement(userId, level, AccountType.PLUS);
+    if (!ok) {
+      throw new ForbiddenException(
+        'Plus or Pro is required for elective subjects on this level.',
+      );
+    }
+  }
+
+  /**
+   * Batch variant for exam filters that carry multiple subject ids.
+   */
+  async assertCanStudySubjects(
+    userId: string,
+    level: ExamType | null | undefined,
+    subjectIds: string[] | undefined,
+  ): Promise<void> {
+    if (!subjectIds?.length) return;
+    const subjects = await this.subjectsRepo.find({
+      where: { id: In(subjectIds) },
+      select: ['id', 'isCore'],
+    });
+    if (subjects.some((s) => !s.isCore)) {
+      const ok = await this.hasEntitlement(
+        userId,
+        level ?? undefined,
+        AccountType.PLUS,
+      );
+      if (!ok) {
+        throw new ForbiddenException(
+          'Plus or Pro is required for elective subjects on this level.',
+        );
+      }
+    }
   }
 
   /**
@@ -1471,12 +1530,20 @@ export class SubscriptionsService {
       this.plans.getById(sub.planId).catch(() => null),
     ]);
     if (!user?.email || !plan) return;
-    await this.mail.send(MailEvent.SUBSCRIPTION_CANCELLED, user.email, {
-      recipientName: user.fullName ?? undefined,
-      planName: plan.name,
-      level: plan.level.toUpperCase(),
-      accessUntil: sub.expiresAt,
-    });
+    await this.mail.send(
+      MailEvent.SUBSCRIPTION_CANCELLED,
+      user.email,
+      {
+        recipientName: user.fullName ?? undefined,
+        planName: plan.name,
+        level: plan.level.toUpperCase(),
+        accessUntil: sub.expiresAt,
+      },
+      {
+        userId: sub.userId,
+        dedupKey: `subscription_cancelled:${sub.id}`,
+      },
+    );
   }
 
   async invalidateCache(userId: string): Promise<void> {

@@ -1,11 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsDateString,
   IsEmail,
   IsEnum,
   IsInt,
   IsOptional,
   IsPhoneNumber,
   IsString,
+  Length,
   Matches,
   Max,
   MaxLength,
@@ -13,7 +15,12 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
-import { ExamType } from '../../../common/types/enums';
+import { ExamType, Gender } from '../../../common/types/enums';
+import {
+  USERNAME_MAX_LENGTH,
+  USERNAME_MIN_LENGTH,
+  USERNAME_REGEX,
+} from '../../users/username.rules';
 
 export class RegisterDto {
   @ApiProperty()
@@ -21,6 +28,28 @@ export class RegisterDto {
   @MinLength(2)
   @MaxLength(120)
   fullName!: string;
+
+  /**
+   * Public handle shown on leaderboards. Required for new sign-ups
+   * going forward. Format-only validation here (length + character
+   * set); reserved-word and uniqueness checks happen in AuthService
+   * after the body is validated, so the error surfaces against the
+   * `username` key consistently regardless of which gate trips.
+   */
+  @ApiProperty({
+    description:
+      'Public handle. Letters and digits only, 6-24 chars, case-insensitive uniqueness.',
+    minLength: USERNAME_MIN_LENGTH,
+    maxLength: USERNAME_MAX_LENGTH,
+    example: 'ekowmensah',
+  })
+  @IsString()
+  @MinLength(USERNAME_MIN_LENGTH)
+  @MaxLength(USERNAME_MAX_LENGTH)
+  @Matches(USERNAME_REGEX, {
+    message: 'username must be letters and numbers only (no spaces or symbols)',
+  })
+  username!: string;
 
   @ApiPropertyOptional()
   @ValidateIf((o: RegisterDto) => !o.phone)
@@ -76,6 +105,43 @@ export class RegisterDto {
   @IsString()
   @MaxLength(20)
   referralCode?: string;
+
+  /**
+   * Email OTP, required when registering with email. The OTP is issued
+   * by POST /auth/email/otp/send and verified server-side here, BEFORE
+   * the user row is created — so a brand-new email is proven to belong
+   * to the signup device. On success the user is marked
+   * `email_verified_at = NOW()` and the verify-link email is skipped.
+   *
+   * Optional in the DTO for backwards compatibility with phone-only
+   * signups (kept available as a backend endpoint per the launch
+   * spec — the mobile UI no longer surfaces it). AuthService enforces
+   * "email present implies emailOtp required" at the service layer.
+   */
+  @ApiPropertyOptional({ description: '6-digit email OTP' })
+  @ValidateIf((o: RegisterDto) => !!o.email)
+  @IsString()
+  @Length(6, 6, { message: 'emailOtp must be a 6-digit code' })
+  @Matches(/^\d{6}$/, { message: 'emailOtp must be 6 digits' })
+  emailOtp?: string;
+
+  @ApiPropertyOptional({ enum: Gender })
+  @IsOptional()
+  @IsEnum(Gender)
+  gender?: Gender;
+
+  /**
+   * Date of birth as an ISO date (`YYYY-MM-DD`). Validation at the
+   * service layer enforces sensible bounds (≥ 8 years old, in the
+   * past, ≤ 100 years ago). DTO-level just confirms the wire shape.
+   */
+  @ApiPropertyOptional({
+    description: 'ISO date YYYY-MM-DD',
+    example: '2010-05-21',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  dateOfBirth?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
