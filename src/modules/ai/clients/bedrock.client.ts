@@ -5,6 +5,11 @@ import {
   ThrottlingException,
 } from '@aws-sdk/client-bedrock-runtime';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
+import type {
+  AiGenerationClient,
+  AiInvokeParams,
+  AiInvokeResult,
+} from './ai-generation-client.interface';
 
 /**
  * Thin wrapper around AWS Bedrock's InvokeModel for Anthropic Claude.
@@ -29,7 +34,7 @@ const BEDROCK_REQUEST_TIMEOUT_MS = 30_000;
 const BEDROCK_CONNECTION_TIMEOUT_MS = 5_000;
 
 @Injectable()
-export class BedrockClient {
+export class BedrockClient implements AiGenerationClient {
   private readonly log = new Logger(BedrockClient.name);
   private readonly client = new BedrockRuntimeClient({
     region: process.env.AWS_REGION,
@@ -40,17 +45,7 @@ export class BedrockClient {
     }),
   });
 
-  async invoke(params: {
-    modelId: string;
-    system?: string;
-    userPrompt: string;
-    maxTokens?: number;
-    temperature?: number;
-  }): Promise<{
-    text: string;
-    inputTokens: number;
-    outputTokens: number;
-  }> {
+  async invoke(params: AiInvokeParams): Promise<AiInvokeResult> {
     const body: Record<string, unknown> = {
       anthropic_version: 'bedrock-2023-05-31',
       max_tokens: params.maxTokens ?? 1024,
@@ -82,6 +77,7 @@ export class BedrockClient {
         text,
         inputTokens: decoded.usage?.input_tokens ?? 0,
         outputTokens: decoded.usage?.output_tokens ?? 0,
+        effectiveModel: params.modelId,
       };
     } catch (err) {
       if (err instanceof ThrottlingException) {

@@ -2,7 +2,7 @@ import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { AiService } from './ai.service';
-import { BedrockClient } from './clients/bedrock.client';
+import { AI_GENERATION_CLIENT } from './clients/ai-generation.factory';
 import { AiUsageLog } from './entities/ai-usage-log.entity';
 import { PromptTemplate } from './entities/prompt-template.entity';
 import { RedisService } from '../../common/redis/redis.service';
@@ -13,7 +13,8 @@ import { AiAction } from '../../common/types/enums';
  * AiService specs. Coverage focus:
  *   - checkBudget enforces both the global daily cap and the per-user cap
  *     (the cost guard guarantees a runaway model can never blow the bill).
- *   - callBedrock delegates to the BedrockClient, logs usage, and rolls
+ *   - callBedrock delegates to the factory-picked AiGenerationClient,
+ *     logs usage against the effectiveModel it reports, and rolls
  *     today's cost forward in Redis.
  *   - getActivePrompt throws when no template is active so callers can't
  *     silently use the wrong prompt.
@@ -49,7 +50,7 @@ describe('AiService', () => {
         AiService,
         { provide: ConfigService, useValue: config },
         { provide: RedisService, useValue: redis },
-        { provide: BedrockClient, useValue: bedrock },
+        { provide: AI_GENERATION_CLIENT, useValue: bedrock },
         { provide: getRepositoryToken(AiUsageLog), useValue: usage },
         { provide: getRepositoryToken(PromptTemplate), useValue: prompts },
       ],
@@ -96,6 +97,7 @@ describe('AiService', () => {
         text: 'an explanation',
         inputTokens: 100,
         outputTokens: 50,
+        effectiveModel: 'anthropic.claude-haiku-4-5-20251001-v1:0',
       });
       redis.incrByFloat.mockResolvedValueOnce(0.001);
 
@@ -134,6 +136,7 @@ describe('AiService', () => {
         text: 'x',
         inputTokens: 1,
         outputTokens: 1,
+        effectiveModel: 'anthropic.claude-haiku-4-5-20251001-v1:0',
       });
       await service.callBedrock(
         'p',
@@ -149,6 +152,7 @@ describe('AiService', () => {
         text: 'x',
         inputTokens: 1,
         outputTokens: 1,
+        effectiveModel: 'anthropic.claude-haiku-4-5-20251001-v1:0',
       });
       usage.insert.mockRejectedValueOnce(new Error('pg down'));
       await expect(

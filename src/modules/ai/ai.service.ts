@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -10,7 +10,8 @@ import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { costUsd, todayUtcDateKey } from './ai-cost.util';
 import { AiBudgetExceededException } from './ai.exceptions';
 import { sanitizeHtml } from '../../common/utils/sanitize.util';
-import { BedrockClient } from './clients/bedrock.client';
+import { AI_GENERATION_CLIENT } from './clients/ai-generation.factory';
+import type { AiGenerationClient } from './clients/ai-generation-client.interface';
 
 /**
  * v2: AI primitives — Bedrock-hosted Claude client, prompt-template loader,
@@ -41,7 +42,13 @@ export class AiService {
   constructor(
     private readonly config: ConfigService,
     private readonly redis: RedisService,
-    private readonly bedrock: BedrockClient,
+    // Resolved by AiGenerationFactory: BedrockClient by default,
+    // OllamaClient when AI_PROVIDER=self_hosted. Services that must
+    // stay on Bedrock regardless (weakness narratives, post-exam
+    // breakdowns) inject BedrockClient directly instead of going
+    // through the AiService generic path.
+    @Inject(AI_GENERATION_CLIENT)
+    private readonly ai: AiGenerationClient,
     @InjectRepository(AiUsageLog)
     private readonly usageRepo: Repository<AiUsageLog>,
     @InjectRepository(PromptTemplate)
@@ -87,9 +94,17 @@ export class AiService {
   }
 
   /**
-   * Call Bedrock (Claude under the hood) with `prompt`, track cost + usage,
-   * return normalised result. Same call signature the older `callClaude`
-   * had — only the implementation underneath changed.
+   * Send a generation prompt through whichever LLM provider the
+   * factory picked at boot (Bedrock by default, Ollama when
+   * `AI_PROVIDER=self_hosted`). Records usage + tracks daily-budget.
+   *
+   * The method name is historic (v1 was Bedrock-only). The client
+   * underneath is provider-agnostic — see AiGenerationClient. The
+   * `model` param is passed through to Bedrock verbatim and IGNORED
+   * by Ollama (Ollama uses `OLLAMA_MODEL` env). The usage log records
+   * the ACTUAL model that ran via `effectiveModel` (`ollama:<name>`
+   * for the local provider), so the admin AI monitor never has a
+   * "which model billed?" ambiguity.
    */
   async callBedrock(
     prompt: string,
@@ -103,7 +118,7 @@ export class AiService {
     } = {},
   ): Promise<AiCallResult> {
     const start = Date.now();
-    const res = await this.bedrock.invoke({
+    const res = await this.ai.invoke({
       modelId: model,
       system: opts.system,
       userPrompt: prompt,
@@ -114,13 +129,18 @@ export class AiService {
     const content = res.text;
     const inputTokens = res.inputTokens;
     const outputTokens = res.outputTokens;
-    const cost = costUsd(model, inputTokens, outputTokens);
+    // For local (`ollama:*`) runs cost is definitionally $0 — no
+    // Bedrock invoice for them. costUsd() returns 0 for anything
+    // prefixed `ollama:` (see ai-cost.util); the daily-budget guard
+    // therefore ignores local calls, which is correct: they don't
+    // burn AWS spend. Bedrock calls bill normally.
+    const cost = costUsd(res.effectiveModel, inputTokens, outputTokens);
 
     await this.logUsage({
       userId: opts.userId,
       jobId: opts.jobId,
       action: opts.action ?? AiAction.EXPLANATION,
-      model,
+      model: res.effectiveModel,
       inputTokens,
       outputTokens,
       costUsd: cost,
@@ -131,7 +151,7 @@ export class AiService {
     return {
       content,
       contentHtml: sanitizeHtml(this.markdownToHtml(content)),
-      model,
+      model: res.effectiveModel,
       inputTokens,
       outputTokens,
       costUsd: cost,

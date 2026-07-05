@@ -43,6 +43,11 @@ export function costUsd(
   inputTokens: number,
   outputTokens: number,
 ): number {
+  // Local / self-hosted generations (Ollama) bill $0 — the pricing
+  // table is Bedrock-only. Without this short-circuit, `ollama:<name>`
+  // would fall through to FALLBACK_PRICING and inflate the daily
+  // budget counter against imaginary AWS spend.
+  if (model.startsWith('ollama:')) return 0;
   // Unknown model -> bill against the most expensive known model. A
   // hardcoded "Sonnet rate" silently bills any future Opus / Claude 5
   // job at Sonnet rates and underflows the daily budget. Computing

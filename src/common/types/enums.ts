@@ -322,3 +322,32 @@ export enum LeaderboardPeriodType {
   WEEKLY = 'weekly',
   MONTHLY = 'monthly',
 }
+
+/**
+ * Entitlement service registry — every gated capability in the app has
+ * exactly one key here. The tier × service matrix in
+ * `tier_services` reads from this list, and the `@RequiresService`
+ * guard names one of these values.
+ *
+ * Adding a new gated feature = add the key here + one row per tier in
+ * the seed migration + decorate the controller method. Removing a key
+ * requires a migration to drop the corresponding tier_services rows.
+ *
+ * Notes on the current membership:
+ *   • PAST_PAPERS_CORE / PAST_PAPERS_ELECTIVE — the split lets Free
+ *     get all core subjects but only a metered number of electives.
+ *   • POST_EXAM_AI_BREAKDOWN — slot reserved but the generation
+ *     feature is deferred. Seeded `enabled=false` in every tier so
+ *     enabling later is one row update, not a code change.
+ *   • MOCK_EXAMS — Quiz-tab rescope; endpoint / template loader
+ *     lands in Phase 2.3.
+ */
+export enum EntitlementService {
+  PAST_PAPERS_CORE = 'past_papers_core',
+  PAST_PAPERS_ELECTIVE = 'past_papers_elective',
+  LEVEL_TESTS = 'level_tests',
+  MOCK_EXAMS = 'mock_exams',
+  AI_EXPLANATIONS = 'ai_explanations',
+  POST_EXAM_AI_BREAKDOWN = 'post_exam_ai_breakdown',
+  AI_WEAKNESS_NARRATIVES = 'ai_weakness_narratives',
+}
