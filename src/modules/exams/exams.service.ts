@@ -286,6 +286,18 @@ export class ExamsService {
     if (user.formLevel != null) {
       idQb.andWhere('q.form_level = :fl', { fl: user.formLevel });
     }
+    // Difficulty. 'mixed' (default) returns the full range; anything else
+    // is a concrete constraint against pm_test_questions.difficulty. Silent
+    // no-op before this — the mobile difficulty picker shipped as a lie.
+    if (dto.difficulty && dto.difficulty !== ExamDifficultyFilter.MIXED) {
+      const difficultyEnum: Difficulty =
+        dto.difficulty === ExamDifficultyFilter.EASY
+          ? Difficulty.EASY
+          : dto.difficulty === ExamDifficultyFilter.HARD
+            ? Difficulty.HARD
+            : Difficulty.MEDIUM;
+      idQb.andWhere('q.difficulty = :diff', { diff: difficultyEnum });
+    }
 
     idQb.orderBy('RANDOM()').limit(desiredCount);
 

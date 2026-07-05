@@ -410,6 +410,26 @@ describe('ExamsService', () => {
       expect(out.questions[0].explanation).toContain('why');
     });
 
+    it('honours the difficulty filter when set to something other than mixed', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      const { andWhere } = stubPmTestIdsQb([{ id: 'p1' }]);
+      pmTestQRepo.find.mockResolvedValueOnce([makePmTestQuestion('p1')]);
+
+      await service.create('user-1', {
+        mode: ExamMode.PM_TEST,
+        subjectFilter: { subjectIds: ['subj-1'] },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        difficulty: 'hard' as any,
+      });
+
+      const whereCalls = andWhere.mock.calls.map((c) => c[0]);
+      expect(whereCalls.some((s) => /q\.difficulty/.test(s))).toBe(true);
+    });
+
     it('skips the form_level filter for NOVDEC users (formLevel=null)', async () => {
       usersRepo.findOne.mockResolvedValueOnce({
         id: 'user-1',
