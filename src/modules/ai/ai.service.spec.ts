@@ -41,6 +41,7 @@ describe('AiService', () => {
       get: jest.fn((key: string) => {
         if (key === 'ai.dailyBudgetUsd') return 50;
         if (key === 'ai.perUserDailyLimit') return 50;
+        if (key === 'ai.maxItemsPerBatch') return 200;
         return undefined;
       }),
     };
@@ -158,6 +159,48 @@ describe('AiService', () => {
       await expect(
         service.callBedrock('p', 'anthropic.claude-haiku-4-5-20251001-v1:0'),
       ).resolves.toBeDefined();
+    });
+  });
+
+  // ------------------------- assertBatchWithinCap -------------------------
+  //
+  // Called by AdminPmTestService.generate + AdminExplanationsService.generate
+  // BEFORE the job hits BullMQ. Enforces AI_MAX_ITEMS_PER_BATCH — the
+  // only row-count guard on the Ollama path (where AI_MAX_JOB_COST_USD
+  // does nothing because local generation is $0).
+
+  describe('assertBatchWithinCap', () => {
+    it('is a no-op when the item count is within the configured cap', () => {
+      // Config mock returns 200 for ai.maxItemsPerBatch.
+      expect(() => service.assertBatchWithinCap(200)).not.toThrow();
+      expect(() => service.assertBatchWithinCap(1)).not.toThrow();
+    });
+
+    it('throws BadRequestException when the item count exceeds the cap, with cap + count in the message', () => {
+      // 201 > cap of 200 → refuse. Message must surface both numbers
+      // so the admin knows what to change.
+      let caught: Error | null = null;
+      try {
+        service.assertBatchWithinCap(201);
+      } catch (err) {
+        caught = err as Error;
+      }
+      expect(caught).not.toBeNull();
+      expect(caught!.constructor.name).toBe('BadRequestException');
+      expect(caught!.message).toContain('201');
+      expect(caught!.message).toContain('200');
+      expect(caught!.message).toContain('AI_MAX_ITEMS_PER_BATCH');
+    });
+
+    it('falls back to a hardcoded default of 200 when the config key is unset', () => {
+      // Swap the mock to return undefined for the max-items key. The
+      // hardcoded fallback in the service prevents a missing env from
+      // silently uncapping every generation batch.
+      config.get.mockImplementation((key: string) =>
+        key === 'ai.maxItemsPerBatch' ? undefined : 50,
+      );
+      expect(() => service.assertBatchWithinCap(200)).not.toThrow();
+      expect(() => service.assertBatchWithinCap(201)).toThrow(/200/);
     });
   });
 
