@@ -13,6 +13,8 @@ import { ExamAnswer } from './entities/exam-answer.entity';
 import { Question } from '../questions/entities/question.entity';
 import { Option } from '../questions/entities/option.entity';
 import { PmTestOption } from '../pm-test/entities/pm-test-option.entity';
+import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
+import { toStudentQuestionFromPmTest } from '../pm-test/serializers/pm-test.serializer';
 import { Subject } from '../subjects/entities/subject.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
 import { User } from '../users/entities/user.entity';
@@ -27,6 +29,7 @@ import {
   ExamMode,
   ExamStatus,
   QuestionPool,
+  QuestionStatus,
   questionPoolFor,
 } from '../../common/types/enums';
 import {
@@ -61,6 +64,8 @@ export class ExamsService {
     @InjectRepository(Question)
     private readonly questionsRepo: Repository<Question>,
     @InjectRepository(Option) private readonly optionsRepo: Repository<Option>,
+    @InjectRepository(PmTestQuestion)
+    private readonly pmTestQRepo: Repository<PmTestQuestion>,
     @InjectRepository(Subject)
     private readonly subjectsRepo: Repository<Subject>,
     @InjectRepository(UserSubjectProgress)
@@ -88,6 +93,20 @@ export class ExamsService {
       dto.subjectFilter?.subjectIds,
     );
 
+    // Cross-field validation for filter × mode. Kept in the service (rather
+    // than the DTO) because it references relationships between fields, not
+    // shape-of-a-single-field constraints.
+    const filter = dto.subjectFilter ?? {};
+    if (filter.syllabusTopicIds?.length && dto.mode !== ExamMode.PM_TEST) {
+      throw new BadRequestException(
+        'syllabusTopicIds is only valid with mode="pm_test". Past-paper questions are not tagged with syllabus_topic_id.',
+      );
+    }
+
+    if (dto.mode === ExamMode.PM_TEST) {
+      return this.createPmTestSession(user, dto, filter);
+    }
+
     const desiredCount =
       dto.questionCount ?? (dto.mode === ExamMode.PAST_PAPER ? 50 : 20);
 
@@ -112,7 +131,6 @@ export class ExamsService {
       // `novdec` examType for analytics (so we can tell who took it).
       .andWhere('q.examType = :et', { et: questionPoolFor(user.examType) });
 
-    const filter = dto.subjectFilter ?? {};
     if (filter.subjectIds?.length)
       idQb.andWhere('q.subjectId IN (:...sids)', { sids: filter.subjectIds });
     if (filter.topicIds?.length)
@@ -210,6 +228,122 @@ export class ExamsService {
       AccountType.PLUS,
     );
     return toExamSessionResponse(exam, questions, { hasActiveSubscription });
+  }
+
+  /**
+   * Level-test (PM Test) session creation. Draws from `pm_test_questions`
+   * (AI-generated, admin-reviewed → status='active') filtered by:
+   *
+   *   - `subjectIds` (usually one — the picker is per-subject)
+   *   - `syllabusTopicIds` (optional — omit for a random session)
+   *   - user's `formLevel` (implicit; NOVDEC has NULL form and shares the
+   *     WASSCE pool via `questionPoolFor`)
+   *
+   * Sets `exam.question_pool = PM_TEST` so the answer-submission path
+   * routes to `pm_test_options` for grading (see `submitAnswer` line ~308)
+   * and XP awards land in the `correct_pm_test` bucket (see `complete`
+   * line ~403).
+   *
+   * The returned wire shape is `ExamSessionResponse` — same as past-paper
+   * sessions — because the mobile exam runner is agnostic to source. See
+   * `toStudentQuestionFromPmTest` for the shape adapter.
+   */
+  private async createPmTestSession(
+    user: User,
+    dto: CreateExamDto,
+    filter: NonNullable<CreateExamDto['subjectFilter']>,
+  ): Promise<ExamSessionResponse> {
+    if (filter.topicIds?.length) {
+      throw new BadRequestException(
+        'topicIds targets past-paper topics — use syllabusTopicIds for pm_test mode.',
+      );
+    }
+    if (filter.years?.length || filter.wassecPaper) {
+      throw new BadRequestException(
+        'years / wassecPaper are past-paper filters and cannot be combined with mode="pm_test".',
+      );
+    }
+
+    const desiredCount = dto.questionCount ?? 20;
+
+    const idQb = this.pmTestQRepo
+      .createQueryBuilder('q')
+      .select('q.id', 'id')
+      .where('q.status = :st', { st: QuestionStatus.ACTIVE })
+      // NOVDEC students share the WASSCE PM-test pool.
+      .andWhere('q.exam_type = :et', { et: questionPoolFor(user.examType) });
+
+    if (filter.subjectIds?.length) {
+      idQb.andWhere('q.subject_id IN (:...sids)', { sids: filter.subjectIds });
+    }
+    if (filter.syllabusTopicIds?.length) {
+      idQb.andWhere('q.syllabus_topic_id IN (:...stids)', {
+        stids: filter.syllabusTopicIds,
+      });
+    }
+    // NOVDEC has NULL formLevel; skip the filter for them (their pool is
+    // WASSCE-tagged and formLevel-agnostic on the resit path).
+    if (user.formLevel != null) {
+      idQb.andWhere('q.form_level = :fl', { fl: user.formLevel });
+    }
+
+    idQb.orderBy('RANDOM()').limit(desiredCount);
+
+    const idRows = await idQb.getRawMany<{ id: string }>();
+    if (idRows.length === 0) {
+      throw new BadRequestException(
+        'No level-test questions match this filter yet — try a different topic or ask an admin to generate more.',
+      );
+    }
+    const orderedIds = idRows.map((r) => r.id);
+
+    const loaded = await this.pmTestQRepo.find({
+      where: { id: In(orderedIds) },
+      relations: ['options'],
+    });
+    const byId = new Map(loaded.map((q) => [q.id, q] as const));
+    const questions = orderedIds
+      .map((id) => byId.get(id))
+      .filter((q): q is PmTestQuestion => Boolean(q));
+
+    const exam = this.examsRepo.create({
+      userId: user.id,
+      examType: user.examType,
+      mode: dto.mode,
+      status: ExamStatus.IN_PROGRESS,
+      questionPool: QuestionPool.PM_TEST,
+      subjectFilter: dto.subjectFilter as unknown as Record<string, unknown>,
+      questionIds: questions.map((q) => q.id),
+      durationSeconds: dto.durationSeconds ?? null,
+      totalQuestions: questions.length,
+      startedAt: new Date(),
+    });
+    await this.examsRepo.save(exam);
+
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      user.id,
+      user.examType,
+      AccountType.PLUS,
+    );
+    const studentQuestions = questions.map((q) =>
+      toStudentQuestionFromPmTest(q, { hasActiveSubscription }),
+    );
+    // toExamSessionResponse takes past-paper Question entities; call the
+    // small shim below to build the same shape from pre-mapped items.
+    return {
+      id: exam.id,
+      userId: exam.userId,
+      mode: exam.mode,
+      questionCount: exam.totalQuestions ?? studentQuestions.length,
+      durationSeconds: exam.durationSeconds,
+      startedAt: exam.startedAt.toISOString(),
+      completedAt: null,
+      abandonedAt: null,
+      score: null,
+      grade: null,
+      questions: studentQuestions,
+      subjectIds: Array.isArray(filter.subjectIds) ? filter.subjectIds : [],
+    };
   }
 
   async getOne(userId: string, examId: string): Promise<ExamSessionResponse> {
