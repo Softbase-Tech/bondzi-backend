@@ -2,7 +2,10 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AiUsageLog } from './entities/ai-usage-log.entity';
 import { PromptTemplate } from './entities/prompt-template.entity';
+import { AiGenerationRejectLog } from './entities/ai-generation-reject-log.entity';
+import { AiGenerationRejectAgg } from './entities/ai-generation-reject-agg.entity';
 import { AiService } from './ai.service';
+import { RejectLogService } from './reject-log.service';
 import { BedrockClient } from './clients/bedrock.client';
 import { OllamaClient } from './clients/ollama.client';
 import {
@@ -22,13 +25,27 @@ import {
  * whichever client the factory picked at boot.
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([AiUsageLog, PromptTemplate])],
+  imports: [
+    TypeOrmModule.forFeature([
+      AiUsageLog,
+      PromptTemplate,
+      AiGenerationRejectLog,
+      AiGenerationRejectAgg,
+    ]),
+  ],
   providers: [
     AiService,
+    RejectLogService,
     BedrockClient,
     OllamaClient,
     aiGenerationClientProvider,
   ],
-  exports: [AiService, BedrockClient, AI_GENERATION_CLIENT, TypeOrmModule],
+  exports: [
+    AiService,
+    RejectLogService,
+    BedrockClient,
+    AI_GENERATION_CLIENT,
+    TypeOrmModule,
+  ],
 })
 export class AiModule {}

@@ -32,4 +32,20 @@ export default registerAs('ai', () => ({
   // admin's sign-off. 0 disables the gate entirely.
   cosignThresholdUsd: parseFloat(process.env.AI_COSIGN_THRESHOLD_USD ?? '50'),
   bedrockMaxRetries: parseInt(process.env.AI_BEDROCK_MAX_RETRIES ?? '3', 10),
+  /**
+   * Hard ceiling on items per admin-triggered generation batch. Fires
+   * BEFORE anything enters the queue — a request over this cap is
+   * rejected in the admin controller with 400, no LLM call, no
+   * queue entry. Useful when `AI_PROVIDER=self_hosted` (Ollama has
+   * no per-call cost so `AI_MAX_JOB_COST_USD` is meaningless), and
+   * defensive against a mistyped `count` on the Bedrock path too.
+   */
+  maxItemsPerBatch: parseInt(process.env.AI_MAX_ITEMS_PER_BATCH ?? '200', 10),
+  /**
+   * Selects the generation client at boot. `bedrock` (default) uses
+   * AWS Bedrock; `self_hosted` routes through OllamaClient. Any
+   * other value logs a warning and falls back to bedrock. See
+   * `src/modules/ai/clients/ai-generation.factory.ts`.
+   */
+  provider: (process.env.AI_PROVIDER ?? 'bedrock').trim().toLowerCase(),
 }));

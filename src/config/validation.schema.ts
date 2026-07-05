@@ -75,6 +75,32 @@ export const envValidationSchema = Joi.object({
   // one click. Set to 0 to disable co-sign entirely.
   AI_COSIGN_THRESHOLD_USD: Joi.number().min(0).default(50),
   AI_BEDROCK_MAX_RETRIES: Joi.number().integer().min(0).default(3),
+  // Row-count backstop for admin generation batches — fires BEFORE
+  // enqueue on either provider. See ai.config.ts / AiService.assertBatchWithinCap.
+  AI_MAX_ITEMS_PER_BATCH: Joi.number().integer().positive().default(200),
+  // Selects the generation client. `bedrock` is the default AWS path;
+  // `self_hosted` routes admin batch generation through OllamaClient
+  // (weakness narratives + post-exam breakdowns stay on Bedrock
+  // regardless — see AiModule JSDoc). Any other value logs a warning
+  // and falls back to bedrock.
+  AI_PROVIDER: Joi.string().valid('bedrock', 'self_hosted').default('bedrock'),
+  // Required ONLY when AI_PROVIDER=self_hosted. When Bedrock is
+  // active they're ignored — declaring them nullable in that case
+  // keeps a shared .env template from failing boot for the
+  // 99%-Bedrock deployments.
+  OLLAMA_BASE_URL: Joi.string()
+    .uri()
+    .when('AI_PROVIDER', {
+      is: 'self_hosted',
+      then: Joi.required(),
+      otherwise: Joi.string().uri().allow('').optional(),
+    }),
+  OLLAMA_MODEL: Joi.string().when('AI_PROVIDER', {
+    is: 'self_hosted',
+    then: Joi.required(),
+    otherwise: Joi.string().allow('').optional(),
+  }),
+  OLLAMA_REQUEST_TIMEOUT_MS: Joi.number().integer().positive().default(120_000),
 
   AT_USERNAME: Joi.string().required(),
   AT_API_KEY: Joi.string().required(),

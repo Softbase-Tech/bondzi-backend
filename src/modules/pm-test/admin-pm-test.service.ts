@@ -13,6 +13,7 @@ import { Repository } from 'typeorm';
 import { PmTestQuestion } from './entities/pm-test-question.entity';
 import { PmTestOption } from './entities/pm-test-option.entity';
 import { AiGenerationJob } from '../admin-ai-gen/entities/ai-generation-job.entity';
+import { AiService } from '../ai/ai.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { QUEUE_AI_GENERATION } from '../ai/ai.queues';
 import {
@@ -66,6 +67,7 @@ export class AdminPmTestService {
     private readonly queue: Queue,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
+    private readonly ai: AiService,
   ) {}
 
   /** Spec §9.3: reject jobs whose estimated cost exceeds AI_MAX_JOB_COST_USD. */
@@ -161,6 +163,12 @@ export class AdminPmTestService {
 
     // Drop the token so it can't be reused.
     await this.redis.del(previewKey(dto.confirmationToken));
+
+    // Row-count backstop. AI_MAX_JOB_COST_USD (see assertUnderMaxCost)
+    // is a $-cap and does nothing on the Ollama path (local calls are
+    // $0); this row-count cap is what protects prod from a mistyped
+    // batch on either provider.
+    this.ai.assertBatchWithinCap(stashed.estimate.totalItems);
 
     const job = this.jobsRepo.create({
       jobType: AiJobType.PM_TEST_GENERATION,

@@ -225,6 +225,24 @@ async function bootstrap() {
   await app.listen(port, '0.0.0.0');
   logger.log(`🚀 Bondzi backend running on :${port}/${apiPrefix} (env=${env})`);
   logger.log(`📘 Swagger docs at http://localhost:${port}/docs`);
+
+  // Provenance line for AI generation. Answers "is this instance
+  // talking to Bedrock or Ollama?" without hunting through env
+  // dumps. Prints once at boot per process — matches the pattern
+  // AiGenerationFactory uses when it resolves the client.
+  const aiProvider = (process.env.AI_PROVIDER ?? 'bedrock')
+    .trim()
+    .toLowerCase();
+  const aiCap = process.env.AI_MAX_ITEMS_PER_BATCH ?? '200';
+  if (aiProvider === 'self_hosted') {
+    const base = process.env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434';
+    const model = process.env.OLLAMA_MODEL ?? 'llama3.1:8b';
+    logger.log(
+      `🤖 AI provider: ollama:${model} (base=${base}) · max items/batch: ${aiCap}`,
+    );
+  } else {
+    logger.log(`🤖 AI provider: bedrock · max items/batch: ${aiCap}`);
+  }
 }
 
 void bootstrap();

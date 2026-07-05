@@ -1,4 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -81,6 +86,26 @@ export class AiService {
     }
   }
 
+  /**
+   * Refuse admin-triggered batches over the configured item cap.
+   * Called by the admin AI generation controllers BEFORE the job is
+   * enqueued — cheap 400 response, no LLM cost, no queue entry.
+   *
+   * Applies to both providers. On Bedrock the daily-budget guard
+   * (`checkBudget` / `AI_MAX_JOB_COST_USD`) already keeps runaway
+   * batches in check via $; on Ollama those are $0 and useless, so
+   * a row-count ceiling is the only backstop against a mistyped
+   * `count` writing tens of thousands of rows into prod.
+   */
+  assertBatchWithinCap(itemCount: number): void {
+    const cap = this.config.get<number>('ai.maxItemsPerBatch') ?? 200;
+    if (itemCount > cap) {
+      throw new BadRequestException(
+        `Batch of ${itemCount} items exceeds AI_MAX_ITEMS_PER_BATCH (${cap}). Split the request or raise the cap.`,
+      );
+    }
+  }
+
   async getActivePrompt(name: string): Promise<PromptTemplate> {
     const template = await this.promptsRepo.findOne({
       where: { name, isActive: true },
@@ -136,10 +161,20 @@ export class AiService {
     // burn AWS spend. Bedrock calls bill normally.
     const cost = costUsd(res.effectiveModel, inputTokens, outputTokens);
 
+    // Derive provider from the effective-model tag. The factory
+    // stamps `ollama:<name>` for local runs; everything else is
+    // Bedrock. Storing this explicitly on the row (rather than
+    // reparsing on every dashboard query) keeps the admin AI monitor
+    // fast and lets a future rename of the tag convention not break
+    // historical joins.
+    const provider = res.effectiveModel.startsWith('ollama:')
+      ? 'ollama'
+      : 'bedrock';
     await this.logUsage({
       userId: opts.userId,
       jobId: opts.jobId,
       action: opts.action ?? AiAction.EXPLANATION,
+      provider,
       model: res.effectiveModel,
       inputTokens,
       outputTokens,
@@ -173,6 +208,12 @@ export class AiService {
     questionId?: string;
     jobId?: string;
     action: AiAction;
+    /**
+     * `bedrock` (default) or `ollama`. Derived by the caller from
+     * the effective model tag returned by the client, so this
+     * column always agrees with `model` on the same row.
+     */
+    provider?: string;
     model: string;
     inputTokens?: number;
     outputTokens?: number;
@@ -187,6 +228,7 @@ export class AiService {
         userId: args.userId ?? null,
         questionId: args.questionId ?? null,
         action: args.action,
+        provider: args.provider ?? 'bedrock',
         model: args.model,
         inputTokens: args.inputTokens ?? null,
         outputTokens: args.outputTokens ?? null,
