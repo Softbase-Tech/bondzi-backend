@@ -16,6 +16,7 @@ import { GamificationService } from '../gamification/gamification.service';
 import { StreakService } from '../gamification/streak.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { EntitlementsService } from '../entitlements/entitlements.service';
 import { ExamStatus, ExamMode, QuestionPool } from '../../common/types/enums';
 
 /**
@@ -114,6 +115,7 @@ describe('ExamsService', () => {
     hasEntitlement: jest.Mock;
     assertCanStudySubjects: jest.Mock;
   };
+  let entitlements: { assertAndConsume: jest.Mock };
 
   beforeEach(async () => {
     examsRepo = {
@@ -134,6 +136,13 @@ describe('ExamsService', () => {
     subscriptions = {
       hasEntitlement: jest.fn().mockResolvedValue(false),
       assertCanStudySubjects: jest.fn().mockResolvedValue(undefined),
+    };
+    entitlements = {
+      // Default: entitlement passes. Individual pm_test tests can override
+      // to simulate 429/403.
+      assertAndConsume: jest
+        .fn()
+        .mockResolvedValue({ policy: {}, usedCount: 1 }),
     };
 
     const noop = {} as never;
@@ -157,6 +166,7 @@ describe('ExamsService', () => {
         { provide: StreakService, useValue: noop },
         { provide: ReferralsService, useValue: noop },
         { provide: SubscriptionsService, useValue: subscriptions },
+        { provide: EntitlementsService, useValue: entitlements },
         { provide: DataSource, useValue: noop },
       ],
     }).compile();
@@ -410,6 +420,56 @@ describe('ExamsService', () => {
       expect(out.questions[0].explanation).toContain('why');
     });
 
+    it('consumes the LEVEL_TESTS entitlement before touching the DB', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      stubPmTestIdsQb([{ id: 'p1' }]);
+      pmTestQRepo.find.mockResolvedValueOnce([makePmTestQuestion('p1')]);
+
+      await service.create('user-1', {
+        mode: ExamMode.PM_TEST,
+        subjectFilter: { subjectIds: ['subj-1'] },
+      });
+
+      expect(entitlements.assertAndConsume).toHaveBeenCalledTimes(1);
+      const [uid, svc] = entitlements.assertAndConsume.mock.calls[0];
+      expect(uid).toBe('user-1');
+      expect(svc).toBe('level_tests');
+      // Session save fires AFTER entitlement consume, not before.
+      const consumeOrder =
+        entitlements.assertAndConsume.mock.invocationCallOrder[0];
+      const saveOrder = examsRepo.save.mock.invocationCallOrder[0];
+      expect(consumeOrder).toBeLessThan(saveOrder);
+    });
+
+    it('surfaces the entitlement 429 without creating a session', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      const quota429 = Object.assign(new Error('429'), {
+        status: 429,
+        response: {
+          statusCode: 429,
+          message: 'daily limit',
+        },
+      });
+      entitlements.assertAndConsume.mockRejectedValueOnce(quota429);
+
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.PM_TEST,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        }),
+      ).rejects.toBe(quota429);
+      expect(pmTestQRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(examsRepo.save).not.toHaveBeenCalled();
+    });
+
     it('honours the difficulty filter when set to something other than mixed', async () => {
       usersRepo.findOne.mockResolvedValueOnce({
         id: 'user-1',
@@ -422,7 +482,7 @@ describe('ExamsService', () => {
       await service.create('user-1', {
         mode: ExamMode.PM_TEST,
         subjectFilter: { subjectIds: ['subj-1'] },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
         difficulty: 'hard' as any,
       });
 

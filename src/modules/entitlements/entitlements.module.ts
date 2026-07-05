@@ -6,6 +6,7 @@ import { User } from '../users/entities/user.entity';
 import { EntitlementsService } from './entitlements.service';
 import { RequiresServiceGuard } from './requires-service.guard';
 import { AdminEntitlementsController } from './admin-entitlements.controller';
+import { MeEntitlementsController } from './me-entitlements.controller';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 /**
@@ -25,7 +26,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
     TypeOrmModule.forFeature([TierService, UserServiceUsage, User]),
     SubscriptionsModule,
   ],
-  controllers: [AdminEntitlementsController],
+  controllers: [AdminEntitlementsController, MeEntitlementsController],
   providers: [EntitlementsService, RequiresServiceGuard],
   exports: [EntitlementsService, RequiresServiceGuard],
 })

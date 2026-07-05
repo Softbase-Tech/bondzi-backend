@@ -200,6 +200,13 @@ describe('EntitlementsService', () => {
       expect(decSql).toMatch(/-\s*1/);
     });
 
+    // ------------------------- snapshotForUser -------------------------
+    // The client-facing snapshot exposes per-service quota to the mobile
+    // app for the "X/Y today" strips and lock states. Unlike
+    // assertAndConsume, this does NOT increment any counter — it's a
+    // pure read across (tier_services, user_service_usage) filtered by
+    // today's Accra date.
+
     it('treats subscription-resolve failures as FREE (safe default)', async () => {
       seedUser();
       subscriptions.entitlementFor.mockRejectedValueOnce(
@@ -216,6 +223,78 @@ describe('EntitlementsService', () => {
       await expect(
         service.assertAndConsume('user-1', EntitlementService.MOCK_EXAMS),
       ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+
+  // ------------------------- snapshotForUser -------------------------
+  describe('snapshotForUser', () => {
+    it('returns per-service snapshot with correct remaining math', async () => {
+      seedUser();
+      seedTier(AccountType.PLUS);
+      tierServicesRepo.find.mockResolvedValueOnce([
+        {
+          service: EntitlementService.LEVEL_TESTS,
+          enabled: true,
+          dailyCap: 80,
+        },
+        {
+          service: EntitlementService.AI_EXPLANATIONS,
+          enabled: true,
+          dailyCap: 20,
+        },
+        {
+          service: EntitlementService.MOCK_EXAMS,
+          enabled: false,
+          dailyCap: 0,
+        },
+      ] as never);
+      usageRepo.find.mockResolvedValueOnce([
+        { service: EntitlementService.LEVEL_TESTS, usedCount: 5 },
+        { service: EntitlementService.AI_EXPLANATIONS, usedCount: 20 },
+      ] as never);
+      const out = await service.snapshotForUser('user-1');
+      expect(out.accountType).toBe(AccountType.PLUS);
+      // level_tests: 80 cap - 5 used = 75 remaining
+      const lt = out.services.find(
+        (s) => s.service === EntitlementService.LEVEL_TESTS,
+      )!;
+      expect(lt.remaining).toBe(75);
+      // ai_explanations: at cap → 0 remaining, not negative
+      const ai = out.services.find(
+        (s) => s.service === EntitlementService.AI_EXPLANATIONS,
+      )!;
+      expect(ai.remaining).toBe(0);
+      // mock_exams: disabled → remaining is null (no counter to show)
+      const me = out.services.find(
+        (s) => s.service === EntitlementService.MOCK_EXAMS,
+      )!;
+      expect(me.remaining).toBeNull();
+    });
+
+    it('returns remaining=null for unlimited (dailyCap=null) services', async () => {
+      seedUser();
+      seedTier(AccountType.PRO);
+      tierServicesRepo.find.mockResolvedValueOnce([
+        {
+          service: EntitlementService.LEVEL_TESTS,
+          enabled: true,
+          dailyCap: null,
+        },
+      ] as never);
+      usageRepo.find.mockResolvedValueOnce([]);
+      const out = await service.snapshotForUser('user-1');
+      expect(out.services[0].remaining).toBeNull();
+      expect(out.services[0].dailyCap).toBeNull();
+      expect(out.services[0].used).toBe(0);
+    });
+
+    it('does not consume any quota (no upsert query fires)', async () => {
+      seedUser();
+      seedTier(AccountType.FREE);
+      tierServicesRepo.find.mockResolvedValueOnce([]);
+      usageRepo.find.mockResolvedValueOnce([]);
+      await service.snapshotForUser('user-1');
+      expect(usageRepo.query).not.toHaveBeenCalled();
     });
   });
 });

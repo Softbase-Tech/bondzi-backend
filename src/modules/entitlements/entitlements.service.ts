@@ -208,4 +208,69 @@ export class EntitlementsService {
       order: { service: 'ASC' },
     });
   }
+
+  /**
+   * Client-facing snapshot for the mobile "X/Y today" strips and lock
+   * states. Resolves the caller's tier for their current level, joins
+   * the tier's policy rows against today's usage, and returns one entry
+   * per service. `remaining` is null when the service is disabled (Free
+   * users have no quota to reason about) OR unlimited (dailyCap=null,
+   * Pro's default).
+   *
+   * Kept separate from `assertAndConsume` because callers may want the
+   * snapshot without consuming a quota point (e.g. rendering the setup
+   * screen before the user actually starts a session).
+   */
+  async snapshotForUser(userId: string): Promise<UserEntitlementSnapshot> {
+    const user = await this.usersRepo.findOne({
+      where: { id: userId },
+      select: ['id', 'examType', 'formLevel'],
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const accountType = await this.resolveTier(user.id, user.examType);
+    const [policies, usage] = await Promise.all([
+      this.tierServicesRepo.find({
+        where: { accountType },
+        order: { service: 'ASC' },
+      }),
+      this.usageForUserToday(userId),
+    ]);
+    const usageByService = new Map(usage.map((u) => [u.service, u.usedCount]));
+
+    const services: UserEntitlementSnapshotService[] = policies.map(
+      (policy) => {
+        const used = usageByService.get(policy.service) ?? 0;
+        const remaining = !policy.enabled
+          ? null
+          : policy.dailyCap == null
+            ? null
+            : Math.max(policy.dailyCap - used, 0);
+        return {
+          service: policy.service,
+          enabled: policy.enabled,
+          dailyCap: policy.dailyCap ?? null,
+          used,
+          remaining,
+        };
+      },
+    );
+    return { accountType, examType: user.examType, services };
+  }
+}
+
+export interface UserEntitlementSnapshotService {
+  service: EntitlementService;
+  enabled: boolean;
+  /** null = unlimited (Pro's default across most services). */
+  dailyCap: number | null;
+  used: number;
+  /** null = unlimited OR service disabled — client should not render a counter. */
+  remaining: number | null;
+}
+
+export interface UserEntitlementSnapshot {
+  accountType: AccountType;
+  examType: ExamType | null;
+  services: UserEntitlementSnapshotService[];
 }

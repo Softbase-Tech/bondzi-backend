@@ -23,9 +23,11 @@ import { GamificationService } from '../gamification/gamification.service';
 import { StreakService } from '../gamification/streak.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { EntitlementsService } from '../entitlements/entitlements.service';
 import {
   AccountType,
   Difficulty,
+  EntitlementService,
   ExamMode,
   ExamStatus,
   QuestionPool,
@@ -76,6 +78,7 @@ export class ExamsService {
     private readonly streak: StreakService,
     private readonly referrals: ReferralsService,
     private readonly subscriptions: SubscriptionsService,
+    private readonly entitlements: EntitlementsService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -263,6 +266,21 @@ export class ExamsService {
         'years / wassecPaper are past-paper filters and cannot be combined with mode="pm_test".',
       );
     }
+
+    // Level-test entitlement. Consumed BEFORE any DB write so a rejected
+    // attempt doesn't create a session row. The atomic UPSERT inside
+    // assertAndConsume rolls back its own counter increment when the cap
+    // is breached (see entitlements.service). Free=20/day, Plus=80/day,
+    // Pro=∞ per the tier_services seed in migration 1960.
+    //
+    // Trade-off: if session creation below fails after this call, the user
+    // loses one quota point for a failed attempt. Preferred over the
+    // alternative (orphan session row on entitlement failure) because the
+    // failure path is rare (subject filter with zero matching questions).
+    await this.entitlements.assertAndConsume(
+      user.id,
+      EntitlementService.LEVEL_TESTS,
+    );
 
     const desiredCount = dto.questionCount ?? 20;
 

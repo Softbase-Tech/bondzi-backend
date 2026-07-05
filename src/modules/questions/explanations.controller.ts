@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -21,9 +20,9 @@ import {
   AuthenticatedUser,
   CurrentUser,
 } from '../../common/decorators/current-user.decorator';
-import { AccountType } from '../../common/types/enums';
+import { EntitlementService } from '../../common/types/enums';
+import { RequiresService } from '../entitlements/requires-service.decorator';
 import { Question } from './entities/question.entity';
-import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 /**
  * Vote body for POST /explanations/:id/vote. -1 = downvote, 0 = clear, 1 = up.
@@ -60,18 +59,15 @@ export class ExplanationsController {
   constructor(
     @InjectRepository(Question)
     private readonly questions: Repository<Question>,
-    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   @Get(':questionId')
+  @RequiresService(EntitlementService.AI_EXPLANATIONS)
   @ApiOperation({
     summary:
-      'Fetch the inline AI / human explanation for a question. Gated by per-level Plus/Pro entitlement.',
+      'Fetch the inline AI / human explanation for a question. Gated by the AI_EXPLANATIONS entitlement — Free=disabled (403), Plus=20/day (429 on 21st), Pro=unlimited.',
   })
-  async get(
-    @Param('questionId', new ParseUUIDPipe()) questionId: string,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
+  async get(@Param('questionId', new ParseUUIDPipe()) questionId: string) {
     const question = await this.questions.findOne({
       where: { id: questionId },
       select: [
@@ -88,23 +84,11 @@ export class ExplanationsController {
         'No explanation has been generated for this question yet.',
       );
     }
-    // Entitlement gate: Plus or Pro on the user's CURRENT level.
-    // Matches the convention used elsewhere in the codebase
-    // (questions.controller.list/pastPaper/adaptive). The reason we use
-    // the user's level rather than the question's: NOVDEC users share
-    // the WASSCE question pool but pay for NOVDEC. Gating on the
-    // question's exam_type would lock a NOVDEC Plus holder out of every
-    // shared question.
-    const ok = await this.subscriptions.hasEntitlement(
-      user.id,
-      user.examType,
-      AccountType.PLUS,
-    );
-    if (!ok) {
-      throw new ForbiddenException(
-        'Upgrade to Plus or Pro on this level to unlock AI explanations.',
-      );
-    }
+    // @RequiresService(AI_EXPLANATIONS) has already run (and consumed one
+    // quota point) by the time this handler executes — see
+    // RequiresServiceGuard. If the user was Free-tier, we returned 403
+    // before reading the DB; if they were Plus at the cap, 429; otherwise
+    // we're through the gate with usedCount already bumped for the day.
     return {
       questionId: question.id,
       // Mobile schema accepts `source` as a free string and normalises
