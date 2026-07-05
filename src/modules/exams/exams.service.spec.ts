@@ -17,6 +17,8 @@ import { StreakService } from '../gamification/streak.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
+import { AiService } from '../ai/ai.service';
+import { ConfigService } from '@nestjs/config';
 import { ExamStatus, ExamMode, QuestionPool } from '../../common/types/enums';
 
 /**
@@ -116,6 +118,7 @@ describe('ExamsService', () => {
     assertCanStudySubjects: jest.Mock;
   };
   let entitlements: { assertAndConsume: jest.Mock };
+  let subjectsRepo: { find: jest.Mock };
 
   beforeEach(async () => {
     examsRepo = {
@@ -144,6 +147,7 @@ describe('ExamsService', () => {
         .fn()
         .mockResolvedValue({ policy: {}, usedCount: 1 }),
     };
+    subjectsRepo = { find: jest.fn().mockResolvedValue([]) };
 
     const noop = {} as never;
 
@@ -155,7 +159,7 @@ describe('ExamsService', () => {
         { provide: getRepositoryToken(Question), useValue: questionsRepo },
         { provide: getRepositoryToken(Option), useValue: noop },
         { provide: getRepositoryToken(PmTestQuestion), useValue: pmTestQRepo },
-        { provide: getRepositoryToken(Subject), useValue: noop },
+        { provide: getRepositoryToken(Subject), useValue: subjectsRepo },
         {
           provide: getRepositoryToken(UserSubjectProgress),
           useValue: noop,
@@ -167,6 +171,8 @@ describe('ExamsService', () => {
         { provide: ReferralsService, useValue: noop },
         { provide: SubscriptionsService, useValue: subscriptions },
         { provide: EntitlementsService, useValue: entitlements },
+        { provide: AiService, useValue: { callBedrock: jest.fn() } },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: DataSource, useValue: noop },
       ],
     }).compile();
@@ -506,6 +512,129 @@ describe('ExamsService', () => {
 
       const whereCalls = andWhere.mock.calls.map((c) => c[0]);
       expect(whereCalls.some((s) => /form_level/.test(s))).toBe(false);
+    });
+  });
+
+  // ------------------------- create (past_paper metering) -------------------------
+  describe('create → past_paper metering', () => {
+    function stubPastPaperIdsQb(rows: Array<{ id: string }>): void {
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue(rows),
+      };
+      questionsRepo.find = jest.fn().mockResolvedValue([]);
+      (
+        service as unknown as {
+          questionsRepo: { createQueryBuilder: jest.Mock };
+        }
+      ).questionsRepo = {
+        createQueryBuilder: jest.fn().mockReturnValueOnce(qb),
+      };
+    }
+
+    it('meters PAST_PAPERS_CORE when the subject is core', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      subjectsRepo.find.mockResolvedValueOnce([
+        { id: 'subj-1', category: 'core' },
+      ]);
+      stubPastPaperIdsQb([]);
+      // No question matches → the past-paper branch throws BadRequest,
+      // but that's after the entitlement consume — which is what we assert.
+      await service
+        .create('user-1', {
+          mode: ExamMode.PAST_PAPER,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        })
+        .catch(() => undefined);
+      expect(entitlements.assertAndConsume).toHaveBeenCalledWith(
+        'user-1',
+        'past_papers_core',
+      );
+    });
+
+    it('meters PAST_PAPERS_ELECTIVE when the subject is elective', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      subjectsRepo.find.mockResolvedValueOnce([
+        { id: 'subj-1', category: 'elective' },
+      ]);
+      stubPastPaperIdsQb([]);
+      await service
+        .create('user-1', {
+          mode: ExamMode.PAST_PAPER,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        })
+        .catch(() => undefined);
+      expect(entitlements.assertAndConsume).toHaveBeenCalledWith(
+        'user-1',
+        'past_papers_elective',
+      );
+    });
+
+    it('meters ELECTIVE when the batch mixes core + elective (conservative)', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      subjectsRepo.find.mockResolvedValueOnce([
+        { id: 'a', category: 'core' },
+        { id: 'b', category: 'elective' },
+      ]);
+      stubPastPaperIdsQb([]);
+      await service
+        .create('user-1', {
+          mode: ExamMode.PAST_PAPER,
+          subjectFilter: { subjectIds: ['a', 'b'] },
+        })
+        .catch(() => undefined);
+      expect(entitlements.assertAndConsume).toHaveBeenCalledWith(
+        'user-1',
+        'past_papers_elective',
+      );
+    });
+
+    it('surfaces 429 without hitting the question-id query', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      subjectsRepo.find.mockResolvedValueOnce([
+        { id: 'subj-1', category: 'elective' },
+      ]);
+      const q429 = Object.assign(new Error('429'), {
+        status: 429,
+        response: { statusCode: 429 },
+      });
+      entitlements.assertAndConsume.mockRejectedValueOnce(q429);
+      // Spy on createQueryBuilder to assert it was never called.
+      const cqb = jest.fn();
+      (
+        service as unknown as {
+          questionsRepo: { createQueryBuilder: jest.Mock };
+        }
+      ).questionsRepo = { createQueryBuilder: cqb };
+
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.PAST_PAPER,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        }),
+      ).rejects.toBe(q429);
+      expect(cqb).not.toHaveBeenCalled();
     });
   });
 });

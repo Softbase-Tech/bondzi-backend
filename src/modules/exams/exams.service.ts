@@ -24,14 +24,18 @@ import { StreakService } from '../gamification/streak.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
+import { AiService } from '../ai/ai.service';
+import { ConfigService } from '@nestjs/config';
 import {
   AccountType,
+  AiAction,
   Difficulty,
   EntitlementService,
   ExamMode,
   ExamStatus,
   QuestionPool,
   QuestionStatus,
+  SubjectCategory,
   questionPoolFor,
 } from '../../common/types/enums';
 import {
@@ -79,6 +83,8 @@ export class ExamsService {
     private readonly referrals: ReferralsService,
     private readonly subscriptions: SubscriptionsService,
     private readonly entitlements: EntitlementsService,
+    private readonly ai: AiService,
+    private readonly config: ConfigService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -108,6 +114,20 @@ export class ExamsService {
 
     if (dto.mode === ExamMode.PM_TEST) {
       return this.createPmTestSession(user, dto, filter);
+    }
+
+    // Past-paper metering by subject.category. Free tier: CORE is
+    // unlimited, ELECTIVE is 10/day; Plus/Pro are unlimited on both.
+    // The two setup screens always pass a single subjectId (see
+    // /past-papers/setup + WeakTopicsCard callers). If a caller ever
+    // passes multiple subjects that span both categories, we meter
+    // against the more restrictive of the two (ELECTIVE) — that's the
+    // conservative default. Zero-subject filters skip metering, since
+    // "no subject" means "cross-subject browse" which the DTO doesn't
+    // actually surface from any client.
+    if (dto.mode === ExamMode.PAST_PAPER && filter.subjectIds?.length) {
+      const service = await this.resolvePastPaperService(filter.subjectIds);
+      await this.entitlements.assertAndConsume(user.id, service);
     }
 
     const desiredCount =
@@ -251,6 +271,33 @@ export class ExamsService {
    * sessions — because the mobile exam runner is agnostic to source. See
    * `toStudentQuestionFromPmTest` for the shape adapter.
    */
+  /**
+   * Resolves which past-paper entitlement key to meter against. Reads the
+   * category off the passed subjects and returns the more-restrictive
+   * (ELECTIVE) when the batch mixes core + elective. Falls back to CORE
+   * when the subjects are unknown — safer than blowing up mid-request.
+   */
+  private async resolvePastPaperService(
+    subjectIds: string[],
+  ): Promise<EntitlementService> {
+    const subjects = await this.subjectsRepo.find({
+      where: { id: In(subjectIds) },
+      select: ['id', 'category'],
+    });
+    if (subjects.length === 0) {
+      this.logger.warn(
+        `[past-paper-meter] no subjects resolved for [${subjectIds.join(', ')}] — defaulting to CORE`,
+      );
+      return EntitlementService.PAST_PAPERS_CORE;
+    }
+    const hasElective = subjects.some(
+      (s) => s.category === SubjectCategory.ELECTIVE,
+    );
+    return hasElective
+      ? EntitlementService.PAST_PAPERS_ELECTIVE
+      : EntitlementService.PAST_PAPERS_CORE;
+  }
+
   private async createPmTestSession(
     user: User,
     dto: CreateExamDto,
@@ -698,6 +745,104 @@ export class ExamsService {
       : [];
 
     return toExamResultResponse(exam, answers, topics);
+  }
+
+  /**
+   * Post-exam AI breakdown. Dormant surface — the
+   * POST_EXAM_AI_BREAKDOWN entitlement is disabled on every tier per
+   * the Phase 0.1 seed (migration 1960), so every call today returns
+   * 403 from assertAndConsume. When an admin flips the tier to
+   * enabled=true, this method starts generating breakdowns without
+   * a code change.
+   *
+   * Cache semantics: once generated, the breakdown lives on
+   * `exams.ai_breakdown` and same-exam repeat calls return it without
+   * consuming another quota point (same pattern as weakness
+   * narratives — one quota per unique thing produced, not per HTTP).
+   */
+  async generateBreakdown(
+    userId: string,
+    examId: string,
+  ): Promise<{
+    breakdown: string;
+    generatedAt: string;
+    model: string;
+    cached: boolean;
+  }> {
+    const exam = await this.examsRepo.findOne({ where: { id: examId } });
+    if (!exam) throw new NotFoundException('Exam not found');
+    if (exam.userId !== userId) throw new ForbiddenException('Not your exam');
+    if (exam.status !== ExamStatus.COMPLETED) {
+      throw new BadRequestException(
+        'Breakdown is only available for completed exams.',
+      );
+    }
+
+    // Cache hit — no entitlement charge, no Bedrock call.
+    if (exam.aiBreakdown) {
+      return {
+        breakdown: exam.aiBreakdown,
+        generatedAt:
+          exam.aiBreakdownGeneratedAt?.toISOString() ??
+          new Date().toISOString(),
+        model: exam.aiBreakdownModel ?? 'unknown',
+        cached: true,
+      };
+    }
+
+    await this.entitlements.assertAndConsume(
+      userId,
+      EntitlementService.POST_EXAM_AI_BREAKDOWN,
+    );
+
+    // Read the answers we're going to summarise. Kept lean —
+    // stem + is_correct + option label is enough for the model to
+    // spot patterns; no need to send the full option bodies.
+    const answers = await this.answersRepo.find({
+      where: { examId },
+      relations: ['question'],
+    });
+    const summary = answers
+      .map((a, i) => {
+        const stem = (a.question?.body ?? '').slice(0, 200);
+        return `${i + 1}. [${a.isCorrect ? '✓' : '✗'}] ${stem}`;
+      })
+      .join('\n');
+
+    const prompt = [
+      `A Ghanaian student just finished a ${exam.mode} exam scoring ${exam.percentScore ?? '?'}%.`,
+      `Answers (200-char excerpts):`,
+      summary,
+      ``,
+      `Write a 4-6 sentence breakdown addressed to the student. Highlight two topics they got right and two they missed. End with one specific next step (e.g. "Redo topic X, focus on...").`,
+      `No markdown, no headings, no bullet lists — plain prose only.`,
+    ].join('\n');
+
+    const model =
+      this.config.get<string>('ai.defaultModel') ??
+      'anthropic.claude-haiku-4-5-20251001-v1:0';
+    const result = await this.ai.callBedrock(prompt, model, {
+      maxTokens: 800,
+      action: AiAction.POST_EXAM_BREAKDOWN,
+      userId,
+    });
+    const breakdown = result.content.trim();
+    if (!breakdown) {
+      throw new BadRequestException(
+        'The AI returned an empty breakdown; try again in a moment.',
+      );
+    }
+
+    exam.aiBreakdown = breakdown;
+    exam.aiBreakdownModel = model;
+    exam.aiBreakdownGeneratedAt = new Date();
+    await this.examsRepo.save(exam);
+    return {
+      breakdown,
+      generatedAt: exam.aiBreakdownGeneratedAt.toISOString(),
+      model,
+      cached: false,
+    };
   }
 
   /**

@@ -298,6 +298,8 @@ export enum AiAction {
   CHAT_TUTOR = 'chat_tutor',
   QUESTION_GEN = 'question_gen',
   MODERATION = 'moderation',
+  WEAKNESS_NARRATIVE = 'weakness_narrative',
+  POST_EXAM_BREAKDOWN = 'post_exam_breakdown',
 }
 
 // v2: admin-triggered AI job lifecycle.

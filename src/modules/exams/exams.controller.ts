@@ -96,4 +96,16 @@ export class ExamsController {
   ) {
     return this.exams.getResult(user.id, id);
   }
+
+  @Post(':id/breakdown')
+  @ApiOperation({
+    summary:
+      'AI-generated post-exam breakdown. Currently dormant — POST_EXAM_AI_BREAKDOWN is disabled on every tier in the seed, so this returns 403 until an admin flips it on. Once enabled, same-exam repeat calls return the cached breakdown without consuming another quota point.',
+  })
+  breakdown(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.exams.generateBreakdown(user.id, id);
+  }
 }

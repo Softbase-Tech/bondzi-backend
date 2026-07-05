@@ -16,6 +16,7 @@ import { GamificationModule } from '../gamification/gamification.module';
 import { ReferralsModule } from '../referrals/referrals.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { EntitlementsModule } from '../entitlements/entitlements.module';
+import { AiModule } from '../ai/ai.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { EntitlementsModule } from '../entitlements/entitlements.module';
     ReferralsModule,
     SubscriptionsModule,
     EntitlementsModule,
+    AiModule,
   ],
   controllers: [ExamsController],
   providers: [ExamsService],
