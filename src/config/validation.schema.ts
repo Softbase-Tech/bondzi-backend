@@ -40,7 +40,13 @@ export const envValidationSchema = Joi.object({
     .required()
     .invalid(Joi.ref('JWT_ACCESS_SECRET')),
   JWT_ACCESS_EXPIRY: Joi.string().default('15m'),
-  JWT_REFRESH_EXPIRY: Joi.string().default('30d'),
+  // Refresh token lifetime — this is the effective "session persistence"
+  // window on the mobile app (unless the user explicitly logs out).
+  // Access tokens are cheap to rotate every 15m; the refresh token is
+  // the one the mobile keeps in SecureStore across cold boots. Set to
+  // 90d to match the "stay signed in for months" UX users expect from
+  // consumer apps.
+  JWT_REFRESH_EXPIRY: Joi.string().default('90d'),
 
   PAYSTACK_SECRET_KEY_GH: Joi.string().required(),
   PAYSTACK_PUBLIC_KEY_GH: Joi.string().required(),

@@ -22,6 +22,7 @@ import {
 } from '../../common/decorators/current-user.decorator';
 import { EntitlementService } from '../../common/types/enums';
 import { RequiresService } from '../entitlements/requires-service.decorator';
+import { inlineMathInMarkdown } from '../../common/utils/math.util';
 import { Question } from './entities/question.entity';
 
 /**
@@ -94,7 +95,14 @@ export class ExplanationsController {
       // Mobile schema accepts `source` as a free string and normalises
       // via `s.startsWith('ai')`. Existing rows are AI-generated.
       source: question.explanationModel ? 'ai' : 'human',
-      content: question.explanation,
+      // Inline any `$...$` LaTeX to SVG data-URIs BEFORE returning —
+      // the mobile MathMarkdown renderer only handles the SVG shape,
+      // not raw LaTeX. `toStudentQuestion` runs the same treatment on
+      // question-embedded explanations (question.serializer.ts); the
+      // standalone endpoint was forgetting to do it, so explanations
+      // fetched via GET /explanations/:id rendered as literal
+      // `\frac{}` / `\times` / `$...$` text.
+      content: inlineMathInMarkdown(question.explanation),
       contentHtml: question.explanationHtml,
       generatedAt: question.explanationGeneratedAt?.toISOString() ?? null,
     };
