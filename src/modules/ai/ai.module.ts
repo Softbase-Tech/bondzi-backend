@@ -12,6 +12,7 @@ import {
   AI_GENERATION_CLIENT,
   aiGenerationClientProvider,
 } from './clients/ai-generation.factory';
+import { AdminRejectLogController } from './admin-reject-log.controller';
 
 /**
  * Both concrete clients (Bedrock, Ollama) are registered as
@@ -33,6 +34,7 @@ import {
       AiGenerationRejectAgg,
     ]),
   ],
+  controllers: [AdminRejectLogController],
   providers: [
     AiService,
     RejectLogService,
