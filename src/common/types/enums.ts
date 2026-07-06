@@ -167,6 +167,16 @@ export enum ExamMode {
   TOPIC_DRILL = 'topic_drill',
   PM_TEST = 'pm_test',
   SRS_REVIEW = 'srs_review',
+  /**
+   * Timed full-length simulation. Draws from the past-paper questions
+   * pool (same as PAST_PAPER) but with distinct semantics: fixed 3-hour
+   * timer, ~50 questions across all topics, no year/paper filters.
+   * Meters against the MOCK_EXAMS entitlement (Free=off, Plus=5/day,
+   * Pro=unlimited) — separate from PAST_PAPERS_* so a Free user
+   * hitting mock-exam mode gets a clean 403 rather than accidentally
+   * spending an elective past-paper point.
+   */
+  MOCK_EXAM = 'mock_exam',
 }
 
 export enum ExamStatus {

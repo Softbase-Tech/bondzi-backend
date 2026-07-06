@@ -116,6 +116,10 @@ export class ExamsService {
       return this.createPmTestSession(user, dto, filter);
     }
 
+    if (dto.mode === ExamMode.MOCK_EXAM) {
+      return this.createMockExamSession(user, dto, filter);
+    }
+
     // Past-paper metering by subject.category. Free tier: CORE is
     // unlimited, ELECTIVE is 10/day; Plus/Pro are unlimited on both.
     // The two setup screens always pass a single subjectId (see
@@ -421,6 +425,99 @@ export class ExamsService {
       questions: studentQuestions,
       subjectIds: Array.isArray(filter.subjectIds) ? filter.subjectIds : [],
     };
+  }
+
+  /**
+   * Mock-exam session — timed full-length simulation. Draws from the
+   * past-paper `questions` table (same pool the mode='past_paper'
+   * branch queries) BUT:
+   *   - meters against the separate MOCK_EXAMS entitlement so a Free
+   *     student who accidentally taps "Mock exam" doesn't burn one of
+   *     their 10 daily elective past-paper points;
+   *   - forces a 3-hour timer regardless of what the client sends
+   *     (WASSCE Paper 1 convention);
+   *   - fixes the count at 50 questions (the WAEC-style Paper 1
+   *     length) — clients can't shrink it into a "mini mock";
+   *   - refuses topic / year / paper filters — a mock is deliberately
+   *     unpredictable to simulate exam-day conditions.
+   *
+   * `question_pool` stays PAST_PAPER so the answer-submission +
+   * grading paths route to the shared `options` table without any
+   * new branching.
+   */
+  private async createMockExamSession(
+    user: User,
+    dto: CreateExamDto,
+    filter: NonNullable<CreateExamDto['subjectFilter']>,
+  ): Promise<ExamSessionResponse> {
+    if (!filter.subjectIds?.length || filter.subjectIds.length > 1) {
+      throw new BadRequestException(
+        'Mock exams are single-subject — pass exactly one subjectId.',
+      );
+    }
+    if (
+      filter.topicIds?.length ||
+      filter.syllabusTopicIds?.length ||
+      filter.years?.length ||
+      filter.wassecPaper
+    ) {
+      throw new BadRequestException(
+        'Mock exams sample across the whole subject — remove topicIds / syllabusTopicIds / years / wassecPaper.',
+      );
+    }
+
+    await this.entitlements.assertAndConsume(
+      user.id,
+      EntitlementService.MOCK_EXAMS,
+    );
+
+    const desiredCount = 50;
+
+    const idRows = await this.questionsRepo
+      .createQueryBuilder('q')
+      .select('q.id', 'id')
+      .where("q.status = 'active'")
+      .andWhere('q.examType = :et', { et: questionPoolFor(user.examType) })
+      .andWhere('q.subjectId = :sid', { sid: filter.subjectIds[0] })
+      .orderBy('RANDOM()')
+      .limit(desiredCount)
+      .getRawMany<{ id: string }>();
+
+    if (idRows.length === 0) {
+      throw new BadRequestException(
+        'No past-paper questions available for this subject — a mock exam needs a stocked pool.',
+      );
+    }
+
+    const orderedIds = idRows.map((r) => r.id);
+    const loaded = await this.questionsRepo.find({
+      where: { id: In(orderedIds) },
+      relations: ['options', 'stimulus'],
+    });
+    const byId = new Map(loaded.map((q) => [q.id, q] as const));
+    const questions = orderedIds
+      .map((id) => byId.get(id))
+      .filter((q): q is Question => Boolean(q));
+
+    const exam = this.examsRepo.create({
+      userId: user.id,
+      examType: user.examType,
+      mode: ExamMode.MOCK_EXAM,
+      status: ExamStatus.IN_PROGRESS,
+      subjectFilter: filter as unknown as Record<string, unknown>,
+      questionIds: questions.map((q) => q.id),
+      durationSeconds: 3 * 60 * 60, // 3 hours — WASSCE Paper 1.
+      totalQuestions: questions.length,
+      startedAt: new Date(),
+    });
+    await this.examsRepo.save(exam);
+
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      user.id,
+      user.examType,
+      AccountType.PLUS,
+    );
+    return toExamSessionResponse(exam, questions, { hasActiveSubscription });
   }
 
   async getOne(userId: string, examId: string): Promise<ExamSessionResponse> {

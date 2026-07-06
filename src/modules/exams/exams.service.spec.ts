@@ -606,6 +606,60 @@ describe('ExamsService', () => {
       );
     });
 
+    it('mock-exam mode meters MOCK_EXAMS and refuses topic/year filters', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.MOCK_EXAM,
+          subjectFilter: {
+            subjectIds: ['subj-1'],
+            years: [2019],
+          },
+        }),
+      ).rejects.toThrow(/mock/i);
+      expect(entitlements.assertAndConsume).not.toHaveBeenCalled();
+    });
+
+    it('mock-exam requires exactly one subjectId', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.MOCK_EXAM,
+          subjectFilter: { subjectIds: ['a', 'b'] },
+        }),
+      ).rejects.toThrow(/single-subject/i);
+    });
+
+    it('mock-exam meters against MOCK_EXAMS, not past-paper keys', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      // Stub question-id query returning empty so the branch throws
+      // after entitlement consume — we're asserting the meter, not
+      // the session-save path here.
+      stubPastPaperIdsQb([]);
+      await service
+        .create('user-1', {
+          mode: ExamMode.MOCK_EXAM,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        })
+        .catch(() => undefined);
+      expect(entitlements.assertAndConsume).toHaveBeenCalledWith(
+        'user-1',
+        'mock_exams',
+      );
+    });
+
     it('surfaces 429 without hitting the question-id query', async () => {
       usersRepo.findOne.mockResolvedValueOnce({
         id: 'user-1',
