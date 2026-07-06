@@ -52,6 +52,10 @@ export class StreakAtRiskJob {
       })
       .take(500)
       .getMany();
+    // Respect the per-user push opt-out. Email path is gated separately
+    // (email_streak_nudges_enabled), so a user opted out of push notifications
+    // still gets the email nudge and vice versa — treat channels as
+    // independent controls.
 
     let queued = 0;
     for (const user of candidates) {
@@ -60,15 +64,17 @@ export class StreakAtRiskJob {
         user.lastActiveAt.getTime() + 24 * 3600 * 1000,
       );
 
-      await this.notifications
-        .send({
-          userId: user.id,
-          channel: NotificationChannel.PUSH,
-          title: `🔥 ${user.streakDays}-day streak at risk`,
-          body: 'Answer one question today to keep your streak alive.',
-          data: { type: 'streak_at_risk', streakDays: user.streakDays },
-        })
-        .catch(() => void 0);
+      if (user.pushStreakNudgesEnabled) {
+        await this.notifications
+          .send({
+            userId: user.id,
+            channel: NotificationChannel.PUSH,
+            title: `🔥 ${user.streakDays}-day streak at risk`,
+            body: 'Answer one question today to keep your streak alive.',
+            data: { type: 'streak_at_risk', streakDays: user.streakDays },
+          })
+          .catch(() => void 0);
+      }
 
       if (!user.email) continue;
 

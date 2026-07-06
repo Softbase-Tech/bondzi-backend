@@ -26,6 +26,8 @@ import { StreakAtRiskJob } from './streak-at-risk.job';
 import { WeeklyDigestJob } from './weekly-digest.job';
 import { WinnerSelectionReminderJob } from './winner-selection-reminder.job';
 import { AiRejectRetentionJob } from './ai-reject-retention.job';
+import { DailyReminderJob } from './daily-reminder.job';
+import { WeeklyLeaderboardPushJob } from './weekly-leaderboard-push.job';
 import { NotificationsModule } from '../modules/notifications/notifications.module';
 import { LeaderboardModule } from '../modules/leaderboard/leaderboard.module';
 import { ReferralsModule } from '../modules/referrals/referrals.module';
@@ -77,6 +79,8 @@ import { QUEUE_AI_GENERATION, QUEUE_EMAIL } from '../modules/ai/ai.queues';
     WeeklyDigestJob,
     WinnerSelectionReminderJob,
     AiRejectRetentionJob,
+    DailyReminderJob,
+    WeeklyLeaderboardPushJob,
     EmailProcessor,
   ],
 })

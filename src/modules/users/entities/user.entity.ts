@@ -181,6 +181,22 @@ export class User {
   @Column({ name: 'email_marketing_enabled', type: 'bool', default: true })
   emailMarketingEnabled: boolean;
 
+  /**
+   * Daily-reminder + weekly-leaderboard push notifications. Users can
+   * mute the routine cadence via /settings/notifications without also
+   * muting streak nudges (below).
+   */
+  @Column({ name: 'push_reminders_enabled', type: 'bool', default: true })
+  pushRemindersEnabled: boolean;
+
+  /**
+   * 17:00 "streak at risk" push. Separate flag from the routine
+   * reminders because streak nudges are urgency-driven — users often
+   * want THIS even when they've muted the daily reminder.
+   */
+  @Column({ name: 'push_streak_nudges_enabled', type: 'bool', default: true })
+  pushStreakNudgesEnabled: boolean;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
