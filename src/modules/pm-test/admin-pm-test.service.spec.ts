@@ -9,6 +9,7 @@ import { PmTestOption } from './entities/pm-test-option.entity';
 import { AiGenerationJob } from '../admin-ai-gen/entities/ai-generation-job.entity';
 import { RedisService } from '../../common/redis/redis.service';
 import { QUEUE_AI_GENERATION } from '../ai/ai.queues';
+import { AiService } from '../ai/ai.service';
 import {
   AiJobStatus,
   AiJobType,
@@ -43,6 +44,7 @@ describe('AdminPmTestService', () => {
   let queue: { add: jest.Mock };
   let redis: { setJson: jest.Mock; getJson: jest.Mock; del: jest.Mock };
   let config: { get: jest.Mock };
+  let aiService: { assertBatchWithinCap: jest.Mock };
 
   beforeEach(async () => {
     qRepo = {
@@ -63,7 +65,15 @@ describe('AdminPmTestService', () => {
       getJson: jest.fn(),
       del: jest.fn().mockResolvedValue(undefined),
     };
-    config = { get: jest.fn().mockReturnValue(500) };
+    config = {
+      get: jest.fn((key: string) => {
+        // Tests targeting AI_MAX_ITEMS_PER_BATCH expect the assertion
+        // to be a no-op for their sample sizes; return a large cap.
+        if (key === 'ai.maxItemsPerBatch') return 10_000;
+        return 500;
+      }),
+    };
+    aiService = { assertBatchWithinCap: jest.fn() };
     const moduleRef = await Test.createTestingModule({
       providers: [
         AdminPmTestService,
@@ -73,6 +83,7 @@ describe('AdminPmTestService', () => {
         { provide: getQueueToken(QUEUE_AI_GENERATION), useValue: queue },
         { provide: RedisService, useValue: redis },
         { provide: ConfigService, useValue: config },
+        { provide: AiService, useValue: aiService },
       ],
     }).compile();
     service = moduleRef.get(AdminPmTestService);

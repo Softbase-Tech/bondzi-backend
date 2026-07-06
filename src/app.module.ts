@@ -43,6 +43,8 @@ import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
 import { ProgressModule } from './modules/progress/progress.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { EntitlementsModule } from './modules/entitlements/entitlements.module';
+import { RequiresServiceGuard } from './modules/entitlements/requires-service.guard';
 import { HealthModule } from './modules/health/health.module';
 import { JobsModule } from './jobs/jobs.module';
 import { Subscription } from './modules/subscriptions/entities/subscription.entity';
@@ -156,6 +158,7 @@ import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
     MailModule,
     LegalModule,
     PromoCodesModule,
+    EntitlementsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
@@ -168,6 +171,10 @@ import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
     { provide: APP_GUARD, useClass: UserAwareThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: SubscriptionGuard },
+    // MUST come after JwtAuthGuard so req.user is populated when this
+    // guard reads it. NestJS executes APP_GUARDs in the order they're
+    // listed in this providers array.
+    { provide: APP_GUARD, useClass: RequiresServiceGuard },
   ],
 })
 export class AppModule {}

@@ -101,6 +101,14 @@ export interface SafeUser {
   emailLevelUpEnabled: boolean;
   emailMarketingEnabled: boolean;
   /**
+   * Push notification opt-outs (migration 2020). Independent from
+   * email preferences — a user can mute one channel without the other.
+   *   pushRemindersEnabled  → daily 10:00 + Monday leaderboard push
+   *   pushStreakNudgesEnabled → 17:00 "streak at risk" push
+   */
+  pushRemindersEnabled: boolean;
+  pushStreakNudgesEnabled: boolean;
+  /**
    * Demographic fields collected at registration (migration 1930).
    * Both nullable: historical accounts created before the columns
    * existed never filled them in, and we keep them readable so the
@@ -1093,6 +1101,8 @@ export class AuthService {
       emailStreakNudgesEnabled: user.emailStreakNudgesEnabled,
       emailLevelUpEnabled: user.emailLevelUpEnabled,
       emailMarketingEnabled: user.emailMarketingEnabled,
+      pushRemindersEnabled: user.pushRemindersEnabled,
+      pushStreakNudgesEnabled: user.pushStreakNudgesEnabled,
       gender: user.gender ?? null,
       dateOfBirth: user.dateOfBirth ?? null,
       createdAt: user.createdAt,

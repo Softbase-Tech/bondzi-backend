@@ -40,6 +40,15 @@ export class AiUsageLog {
   @Column({ type: 'enum', enum: AiAction })
   action: AiAction;
 
+  /**
+   * Which client actually served this call: `bedrock` or `ollama`.
+   * Derivable from `model` in most cases (`ollama:` prefix), but
+   * dedicating a column keeps admin dashboard queries clean and
+   * survives any future renaming of the model tag convention.
+   */
+  @Column({ type: 'text', default: 'bedrock' })
+  provider: string;
+
   @Column({ type: 'text' })
   model: string;
 

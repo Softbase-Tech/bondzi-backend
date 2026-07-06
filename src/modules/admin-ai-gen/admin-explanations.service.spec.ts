@@ -8,6 +8,7 @@ import { AiGenerationJob } from './entities/ai-generation-job.entity';
 import { Question } from '../questions/entities/question.entity';
 import { RedisService } from '../../common/redis/redis.service';
 import { QUEUE_AI_GENERATION } from '../ai/ai.queues';
+import { AiService } from '../ai/ai.service';
 import { AiJobStatus, AiJobType } from '../../common/types/enums';
 
 /**
@@ -34,6 +35,7 @@ describe('AdminExplanationsService', () => {
   let queue: { add: jest.Mock };
   let redis: { setJson: jest.Mock; getJson: jest.Mock; del: jest.Mock };
   let config: { get: jest.Mock };
+  let aiService: { assertBatchWithinCap: jest.Mock };
 
   beforeEach(async () => {
     questionsRepo = {
@@ -52,6 +54,7 @@ describe('AdminExplanationsService', () => {
       del: jest.fn().mockResolvedValue(undefined),
     };
     config = { get: jest.fn() };
+    aiService = { assertBatchWithinCap: jest.fn() };
     const moduleRef = await Test.createTestingModule({
       providers: [
         AdminExplanationsService,
@@ -60,6 +63,7 @@ describe('AdminExplanationsService', () => {
         { provide: getQueueToken(QUEUE_AI_GENERATION), useValue: queue },
         { provide: RedisService, useValue: redis },
         { provide: ConfigService, useValue: config },
+        { provide: AiService, useValue: aiService },
       ],
     }).compile();
     service = moduleRef.get(AdminExplanationsService);

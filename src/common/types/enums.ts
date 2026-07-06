@@ -167,6 +167,16 @@ export enum ExamMode {
   TOPIC_DRILL = 'topic_drill',
   PM_TEST = 'pm_test',
   SRS_REVIEW = 'srs_review',
+  /**
+   * Timed full-length simulation. Draws from the past-paper questions
+   * pool (same as PAST_PAPER) but with distinct semantics: fixed 3-hour
+   * timer, ~50 questions across all topics, no year/paper filters.
+   * Meters against the MOCK_EXAMS entitlement (Free=off, Plus=5/day,
+   * Pro=unlimited) — separate from PAST_PAPERS_* so a Free user
+   * hitting mock-exam mode gets a clean 403 rather than accidentally
+   * spending an elective past-paper point.
+   */
+  MOCK_EXAM = 'mock_exam',
 }
 
 export enum ExamStatus {
@@ -298,6 +308,8 @@ export enum AiAction {
   CHAT_TUTOR = 'chat_tutor',
   QUESTION_GEN = 'question_gen',
   MODERATION = 'moderation',
+  WEAKNESS_NARRATIVE = 'weakness_narrative',
+  POST_EXAM_BREAKDOWN = 'post_exam_breakdown',
 }
 
 // v2: admin-triggered AI job lifecycle.
@@ -321,4 +333,33 @@ export enum AiJobStatus {
 export enum LeaderboardPeriodType {
   WEEKLY = 'weekly',
   MONTHLY = 'monthly',
+}
+
+/**
+ * Entitlement service registry — every gated capability in the app has
+ * exactly one key here. The tier × service matrix in
+ * `tier_services` reads from this list, and the `@RequiresService`
+ * guard names one of these values.
+ *
+ * Adding a new gated feature = add the key here + one row per tier in
+ * the seed migration + decorate the controller method. Removing a key
+ * requires a migration to drop the corresponding tier_services rows.
+ *
+ * Notes on the current membership:
+ *   • PAST_PAPERS_CORE / PAST_PAPERS_ELECTIVE — the split lets Free
+ *     get all core subjects but only a metered number of electives.
+ *   • POST_EXAM_AI_BREAKDOWN — slot reserved but the generation
+ *     feature is deferred. Seeded `enabled=false` in every tier so
+ *     enabling later is one row update, not a code change.
+ *   • MOCK_EXAMS — Quiz-tab rescope; endpoint / template loader
+ *     lands in Phase 2.3.
+ */
+export enum EntitlementService {
+  PAST_PAPERS_CORE = 'past_papers_core',
+  PAST_PAPERS_ELECTIVE = 'past_papers_elective',
+  LEVEL_TESTS = 'level_tests',
+  MOCK_EXAMS = 'mock_exams',
+  AI_EXPLANATIONS = 'ai_explanations',
+  POST_EXAM_AI_BREAKDOWN = 'post_exam_ai_breakdown',
+  AI_WEAKNESS_NARRATIVES = 'ai_weakness_narratives',
 }

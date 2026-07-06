@@ -19,6 +19,7 @@ import {
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateEmailPreferencesDto } from './dto/update-email-preferences.dto';
+import { UpdatePushPreferencesDto } from './dto/update-push-preferences.dto';
 import { UpdateUsernameDto } from './dto/update-username.dto';
 import { ChangePasswordDto } from '../auth/dto/change-password.dto';
 
@@ -80,6 +81,18 @@ export class UsersController {
     @Body() dto: UpdateEmailPreferencesDto,
   ) {
     return this.users.updateEmailPreferences(user.id, dto);
+  }
+
+  @Patch('me/push-preferences')
+  @ApiOperation({
+    summary:
+      'Update push notification preferences (reminders + streak nudges).',
+  })
+  updatePushPreferences(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdatePushPreferencesDto,
+  ) {
+    return this.users.updatePushPreferences(user.id, dto);
   }
 
   @Patch('me/password')

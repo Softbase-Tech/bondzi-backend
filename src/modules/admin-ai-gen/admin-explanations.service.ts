@@ -16,6 +16,7 @@ import { AiGenerationJob } from './entities/ai-generation-job.entity';
 import { Question } from '../questions/entities/question.entity';
 import { RedisService } from '../../common/redis/redis.service';
 import { QUEUE_AI_GENERATION } from '../ai/ai.queues';
+import { AiService } from '../ai/ai.service';
 import { AiJobStatus, AiJobType, ExamType } from '../../common/types/enums';
 import {
   ExplanationFiltersDto,
@@ -55,6 +56,7 @@ export class AdminExplanationsService {
     private readonly queue: Queue,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
+    private readonly ai: AiService,
   ) {}
 
   /** Spec §9.3: reject jobs whose estimated cost exceeds AI_MAX_JOB_COST_USD. */
@@ -135,6 +137,12 @@ export class AdminExplanationsService {
     }
 
     await this.redis.del(previewKey(dto.confirmationToken));
+
+    // Row-count backstop. AI_MAX_JOB_COST_USD gates on $, which is
+    // meaningless on the Ollama path (local calls are $0). The
+    // row-count cap is what prevents a mistyped filter from blasting
+    // tens of thousands of explanations at prod on either provider.
+    this.ai.assertBatchWithinCap(stashed.ids.length);
 
     const needsCosign = this.requiresCosign(stashed.estimate);
 

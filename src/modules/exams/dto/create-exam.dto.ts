@@ -27,11 +27,25 @@ export class ExamSubjectFilterDto {
   @IsUUID('4', { each: true })
   subjectIds?: string[];
 
-  @ApiPropertyOptional({ type: [String] })
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Past-paper topic ids (from the `topics` table). Ignored / rejected for pm_test mode — use syllabusTopicIds instead.',
+  })
   @IsOptional()
   @IsArray()
   @IsUUID('4', { each: true })
   topicIds?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Syllabus-topic ids (from the `syllabus_topics` catalogue). Only valid when mode="pm_test" — the AI-generated question pool is the only one currently tagged with syllabus_topic_id.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  syllabusTopicIds?: string[];
 
   @ApiPropertyOptional({ type: [Number] })
   @IsOptional()

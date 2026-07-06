@@ -16,6 +16,7 @@ import { Subject } from '../subjects/entities/subject.entity';
 import { UserSubject } from './entities/user-subject.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateEmailPreferencesDto } from './dto/update-email-preferences.dto';
+import { UpdatePushPreferencesDto } from './dto/update-push-preferences.dto';
 import { ChangePasswordDto } from '../auth/dto/change-password.dto';
 import {
   canonicalUsername,
@@ -172,6 +173,25 @@ export class UsersService {
       streakNudges: user.emailStreakNudgesEnabled,
       levelUp: user.emailLevelUpEnabled,
       marketing: user.emailMarketingEnabled,
+    };
+  }
+
+  async updatePushPreferences(
+    userId: string,
+    dto: UpdatePushPreferencesDto,
+  ): Promise<{ reminders: boolean; streakNudges: boolean }> {
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+    if (dto.reminders !== undefined) {
+      user.pushRemindersEnabled = dto.reminders;
+    }
+    if (dto.streakNudges !== undefined) {
+      user.pushStreakNudgesEnabled = dto.streakNudges;
+    }
+    await this.usersRepo.save(user);
+    return {
+      reminders: user.pushRemindersEnabled,
+      streakNudges: user.pushStreakNudgesEnabled,
     };
   }
 

@@ -13,6 +13,8 @@ import { ExamAnswer } from './entities/exam-answer.entity';
 import { Question } from '../questions/entities/question.entity';
 import { Option } from '../questions/entities/option.entity';
 import { PmTestOption } from '../pm-test/entities/pm-test-option.entity';
+import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
+import { toStudentQuestionFromPmTest } from '../pm-test/serializers/pm-test.serializer';
 import { Subject } from '../subjects/entities/subject.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
 import { User } from '../users/entities/user.entity';
@@ -21,12 +23,19 @@ import { GamificationService } from '../gamification/gamification.service';
 import { StreakService } from '../gamification/streak.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { EntitlementsService } from '../entitlements/entitlements.service';
+import { AiService } from '../ai/ai.service';
+import { ConfigService } from '@nestjs/config';
 import {
   AccountType,
+  AiAction,
   Difficulty,
+  EntitlementService,
   ExamMode,
   ExamStatus,
   QuestionPool,
+  QuestionStatus,
+  SubjectCategory,
   questionPoolFor,
 } from '../../common/types/enums';
 import {
@@ -61,6 +70,8 @@ export class ExamsService {
     @InjectRepository(Question)
     private readonly questionsRepo: Repository<Question>,
     @InjectRepository(Option) private readonly optionsRepo: Repository<Option>,
+    @InjectRepository(PmTestQuestion)
+    private readonly pmTestQRepo: Repository<PmTestQuestion>,
     @InjectRepository(Subject)
     private readonly subjectsRepo: Repository<Subject>,
     @InjectRepository(UserSubjectProgress)
@@ -71,6 +82,9 @@ export class ExamsService {
     private readonly streak: StreakService,
     private readonly referrals: ReferralsService,
     private readonly subscriptions: SubscriptionsService,
+    private readonly entitlements: EntitlementsService,
+    private readonly ai: AiService,
+    private readonly config: ConfigService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -87,6 +101,38 @@ export class ExamsService {
       user.examType,
       dto.subjectFilter?.subjectIds,
     );
+
+    // Cross-field validation for filter × mode. Kept in the service (rather
+    // than the DTO) because it references relationships between fields, not
+    // shape-of-a-single-field constraints.
+    const filter = dto.subjectFilter ?? {};
+    if (filter.syllabusTopicIds?.length && dto.mode !== ExamMode.PM_TEST) {
+      throw new BadRequestException(
+        'syllabusTopicIds is only valid with mode="pm_test". Past-paper questions are not tagged with syllabus_topic_id.',
+      );
+    }
+
+    if (dto.mode === ExamMode.PM_TEST) {
+      return this.createPmTestSession(user, dto, filter);
+    }
+
+    if (dto.mode === ExamMode.MOCK_EXAM) {
+      return this.createMockExamSession(user, dto, filter);
+    }
+
+    // Past-paper metering by subject.category. Free tier: CORE is
+    // unlimited, ELECTIVE is 10/day; Plus/Pro are unlimited on both.
+    // The two setup screens always pass a single subjectId (see
+    // /past-papers/setup + WeakTopicsCard callers). If a caller ever
+    // passes multiple subjects that span both categories, we meter
+    // against the more restrictive of the two (ELECTIVE) — that's the
+    // conservative default. Zero-subject filters skip metering, since
+    // "no subject" means "cross-subject browse" which the DTO doesn't
+    // actually surface from any client.
+    if (dto.mode === ExamMode.PAST_PAPER && filter.subjectIds?.length) {
+      const service = await this.resolvePastPaperService(filter.subjectIds);
+      await this.entitlements.assertAndConsume(user.id, service);
+    }
 
     const desiredCount =
       dto.questionCount ?? (dto.mode === ExamMode.PAST_PAPER ? 50 : 20);
@@ -112,7 +158,6 @@ export class ExamsService {
       // `novdec` examType for analytics (so we can tell who took it).
       .andWhere('q.examType = :et', { et: questionPoolFor(user.examType) });
 
-    const filter = dto.subjectFilter ?? {};
     if (filter.subjectIds?.length)
       idQb.andWhere('q.subjectId IN (:...sids)', { sids: filter.subjectIds });
     if (filter.topicIds?.length)
@@ -206,6 +251,269 @@ export class ExamsService {
     // object was already loaded at the top of this method.
     const hasActiveSubscription = await this.subscriptions.hasEntitlement(
       userId,
+      user.examType,
+      AccountType.PLUS,
+    );
+    return toExamSessionResponse(exam, questions, { hasActiveSubscription });
+  }
+
+  /**
+   * Level-test (PM Test) session creation. Draws from `pm_test_questions`
+   * (AI-generated, admin-reviewed → status='active') filtered by:
+   *
+   *   - `subjectIds` (usually one — the picker is per-subject)
+   *   - `syllabusTopicIds` (optional — omit for a random session)
+   *   - user's `formLevel` (implicit; NOVDEC has NULL form and shares the
+   *     WASSCE pool via `questionPoolFor`)
+   *
+   * Sets `exam.question_pool = PM_TEST` so the answer-submission path
+   * routes to `pm_test_options` for grading (see `submitAnswer` line ~308)
+   * and XP awards land in the `correct_pm_test` bucket (see `complete`
+   * line ~403).
+   *
+   * The returned wire shape is `ExamSessionResponse` — same as past-paper
+   * sessions — because the mobile exam runner is agnostic to source. See
+   * `toStudentQuestionFromPmTest` for the shape adapter.
+   */
+  /**
+   * Resolves which past-paper entitlement key to meter against. Reads the
+   * category off the passed subjects and returns the more-restrictive
+   * (ELECTIVE) when the batch mixes core + elective. Falls back to CORE
+   * when the subjects are unknown — safer than blowing up mid-request.
+   */
+  private async resolvePastPaperService(
+    subjectIds: string[],
+  ): Promise<EntitlementService> {
+    const subjects = await this.subjectsRepo.find({
+      where: { id: In(subjectIds) },
+      select: ['id', 'category'],
+    });
+    if (subjects.length === 0) {
+      this.logger.warn(
+        `[past-paper-meter] no subjects resolved for [${subjectIds.join(', ')}] — defaulting to CORE`,
+      );
+      return EntitlementService.PAST_PAPERS_CORE;
+    }
+    const hasElective = subjects.some(
+      (s) => s.category === SubjectCategory.ELECTIVE,
+    );
+    return hasElective
+      ? EntitlementService.PAST_PAPERS_ELECTIVE
+      : EntitlementService.PAST_PAPERS_CORE;
+  }
+
+  private async createPmTestSession(
+    user: User,
+    dto: CreateExamDto,
+    filter: NonNullable<CreateExamDto['subjectFilter']>,
+  ): Promise<ExamSessionResponse> {
+    if (filter.topicIds?.length) {
+      throw new BadRequestException(
+        'topicIds targets past-paper topics — use syllabusTopicIds for pm_test mode.',
+      );
+    }
+    if (filter.years?.length || filter.wassecPaper) {
+      throw new BadRequestException(
+        'years / wassecPaper are past-paper filters and cannot be combined with mode="pm_test".',
+      );
+    }
+
+    // Level-test entitlement. Consumed BEFORE any DB write so a rejected
+    // attempt doesn't create a session row. The atomic UPSERT inside
+    // assertAndConsume rolls back its own counter increment when the cap
+    // is breached (see entitlements.service). Free=20/day, Plus=80/day,
+    // Pro=∞ per the tier_services seed in migration 1960.
+    //
+    // Trade-off: if session creation below fails after this call, the user
+    // loses one quota point for a failed attempt. Preferred over the
+    // alternative (orphan session row on entitlement failure) because the
+    // failure path is rare (subject filter with zero matching questions).
+    await this.entitlements.assertAndConsume(
+      user.id,
+      EntitlementService.LEVEL_TESTS,
+    );
+
+    const desiredCount = dto.questionCount ?? 20;
+
+    const idQb = this.pmTestQRepo
+      .createQueryBuilder('q')
+      .select('q.id', 'id')
+      .where('q.status = :st', { st: QuestionStatus.ACTIVE })
+      // NOVDEC students share the WASSCE PM-test pool.
+      .andWhere('q.exam_type = :et', { et: questionPoolFor(user.examType) });
+
+    if (filter.subjectIds?.length) {
+      idQb.andWhere('q.subject_id IN (:...sids)', { sids: filter.subjectIds });
+    }
+    if (filter.syllabusTopicIds?.length) {
+      idQb.andWhere('q.syllabus_topic_id IN (:...stids)', {
+        stids: filter.syllabusTopicIds,
+      });
+    }
+    // NOVDEC has NULL formLevel; skip the filter for them (their pool is
+    // WASSCE-tagged and formLevel-agnostic on the resit path).
+    if (user.formLevel != null) {
+      idQb.andWhere('q.form_level = :fl', { fl: user.formLevel });
+    }
+    // Difficulty. 'mixed' (default) returns the full range; anything else
+    // is a concrete constraint against pm_test_questions.difficulty. Silent
+    // no-op before this — the mobile difficulty picker shipped as a lie.
+    if (dto.difficulty && dto.difficulty !== ExamDifficultyFilter.MIXED) {
+      const difficultyEnum: Difficulty =
+        dto.difficulty === ExamDifficultyFilter.EASY
+          ? Difficulty.EASY
+          : dto.difficulty === ExamDifficultyFilter.HARD
+            ? Difficulty.HARD
+            : Difficulty.MEDIUM;
+      idQb.andWhere('q.difficulty = :diff', { diff: difficultyEnum });
+    }
+
+    idQb.orderBy('RANDOM()').limit(desiredCount);
+
+    const idRows = await idQb.getRawMany<{ id: string }>();
+    if (idRows.length === 0) {
+      throw new BadRequestException(
+        'No level-test questions match this filter yet — try a different topic or ask an admin to generate more.',
+      );
+    }
+    const orderedIds = idRows.map((r) => r.id);
+
+    const loaded = await this.pmTestQRepo.find({
+      where: { id: In(orderedIds) },
+      relations: ['options'],
+    });
+    const byId = new Map(loaded.map((q) => [q.id, q] as const));
+    const questions = orderedIds
+      .map((id) => byId.get(id))
+      .filter((q): q is PmTestQuestion => Boolean(q));
+
+    const exam = this.examsRepo.create({
+      userId: user.id,
+      examType: user.examType,
+      mode: dto.mode,
+      status: ExamStatus.IN_PROGRESS,
+      questionPool: QuestionPool.PM_TEST,
+      subjectFilter: dto.subjectFilter as unknown as Record<string, unknown>,
+      questionIds: questions.map((q) => q.id),
+      durationSeconds: dto.durationSeconds ?? null,
+      totalQuestions: questions.length,
+      startedAt: new Date(),
+    });
+    await this.examsRepo.save(exam);
+
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      user.id,
+      user.examType,
+      AccountType.PLUS,
+    );
+    const studentQuestions = questions.map((q) =>
+      toStudentQuestionFromPmTest(q, { hasActiveSubscription }),
+    );
+    // toExamSessionResponse takes past-paper Question entities; call the
+    // small shim below to build the same shape from pre-mapped items.
+    return {
+      id: exam.id,
+      userId: exam.userId,
+      mode: exam.mode,
+      questionCount: exam.totalQuestions ?? studentQuestions.length,
+      durationSeconds: exam.durationSeconds,
+      startedAt: exam.startedAt.toISOString(),
+      completedAt: null,
+      abandonedAt: null,
+      score: null,
+      grade: null,
+      questions: studentQuestions,
+      subjectIds: Array.isArray(filter.subjectIds) ? filter.subjectIds : [],
+    };
+  }
+
+  /**
+   * Mock-exam session — timed full-length simulation. Draws from the
+   * past-paper `questions` table (same pool the mode='past_paper'
+   * branch queries) BUT:
+   *   - meters against the separate MOCK_EXAMS entitlement so a Free
+   *     student who accidentally taps "Mock exam" doesn't burn one of
+   *     their 10 daily elective past-paper points;
+   *   - forces a 3-hour timer regardless of what the client sends
+   *     (WASSCE Paper 1 convention);
+   *   - fixes the count at 50 questions (the WAEC-style Paper 1
+   *     length) — clients can't shrink it into a "mini mock";
+   *   - refuses topic / year / paper filters — a mock is deliberately
+   *     unpredictable to simulate exam-day conditions.
+   *
+   * `question_pool` stays PAST_PAPER so the answer-submission +
+   * grading paths route to the shared `options` table without any
+   * new branching.
+   */
+  private async createMockExamSession(
+    user: User,
+    dto: CreateExamDto,
+    filter: NonNullable<CreateExamDto['subjectFilter']>,
+  ): Promise<ExamSessionResponse> {
+    if (!filter.subjectIds?.length || filter.subjectIds.length > 1) {
+      throw new BadRequestException(
+        'Mock exams are single-subject — pass exactly one subjectId.',
+      );
+    }
+    if (
+      filter.topicIds?.length ||
+      filter.syllabusTopicIds?.length ||
+      filter.years?.length ||
+      filter.wassecPaper
+    ) {
+      throw new BadRequestException(
+        'Mock exams sample across the whole subject — remove topicIds / syllabusTopicIds / years / wassecPaper.',
+      );
+    }
+
+    await this.entitlements.assertAndConsume(
+      user.id,
+      EntitlementService.MOCK_EXAMS,
+    );
+
+    const desiredCount = 50;
+
+    const idRows = await this.questionsRepo
+      .createQueryBuilder('q')
+      .select('q.id', 'id')
+      .where("q.status = 'active'")
+      .andWhere('q.examType = :et', { et: questionPoolFor(user.examType) })
+      .andWhere('q.subjectId = :sid', { sid: filter.subjectIds[0] })
+      .orderBy('RANDOM()')
+      .limit(desiredCount)
+      .getRawMany<{ id: string }>();
+
+    if (idRows.length === 0) {
+      throw new BadRequestException(
+        'No past-paper questions available for this subject — a mock exam needs a stocked pool.',
+      );
+    }
+
+    const orderedIds = idRows.map((r) => r.id);
+    const loaded = await this.questionsRepo.find({
+      where: { id: In(orderedIds) },
+      relations: ['options', 'stimulus'],
+    });
+    const byId = new Map(loaded.map((q) => [q.id, q] as const));
+    const questions = orderedIds
+      .map((id) => byId.get(id))
+      .filter((q): q is Question => Boolean(q));
+
+    const exam = this.examsRepo.create({
+      userId: user.id,
+      examType: user.examType,
+      mode: ExamMode.MOCK_EXAM,
+      status: ExamStatus.IN_PROGRESS,
+      subjectFilter: filter as unknown as Record<string, unknown>,
+      questionIds: questions.map((q) => q.id),
+      durationSeconds: 3 * 60 * 60, // 3 hours — WASSCE Paper 1.
+      totalQuestions: questions.length,
+      startedAt: new Date(),
+    });
+    await this.examsRepo.save(exam);
+
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      user.id,
       user.examType,
       AccountType.PLUS,
     );
@@ -534,6 +842,104 @@ export class ExamsService {
       : [];
 
     return toExamResultResponse(exam, answers, topics);
+  }
+
+  /**
+   * Post-exam AI breakdown. Dormant surface — the
+   * POST_EXAM_AI_BREAKDOWN entitlement is disabled on every tier per
+   * the Phase 0.1 seed (migration 1960), so every call today returns
+   * 403 from assertAndConsume. When an admin flips the tier to
+   * enabled=true, this method starts generating breakdowns without
+   * a code change.
+   *
+   * Cache semantics: once generated, the breakdown lives on
+   * `exams.ai_breakdown` and same-exam repeat calls return it without
+   * consuming another quota point (same pattern as weakness
+   * narratives — one quota per unique thing produced, not per HTTP).
+   */
+  async generateBreakdown(
+    userId: string,
+    examId: string,
+  ): Promise<{
+    breakdown: string;
+    generatedAt: string;
+    model: string;
+    cached: boolean;
+  }> {
+    const exam = await this.examsRepo.findOne({ where: { id: examId } });
+    if (!exam) throw new NotFoundException('Exam not found');
+    if (exam.userId !== userId) throw new ForbiddenException('Not your exam');
+    if (exam.status !== ExamStatus.COMPLETED) {
+      throw new BadRequestException(
+        'Breakdown is only available for completed exams.',
+      );
+    }
+
+    // Cache hit — no entitlement charge, no Bedrock call.
+    if (exam.aiBreakdown) {
+      return {
+        breakdown: exam.aiBreakdown,
+        generatedAt:
+          exam.aiBreakdownGeneratedAt?.toISOString() ??
+          new Date().toISOString(),
+        model: exam.aiBreakdownModel ?? 'unknown',
+        cached: true,
+      };
+    }
+
+    await this.entitlements.assertAndConsume(
+      userId,
+      EntitlementService.POST_EXAM_AI_BREAKDOWN,
+    );
+
+    // Read the answers we're going to summarise. Kept lean —
+    // stem + is_correct + option label is enough for the model to
+    // spot patterns; no need to send the full option bodies.
+    const answers = await this.answersRepo.find({
+      where: { examId },
+      relations: ['question'],
+    });
+    const summary = answers
+      .map((a, i) => {
+        const stem = (a.question?.body ?? '').slice(0, 200);
+        return `${i + 1}. [${a.isCorrect ? '✓' : '✗'}] ${stem}`;
+      })
+      .join('\n');
+
+    const prompt = [
+      `A Ghanaian student just finished a ${exam.mode} exam scoring ${exam.percentScore ?? '?'}%.`,
+      `Answers (200-char excerpts):`,
+      summary,
+      ``,
+      `Write a 4-6 sentence breakdown addressed to the student. Highlight two topics they got right and two they missed. End with one specific next step (e.g. "Redo topic X, focus on...").`,
+      `No markdown, no headings, no bullet lists — plain prose only.`,
+    ].join('\n');
+
+    const model =
+      this.config.get<string>('ai.defaultModel') ??
+      'anthropic.claude-haiku-4-5-20251001-v1:0';
+    const result = await this.ai.callBedrock(prompt, model, {
+      maxTokens: 800,
+      action: AiAction.POST_EXAM_BREAKDOWN,
+      userId,
+    });
+    const breakdown = result.content.trim();
+    if (!breakdown) {
+      throw new BadRequestException(
+        'The AI returned an empty breakdown; try again in a moment.',
+      );
+    }
+
+    exam.aiBreakdown = breakdown;
+    exam.aiBreakdownModel = model;
+    exam.aiBreakdownGeneratedAt = new Date();
+    await this.examsRepo.save(exam);
+    return {
+      breakdown,
+      generatedAt: exam.aiBreakdownGeneratedAt.toISOString(),
+      model,
+      cached: false,
+    };
   }
 
   /**

@@ -7,6 +7,7 @@ import { Exam } from './entities/exam.entity';
 import { ExamAnswer } from './entities/exam-answer.entity';
 import { Question } from '../questions/entities/question.entity';
 import { Option } from '../questions/entities/option.entity';
+import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
 import { Subject } from '../subjects/entities/subject.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
 import { User } from '../users/entities/user.entity';
@@ -15,7 +16,10 @@ import { GamificationService } from '../gamification/gamification.service';
 import { StreakService } from '../gamification/streak.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
-import { ExamStatus, ExamMode } from '../../common/types/enums';
+import { EntitlementsService } from '../entitlements/entitlements.service';
+import { AiService } from '../ai/ai.service';
+import { ConfigService } from '@nestjs/config';
+import { ExamStatus, ExamMode, QuestionPool } from '../../common/types/enums';
 
 /**
  * Coverage targets for ExamsService — only the two methods that were
@@ -101,18 +105,49 @@ function makeQuestion(id: string): Question {
 
 describe('ExamsService', () => {
   let service: ExamsService;
-  let examsRepo: { findOne: jest.Mock };
+  let examsRepo: { findOne: jest.Mock; create: jest.Mock; save: jest.Mock };
   let answersRepo: { find: jest.Mock };
   let questionsRepo: { find: jest.Mock };
-  let subscriptions: { hasEntitlement: jest.Mock };
+  let pmTestQRepo: {
+    createQueryBuilder: jest.Mock;
+    find: jest.Mock;
+  };
+  let usersRepo: { findOne: jest.Mock };
+  let subscriptions: {
+    hasEntitlement: jest.Mock;
+    assertCanStudySubjects: jest.Mock;
+  };
+  let entitlements: { assertAndConsume: jest.Mock };
+  let subjectsRepo: { find: jest.Mock };
 
   beforeEach(async () => {
-    examsRepo = { findOne: jest.fn() };
+    examsRepo = {
+      findOne: jest.fn(),
+      create: jest.fn((row: unknown) => row),
+      save: jest.fn(async (row: unknown) => ({
+        id: 'exam-new',
+        ...(row as object),
+      })),
+    };
     answersRepo = { find: jest.fn() };
     questionsRepo = { find: jest.fn() };
+    pmTestQRepo = {
+      createQueryBuilder: jest.fn(),
+      find: jest.fn(),
+    };
+    usersRepo = { findOne: jest.fn() };
     subscriptions = {
       hasEntitlement: jest.fn().mockResolvedValue(false),
+      assertCanStudySubjects: jest.fn().mockResolvedValue(undefined),
     };
+    entitlements = {
+      // Default: entitlement passes. Individual pm_test tests can override
+      // to simulate 429/403.
+      assertAndConsume: jest
+        .fn()
+        .mockResolvedValue({ policy: {}, usedCount: 1 }),
+    };
+    subjectsRepo = { find: jest.fn().mockResolvedValue([]) };
 
     const noop = {} as never;
 
@@ -123,17 +158,21 @@ describe('ExamsService', () => {
         { provide: getRepositoryToken(ExamAnswer), useValue: answersRepo },
         { provide: getRepositoryToken(Question), useValue: questionsRepo },
         { provide: getRepositoryToken(Option), useValue: noop },
-        { provide: getRepositoryToken(Subject), useValue: noop },
+        { provide: getRepositoryToken(PmTestQuestion), useValue: pmTestQRepo },
+        { provide: getRepositoryToken(Subject), useValue: subjectsRepo },
         {
           provide: getRepositoryToken(UserSubjectProgress),
           useValue: noop,
         },
-        { provide: getRepositoryToken(User), useValue: noop },
+        { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: SrsService, useValue: noop },
         { provide: GamificationService, useValue: noop },
         { provide: StreakService, useValue: noop },
         { provide: ReferralsService, useValue: noop },
         { provide: SubscriptionsService, useValue: subscriptions },
+        { provide: EntitlementsService, useValue: entitlements },
+        { provide: AiService, useValue: { callBedrock: jest.fn() } },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: DataSource, useValue: noop },
       ],
     }).compile();
@@ -209,6 +248,11 @@ describe('ExamsService', () => {
       expect(out).toBeNull();
     });
 
+    // ------------------------- create (pm_test) -------------------------
+    // The pm_test branch was added in Phase 1.2 to route level-test sessions
+    // to the AI-generated `pm_test_questions` pool with a syllabus_topic_id
+    // filter — separate from the past-paper `questions` path.
+
     it('delegates to getOne when there is an in-progress exam', async () => {
       // findOne is called twice — once to discover the in-progress exam,
       // then again from inside getOne to load the same exam.
@@ -231,6 +275,420 @@ describe('ExamsService', () => {
       expect(out!.id).toBe('exam-1');
       expect(out!.questionCount).toBe(5);
       expect(out!.questions).toHaveLength(5);
+    });
+  });
+
+  // ------------------------- create (pm_test) -------------------------
+  describe('create → pm_test branch', () => {
+    function stubPmTestIdsQb(rows: Array<{ id: string }>): {
+      andWhere: jest.Mock;
+      orderBy: jest.Mock;
+    } {
+      const andWhere = jest.fn().mockReturnThis();
+      const orderBy = jest.fn().mockReturnThis();
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere,
+        orderBy,
+        limit: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue(rows),
+      };
+      pmTestQRepo.createQueryBuilder.mockReturnValueOnce(qb);
+      return { andWhere, orderBy };
+    }
+
+    function makePmTestQuestion(id: string) {
+      return {
+        id,
+        subjectId: 'subj-1',
+        syllabusTopicId: 'stopic-1',
+        formLevel: 2,
+        examType: 'wassce',
+        questionType: 'mcq',
+        body: `PM Q ${id}`,
+        explanation: 'why',
+        difficulty: 'medium',
+        status: 'active',
+        options: [
+          { id: `${id}-a`, label: 'A', body: 'a', isCorrect: false },
+          { id: `${id}-b`, label: 'B', body: 'b', isCorrect: true },
+        ],
+      };
+    }
+
+    it('rejects syllabusTopicIds when mode is not pm_test', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.PRACTICE,
+          subjectFilter: {
+            subjectIds: ['subj-1'],
+            syllabusTopicIds: ['stopic-1'],
+          },
+        }),
+      ).rejects.toThrow(/syllabusTopicIds/);
+      expect(pmTestQRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('rejects past-paper filters when mode is pm_test', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.PM_TEST,
+          subjectFilter: { subjectIds: ['subj-1'], topicIds: ['past-t-1'] },
+        }),
+      ).rejects.toThrow(/topicIds/);
+      expect(pmTestQRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('rejects year/wassecPaper on pm_test mode', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.PM_TEST,
+          subjectFilter: { subjectIds: ['subj-1'], years: [2019] },
+        }),
+      ).rejects.toThrow(/past-paper/);
+    });
+
+    it('400s when no pm_test questions match the filter', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      stubPmTestIdsQb([]);
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.PM_TEST,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        }),
+      ).rejects.toThrow(/level-test/);
+    });
+
+    it('creates a session with QuestionPool.PM_TEST and pm-test wire shape', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      const { andWhere } = stubPmTestIdsQb([{ id: 'p1' }, { id: 'p2' }]);
+      pmTestQRepo.find.mockResolvedValueOnce([
+        makePmTestQuestion('p1'),
+        makePmTestQuestion('p2'),
+      ]);
+      subscriptions.hasEntitlement.mockResolvedValueOnce(true);
+
+      const out = await service.create('user-1', {
+        mode: ExamMode.PM_TEST,
+        subjectFilter: {
+          subjectIds: ['subj-1'],
+          syllabusTopicIds: ['stopic-1'],
+        },
+        questionCount: 20,
+      });
+
+      // Persisted exam row uses PM_TEST question pool so the answer path
+      // routes to pm_test_options for grading.
+      const savedExam = examsRepo.save.mock.calls[0][0];
+      expect(savedExam.questionPool).toBe(QuestionPool.PM_TEST);
+      expect(savedExam.mode).toBe(ExamMode.PM_TEST);
+
+      // The filter is applied — subject_id, syllabus_topic_id, form_level.
+      const whereCalls = andWhere.mock.calls.map((c) => c[0]);
+      expect(whereCalls.some((s) => /subject_id IN/.test(s))).toBe(true);
+      expect(whereCalls.some((s) => /syllabus_topic_id IN/.test(s))).toBe(true);
+      expect(whereCalls.some((s) => /form_level/.test(s))).toBe(true);
+
+      // Wire shape: StudentQuestion (past-paper) — year/paper null, source
+      // tagged, options carried through, isCorrect stripped.
+      expect(out.questions).toHaveLength(2);
+      expect(out.questions[0].year).toBeNull();
+      expect(out.questions[0].paper).toBeNull();
+      expect(out.questions[0].source).toBe('ai_pm_test');
+      expect(out.questions[0].options.every((o) => !('isCorrect' in o))).toBe(
+        true,
+      );
+      // Subscribed user sees explanation inline.
+      expect(out.questions[0].explanation).toContain('why');
+    });
+
+    it('consumes the LEVEL_TESTS entitlement before touching the DB', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      stubPmTestIdsQb([{ id: 'p1' }]);
+      pmTestQRepo.find.mockResolvedValueOnce([makePmTestQuestion('p1')]);
+
+      await service.create('user-1', {
+        mode: ExamMode.PM_TEST,
+        subjectFilter: { subjectIds: ['subj-1'] },
+      });
+
+      expect(entitlements.assertAndConsume).toHaveBeenCalledTimes(1);
+      const [uid, svc] = entitlements.assertAndConsume.mock.calls[0];
+      expect(uid).toBe('user-1');
+      expect(svc).toBe('level_tests');
+      // Session save fires AFTER entitlement consume, not before.
+      const consumeOrder =
+        entitlements.assertAndConsume.mock.invocationCallOrder[0];
+      const saveOrder = examsRepo.save.mock.invocationCallOrder[0];
+      expect(consumeOrder).toBeLessThan(saveOrder);
+    });
+
+    it('surfaces the entitlement 429 without creating a session', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      const quota429 = Object.assign(new Error('429'), {
+        status: 429,
+        response: {
+          statusCode: 429,
+          message: 'daily limit',
+        },
+      });
+      entitlements.assertAndConsume.mockRejectedValueOnce(quota429);
+
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.PM_TEST,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        }),
+      ).rejects.toBe(quota429);
+      expect(pmTestQRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(examsRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('honours the difficulty filter when set to something other than mixed', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      const { andWhere } = stubPmTestIdsQb([{ id: 'p1' }]);
+      pmTestQRepo.find.mockResolvedValueOnce([makePmTestQuestion('p1')]);
+
+      await service.create('user-1', {
+        mode: ExamMode.PM_TEST,
+        subjectFilter: { subjectIds: ['subj-1'] },
+
+        difficulty: 'hard' as any,
+      });
+
+      const whereCalls = andWhere.mock.calls.map((c) => c[0]);
+      expect(whereCalls.some((s) => /q\.difficulty/.test(s))).toBe(true);
+    });
+
+    it('skips the form_level filter for NOVDEC users (formLevel=null)', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'novdec',
+        formLevel: null,
+      });
+      const { andWhere } = stubPmTestIdsQb([{ id: 'p1' }]);
+      pmTestQRepo.find.mockResolvedValueOnce([makePmTestQuestion('p1')]);
+
+      await service.create('user-1', {
+        mode: ExamMode.PM_TEST,
+        subjectFilter: { subjectIds: ['subj-1'] },
+      });
+
+      const whereCalls = andWhere.mock.calls.map((c) => c[0]);
+      expect(whereCalls.some((s) => /form_level/.test(s))).toBe(false);
+    });
+  });
+
+  // ------------------------- create (past_paper metering) -------------------------
+  describe('create → past_paper metering', () => {
+    function stubPastPaperIdsQb(rows: Array<{ id: string }>): void {
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue(rows),
+      };
+      questionsRepo.find = jest.fn().mockResolvedValue([]);
+      (
+        service as unknown as {
+          questionsRepo: { createQueryBuilder: jest.Mock };
+        }
+      ).questionsRepo = {
+        createQueryBuilder: jest.fn().mockReturnValueOnce(qb),
+      };
+    }
+
+    it('meters PAST_PAPERS_CORE when the subject is core', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      subjectsRepo.find.mockResolvedValueOnce([
+        { id: 'subj-1', category: 'core' },
+      ]);
+      stubPastPaperIdsQb([]);
+      // No question matches → the past-paper branch throws BadRequest,
+      // but that's after the entitlement consume — which is what we assert.
+      await service
+        .create('user-1', {
+          mode: ExamMode.PAST_PAPER,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        })
+        .catch(() => undefined);
+      expect(entitlements.assertAndConsume).toHaveBeenCalledWith(
+        'user-1',
+        'past_papers_core',
+      );
+    });
+
+    it('meters PAST_PAPERS_ELECTIVE when the subject is elective', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      subjectsRepo.find.mockResolvedValueOnce([
+        { id: 'subj-1', category: 'elective' },
+      ]);
+      stubPastPaperIdsQb([]);
+      await service
+        .create('user-1', {
+          mode: ExamMode.PAST_PAPER,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        })
+        .catch(() => undefined);
+      expect(entitlements.assertAndConsume).toHaveBeenCalledWith(
+        'user-1',
+        'past_papers_elective',
+      );
+    });
+
+    it('meters ELECTIVE when the batch mixes core + elective (conservative)', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      subjectsRepo.find.mockResolvedValueOnce([
+        { id: 'a', category: 'core' },
+        { id: 'b', category: 'elective' },
+      ]);
+      stubPastPaperIdsQb([]);
+      await service
+        .create('user-1', {
+          mode: ExamMode.PAST_PAPER,
+          subjectFilter: { subjectIds: ['a', 'b'] },
+        })
+        .catch(() => undefined);
+      expect(entitlements.assertAndConsume).toHaveBeenCalledWith(
+        'user-1',
+        'past_papers_elective',
+      );
+    });
+
+    it('mock-exam mode meters MOCK_EXAMS and refuses topic/year filters', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.MOCK_EXAM,
+          subjectFilter: {
+            subjectIds: ['subj-1'],
+            years: [2019],
+          },
+        }),
+      ).rejects.toThrow(/mock/i);
+      expect(entitlements.assertAndConsume).not.toHaveBeenCalled();
+    });
+
+    it('mock-exam requires exactly one subjectId', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.MOCK_EXAM,
+          subjectFilter: { subjectIds: ['a', 'b'] },
+        }),
+      ).rejects.toThrow(/single-subject/i);
+    });
+
+    it('mock-exam meters against MOCK_EXAMS, not past-paper keys', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      // Stub question-id query returning empty so the branch throws
+      // after entitlement consume — we're asserting the meter, not
+      // the session-save path here.
+      stubPastPaperIdsQb([]);
+      await service
+        .create('user-1', {
+          mode: ExamMode.MOCK_EXAM,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        })
+        .catch(() => undefined);
+      expect(entitlements.assertAndConsume).toHaveBeenCalledWith(
+        'user-1',
+        'mock_exams',
+      );
+    });
+
+    it('surfaces 429 without hitting the question-id query', async () => {
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: 'wassce',
+        formLevel: 2,
+      });
+      subjectsRepo.find.mockResolvedValueOnce([
+        { id: 'subj-1', category: 'elective' },
+      ]);
+      const q429 = Object.assign(new Error('429'), {
+        status: 429,
+        response: { statusCode: 429 },
+      });
+      entitlements.assertAndConsume.mockRejectedValueOnce(q429);
+      // Spy on createQueryBuilder to assert it was never called.
+      const cqb = jest.fn();
+      (
+        service as unknown as {
+          questionsRepo: { createQueryBuilder: jest.Mock };
+        }
+      ).questionsRepo = { createQueryBuilder: cqb };
+
+      await expect(
+        service.create('user-1', {
+          mode: ExamMode.PAST_PAPER,
+          subjectFilter: { subjectIds: ['subj-1'] },
+        }),
+      ).rejects.toBe(q429);
+      expect(cqb).not.toHaveBeenCalled();
     });
   });
 });

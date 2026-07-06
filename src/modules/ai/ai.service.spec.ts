@@ -2,7 +2,7 @@ import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { AiService } from './ai.service';
-import { BedrockClient } from './clients/bedrock.client';
+import { AI_GENERATION_CLIENT } from './clients/ai-generation.factory';
 import { AiUsageLog } from './entities/ai-usage-log.entity';
 import { PromptTemplate } from './entities/prompt-template.entity';
 import { RedisService } from '../../common/redis/redis.service';
@@ -13,7 +13,8 @@ import { AiAction } from '../../common/types/enums';
  * AiService specs. Coverage focus:
  *   - checkBudget enforces both the global daily cap and the per-user cap
  *     (the cost guard guarantees a runaway model can never blow the bill).
- *   - callBedrock delegates to the BedrockClient, logs usage, and rolls
+ *   - callBedrock delegates to the factory-picked AiGenerationClient,
+ *     logs usage against the effectiveModel it reports, and rolls
  *     today's cost forward in Redis.
  *   - getActivePrompt throws when no template is active so callers can't
  *     silently use the wrong prompt.
@@ -40,6 +41,7 @@ describe('AiService', () => {
       get: jest.fn((key: string) => {
         if (key === 'ai.dailyBudgetUsd') return 50;
         if (key === 'ai.perUserDailyLimit') return 50;
+        if (key === 'ai.maxItemsPerBatch') return 200;
         return undefined;
       }),
     };
@@ -49,7 +51,7 @@ describe('AiService', () => {
         AiService,
         { provide: ConfigService, useValue: config },
         { provide: RedisService, useValue: redis },
-        { provide: BedrockClient, useValue: bedrock },
+        { provide: AI_GENERATION_CLIENT, useValue: bedrock },
         { provide: getRepositoryToken(AiUsageLog), useValue: usage },
         { provide: getRepositoryToken(PromptTemplate), useValue: prompts },
       ],
@@ -96,6 +98,7 @@ describe('AiService', () => {
         text: 'an explanation',
         inputTokens: 100,
         outputTokens: 50,
+        effectiveModel: 'anthropic.claude-haiku-4-5-20251001-v1:0',
       });
       redis.incrByFloat.mockResolvedValueOnce(0.001);
 
@@ -134,6 +137,7 @@ describe('AiService', () => {
         text: 'x',
         inputTokens: 1,
         outputTokens: 1,
+        effectiveModel: 'anthropic.claude-haiku-4-5-20251001-v1:0',
       });
       await service.callBedrock(
         'p',
@@ -149,11 +153,54 @@ describe('AiService', () => {
         text: 'x',
         inputTokens: 1,
         outputTokens: 1,
+        effectiveModel: 'anthropic.claude-haiku-4-5-20251001-v1:0',
       });
       usage.insert.mockRejectedValueOnce(new Error('pg down'));
       await expect(
         service.callBedrock('p', 'anthropic.claude-haiku-4-5-20251001-v1:0'),
       ).resolves.toBeDefined();
+    });
+  });
+
+  // ------------------------- assertBatchWithinCap -------------------------
+  //
+  // Called by AdminPmTestService.generate + AdminExplanationsService.generate
+  // BEFORE the job hits BullMQ. Enforces AI_MAX_ITEMS_PER_BATCH — the
+  // only row-count guard on the Ollama path (where AI_MAX_JOB_COST_USD
+  // does nothing because local generation is $0).
+
+  describe('assertBatchWithinCap', () => {
+    it('is a no-op when the item count is within the configured cap', () => {
+      // Config mock returns 200 for ai.maxItemsPerBatch.
+      expect(() => service.assertBatchWithinCap(200)).not.toThrow();
+      expect(() => service.assertBatchWithinCap(1)).not.toThrow();
+    });
+
+    it('throws BadRequestException when the item count exceeds the cap, with cap + count in the message', () => {
+      // 201 > cap of 200 → refuse. Message must surface both numbers
+      // so the admin knows what to change.
+      let caught: Error | null = null;
+      try {
+        service.assertBatchWithinCap(201);
+      } catch (err) {
+        caught = err as Error;
+      }
+      expect(caught).not.toBeNull();
+      expect(caught!.constructor.name).toBe('BadRequestException');
+      expect(caught!.message).toContain('201');
+      expect(caught!.message).toContain('200');
+      expect(caught!.message).toContain('AI_MAX_ITEMS_PER_BATCH');
+    });
+
+    it('falls back to a hardcoded default of 200 when the config key is unset', () => {
+      // Swap the mock to return undefined for the max-items key. The
+      // hardcoded fallback in the service prevents a missing env from
+      // silently uncapping every generation batch.
+      config.get.mockImplementation((key: string) =>
+        key === 'ai.maxItemsPerBatch' ? undefined : 50,
+      );
+      expect(() => service.assertBatchWithinCap(200)).not.toThrow();
+      expect(() => service.assertBatchWithinCap(201)).toThrow(/200/);
     });
   });
 
