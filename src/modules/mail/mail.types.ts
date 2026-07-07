@@ -10,18 +10,19 @@ export enum MailEvent {
   // ----- Account ---------------------------------------------------------
   /** Sent immediately after a user completes registration. */
   WELCOME = 'welcome',
-  /** Verify-email link (post-registration or email change). */
-  EMAIL_VERIFICATION = 'email_verification',
   /**
-   * Pre-registration email OTP. The user types this 6-digit code into
-   * the mobile signup screen; the server verifies it before creating
-   * the user row, which proves they control the address. Lives next
-   * to EMAIL_VERIFICATION but is functionally different: OTP is
-   * pre-account, verify-link is post-account.
+   * All 6-digit code emails funnel through this event. The `purpose`
+   * inside OtpService.sendEmail namespaces the Redis buckets, and the
+   * dedup key on the mail send is purpose-scoped too, but the audit
+   * row + Resend send all share this single event name. Three flows
+   * ride on it:
+   *   - signup           — pre-registration email verification
+   *   - email_verify     — post-account "confirm my email"
+   *   - password_reset   — email-channel forgot-password
+   * Link-based `EMAIL_VERIFICATION` / `PASSWORD_RESET` events were
+   * retired here — everything is OTP now.
    */
   EMAIL_OTP = 'email_otp',
-  /** Time-bounded password-reset link. */
-  PASSWORD_RESET = 'password_reset',
   /**
    * Admin manually credited the user with Plus/Pro entitlement.
    * Distinct from PAYMENT_SUCCESS — there's no transaction, no
@@ -85,11 +86,6 @@ export interface WelcomePayload extends BasePayload {
   examType: string; // 'BECE' | 'WASSCE' | 'NOVDEC' (display label)
 }
 
-export interface EmailVerificationPayload extends BasePayload {
-  verificationUrl: string;
-  expiresInMinutes: number;
-}
-
 export interface EmailOtpPayload extends BasePayload {
   /** The 6-digit code rendered prominently in the mail body. */
   code: string;
@@ -133,13 +129,6 @@ export interface WinnerSelectionReminderPayload extends BasePayload {
   }>;
   /** Absolute URL to the admin /admin/winners page. */
   selectUrl: string;
-}
-
-export interface PasswordResetPayload extends BasePayload {
-  resetUrl: string;
-  expiresInMinutes: number;
-  /** IP / region snippet for the "if this wasn't you" footer. */
-  requestedFrom?: string;
 }
 
 export interface PaymentSuccessPayload extends BasePayload {
@@ -235,9 +224,7 @@ export interface WeeklyDigestPayload extends BasePayload {
 /** Map from event → payload type for compile-time checking. */
 export interface MailPayloadByEvent {
   [MailEvent.WELCOME]: WelcomePayload;
-  [MailEvent.EMAIL_VERIFICATION]: EmailVerificationPayload;
   [MailEvent.EMAIL_OTP]: EmailOtpPayload;
-  [MailEvent.PASSWORD_RESET]: PasswordResetPayload;
   [MailEvent.ACCOUNT_CREDITED]: AccountCreditedPayload;
   [MailEvent.WINNER_ANNOUNCEMENT]: WinnerAnnouncementPayload;
   [MailEvent.WINNER_SELECTION_REMINDER]: WinnerSelectionReminderPayload;

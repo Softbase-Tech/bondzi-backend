@@ -58,8 +58,10 @@ export const CacheKeys = {
     `ai_cost:user:${userId}:${date}`,
   aiUserDailyCalls: (userId: string, date: string) =>
     `ai_calls:user:${userId}:${date}`,
-  emailVerifyToken: (token: string) => `email_verify:${token}`,
-  passwordResetToken: (token: string) => `password_reset:${token}`,
+  // emailVerifyToken / passwordResetToken cache-key helpers were
+  // retired when both flows moved to email OTP codes. Codes live under
+  // CacheKeys.emailOtp with a purpose-namespaced suffix (see
+  // OtpService.emailOtpKey).
   forgotPasswordRate: (email: string) =>
     `forgot_password:${email.toLowerCase()}`,
 } as const;

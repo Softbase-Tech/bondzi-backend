@@ -11,12 +11,10 @@ import {
 } from 'class-validator';
 
 /**
- * Password-reset request. Accepts EITHER `email` (sends a reset
- * link) OR `phone` (sends a 6-digit SMS OTP). Exactly one must be
- * present — DTO validators enforce that.
- *
- * Phone-only registered users would otherwise be locked out if they
- * forgot their password — the link-based reset can't reach them.
+ * Password-reset request. Accepts EITHER `email` OR `phone`. Exactly
+ * one must be present — DTO validators enforce that. Both channels
+ * send a 6-digit OTP code (email → EMAIL_OTP mail, phone → SMS OTP).
+ * Link-based email resets were retired in favour of OTP everywhere.
  */
 export class ForgotPasswordDto {
   @ApiPropertyOptional({ example: 'student@example.com' })
@@ -31,31 +29,31 @@ export class ForgotPasswordDto {
 }
 
 /**
- * Reset accepts two mutually-exclusive shapes:
- *   1. Email-link reset: `{ token, password }` — token is the one
- *      delivered by the password-reset email.
- *   2. Phone-OTP reset: `{ phone, otp, password }` — the OTP came
- *      from the SMS issued by /auth/forgot-password.
+ * Reset accepts two mutually-exclusive shapes, both OTP-based:
+ *   1. Email-OTP reset:  `{ email, otp, password }`  — the code came
+ *      from the email sent by /auth/forgot-password { email }.
+ *   2. Phone-OTP reset:  `{ phone, otp, password }`  — the code came
+ *      from the SMS sent by /auth/forgot-password { phone }.
  *
- * The service layer routes on which fields are present.
+ * The service layer routes on whichever identifier is present. `token`
+ * is no longer accepted — link-based reset was retired.
  */
 export class ResetPasswordDto {
-  @ApiPropertyOptional({ description: 'Email-reset token (URL token).' })
-  @ValidateIf((o: ResetPasswordDto) => !o.phone && !o.otp)
-  @IsString()
-  token?: string;
+  @ApiPropertyOptional({ example: 'student@example.com' })
+  @ValidateIf((o: ResetPasswordDto) => !o.phone)
+  @IsEmail()
+  email?: string;
 
   @ApiPropertyOptional({ example: '+233201234567' })
-  @ValidateIf((o: ResetPasswordDto) => !o.token)
+  @ValidateIf((o: ResetPasswordDto) => !o.email)
   @IsPhoneNumber('GH')
   phone?: string;
 
-  @ApiPropertyOptional({ description: '6-digit SMS OTP' })
-  @ValidateIf((o: ResetPasswordDto) => !o.token)
+  @ApiProperty({ description: '6-digit OTP code (email or SMS)' })
   @IsString()
   @Length(6, 6)
   @Matches(/^\d{6}$/, { message: 'otp must be 6 digits' })
-  otp?: string;
+  otp!: string;
 
   @ApiProperty({ minLength: 8 })
   @IsString()
@@ -69,10 +67,4 @@ export class ResetPasswordDto {
   @IsOptional()
   @IsString()
   deviceId?: string;
-}
-
-export class VerifyEmailQueryDto {
-  @ApiProperty()
-  @IsString()
-  token!: string;
 }

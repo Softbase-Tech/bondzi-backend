@@ -1,11 +1,10 @@
-import { randomBytes } from 'crypto';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as Sentry from '@sentry/node';
 import { Repository } from 'typeorm';
 import { RedisService } from '../../common/redis/redis.service';
-import { CacheKeys } from '../../common/utils/cache-keys.util';
+// import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { User } from '../users/entities/user.entity';
 import { MailEvent, MailPayloadByEvent } from './mail.types';
 import {
@@ -15,9 +14,7 @@ import {
 import { EmailAuditService } from './email-audit.service';
 import { MailQueueService } from './mail-queue.service';
 import { buildWelcomeEmail } from './templates/welcome';
-import { buildEmailVerification } from './templates/email-verification';
 import { buildEmailOtp } from './templates/email-otp';
-import { buildPasswordReset } from './templates/password-reset';
 import { buildAccountCredited } from './templates/account-credited';
 import { buildWinnerAnnouncement } from './templates/winner-announcement';
 import { buildWinnerSelectionReminder } from './templates/winner-selection-reminder';
@@ -38,9 +35,6 @@ import {
 } from './templates/engagement';
 import { Resend } from 'resend';
 import { MetricsService } from '../../common/observability/metrics.service';
-
-const VERIFY_TTL_SECONDS = 24 * 60 * 60;
-const RESET_TTL_SECONDS = 60 * 60;
 
 @Injectable()
 export class MailService implements OnModuleInit {
@@ -85,55 +79,15 @@ export class MailService implements OnModuleInit {
     return this.webUrl;
   }
 
-  async createEmailVerificationToken(userId: string): Promise<string> {
-    const token = randomBytes(32).toString('hex');
-    await this.redis.setJson(
-      CacheKeys.emailVerifyToken(token),
-      { userId },
-      VERIFY_TTL_SECONDS,
-    );
-    return token;
-  }
-
-  async consumeEmailVerificationToken(
-    token: string,
-  ): Promise<{ userId: string } | null> {
-    const key = CacheKeys.emailVerifyToken(token);
-    const raw = await this.redis.getJson<{ userId: string }>(key);
-    if (!raw?.userId) return null;
-    await this.redis.del(key);
-    return { userId: raw.userId };
-  }
-
-  async createPasswordResetToken(userId: string): Promise<string> {
-    const token = randomBytes(32).toString('hex');
-    await this.redis.setJson(
-      CacheKeys.passwordResetToken(token),
-      { userId },
-      RESET_TTL_SECONDS,
-    );
-    return token;
-  }
-
-  async consumePasswordResetToken(
-    token: string,
-  ): Promise<{ userId: string } | null> {
-    const key = CacheKeys.passwordResetToken(token);
-    const raw = await this.redis.getJson<{ userId: string }>(key);
-    if (!raw?.userId) return null;
-    await this.redis.del(key);
-    return { userId: raw.userId };
-  }
-
-  buildVerifyUrl(token: string): string {
-    const base = this.webUrl.replace(/\/$/, '');
-    return `${base}/verify-email?token=${encodeURIComponent(token)}`;
-  }
-
-  buildResetUrl(token: string): string {
-    const base = this.webUrl.replace(/\/$/, '');
-    return `${base}/reset-password?token=${encodeURIComponent(token)}`;
-  }
+  // NOTE: link-based email verification + password-reset token helpers
+  // (`createEmailVerificationToken`, `consumeEmailVerificationToken`,
+  // `createPasswordResetToken`, `consumePasswordResetToken`,
+  // `buildVerifyUrl`, `buildResetUrl`) were retired when both flows moved
+  // to 6-digit OTP codes. The mobile now shows a code input on
+  // /(auth)/verify-email and /(auth)/reset-password; codes are issued by
+  // OtpService.sendEmail with a namespaced `purpose` bucket. Delivery
+  // no longer depends on MAIL_WEB_URL or the website hosting a
+  // /reset-password page.
 
   buildUnsubscribeUrl(token: string): string {
     const base = this.webUrl.replace(/\/$/, '');
@@ -317,19 +271,12 @@ export class MailService implements OnModuleInit {
           payload as MailPayloadByEvent[MailEvent.WELCOME],
           this.webUrl,
         );
-      case MailEvent.EMAIL_VERIFICATION:
-        return buildEmailVerification(
-          payload as MailPayloadByEvent[MailEvent.EMAIL_VERIFICATION],
-          this.webUrl,
-        );
       case MailEvent.EMAIL_OTP:
+        // Every code-based flow (signup, email verification, and
+        // password reset) dispatches EMAIL_OTP with a purpose-namespaced
+        // dedup key. The template is a single 6-digit code block.
         return buildEmailOtp(
           payload as MailPayloadByEvent[MailEvent.EMAIL_OTP],
-          this.webUrl,
-        );
-      case MailEvent.PASSWORD_RESET:
-        return buildPasswordReset(
-          payload as MailPayloadByEvent[MailEvent.PASSWORD_RESET],
           this.webUrl,
         );
       case MailEvent.ACCOUNT_CREDITED:

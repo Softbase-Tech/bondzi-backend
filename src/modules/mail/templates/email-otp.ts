@@ -2,16 +2,18 @@ import { BuiltMail, EmailOtpPayload } from '../mail.types';
 import { brand, escapeText, renderLayout } from './_layout';
 
 /**
- * Pre-registration email OTP. The user just typed their address into
- * the mobile signup screen; we send them a 6-digit code to prove
- * they control the inbox before we create the account. Distinct
- * from EMAIL_VERIFICATION which sends a clickable link to an
- * already-existing account.
+ * All-purpose 6-digit email OTP template. Three flows share it,
+ * distinguished by the `purpose` passed to OtpService.sendEmail —
+ * signup (pre-registration), email_verify (post-account confirm),
+ * and password_reset. The template renders the same code + expiry
+ * regardless; per-flow copy tweaks would need conditional branches
+ * on payload, which we've kept out for now (one deliverable, one
+ * design).
  *
  * The code is rendered large + monospace so it copy-pastes cleanly
  * on mobile email clients. We intentionally do NOT include a click
  * link — typing the code keeps the verification bound to the device
- * that started the signup.
+ * that started the flow.
  */
 export function buildEmailOtp(
   payload: EmailOtpPayload,

@@ -102,22 +102,31 @@ export class OtpService {
   }
 
   /**
-   * Pre-registration email OTP. Same rate-limits, same anti-brute
-   * pattern, but the channel is email instead of SMS. Bound to the
-   * lowercased email so case variations can't bypass the bucket.
+   * Email OTP — issues a 6-digit code by email. Three separate
+   * "purposes" share the same code shape + TTL but occupy
+   * independent Redis buckets so a user hitting the send cap on
+   * signup doesn't also lock them out of password-reset.
    *
-   * Distinct from EMAIL_VERIFICATION (post-account link) — the OTP
-   * is consumed inside POST /auth/register, before any user row
-   * exists. A code generated for example@x.com cannot be used
-   * to sign up at Example@X.com because both normalise to the
-   * same Redis key.
+   * Purposes:
+   *   - `signup`         — pre-registration email verification. Code
+   *                        is consumed inside POST /auth/register
+   *                        before any user row exists.
+   *   - `email_verify`   — post-account "confirm your email" for
+   *                        users who signed up phone-first and later
+   *                        added an email address.
+   *   - `password_reset` — email branch of forgot-password. Twin of
+   *                        the phone-SMS reset flow.
+   *
+   * Bound to the lowercased email so case variations can't bypass
+   * the bucket.
    */
   async sendEmail(
     email: string,
     recipientName?: string,
+    purpose: OtpEmailPurpose = 'signup',
   ): Promise<{ expiresInSeconds: number }> {
     const normalized = email.trim().toLowerCase();
-    const rateKey = CacheKeys.emailOtpRateLimit(normalized);
+    const rateKey = emailRateKey(normalized, purpose);
     const attempts = await this.redis.incr(rateKey, SEND_RATE_TTL_SECONDS);
     if (attempts > SEND_MAX_ATTEMPTS) {
       throw new HttpException(
@@ -128,7 +137,7 @@ export class OtpService {
 
     const code = String(randomInt(100_000, 999_999));
     await this.redis.setJson(
-      CacheKeys.emailOtp(normalized),
+      emailOtpKey(normalized, purpose),
       { hash: hashCode(code), createdAt: Date.now() },
       OTP_TTL_SECONDS,
     );
@@ -149,17 +158,23 @@ export class OtpService {
           code,
           expiresInMinutes: Math.round(OTP_TTL_SECONDS / 60),
         },
-        // No userId yet — pre-account. Dedup key keyed on the
-        // OTP itself so a flaky retry doesn't double-send.
-        { dedupKey: `email_otp:${normalized}:${hashCode(code).slice(0, 8)}` },
+        // Purpose in the dedup key so signup-then-reset in quick
+        // succession don't collide on a shared dedup slot.
+        {
+          dedupKey: `email_otp:${purpose}:${normalized}:${hashCode(code).slice(0, 8)}`,
+        },
       )
       .catch(() => undefined);
     return { expiresInSeconds: OTP_TTL_SECONDS };
   }
 
-  async verifyEmail(email: string, code: string): Promise<void> {
+  async verifyEmail(
+    email: string,
+    code: string,
+    purpose: OtpEmailPurpose = 'signup',
+  ): Promise<void> {
     const normalized = email.trim().toLowerCase();
-    const verifyKey = `${CacheKeys.emailOtpRateLimit(normalized)}:verify`;
+    const verifyKey = `${emailRateKey(normalized, purpose)}:verify`;
     const attempts = await this.redis.incr(verifyKey, VERIFY_RATE_TTL_SECONDS);
     if (attempts > VERIFY_MAX_ATTEMPTS) {
       throw new HttpException(
@@ -167,7 +182,9 @@ export class OtpService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
-    const stored = await this.consumeStoredEmailOtp(normalized);
+    const stored = await this.consumeStoredAtKey(
+      emailOtpKey(normalized, purpose),
+    );
     if (!stored) {
       throw new BadRequestException('Invalid or expired code');
     }
@@ -187,13 +204,6 @@ export class OtpService {
     phone: string,
   ): Promise<{ hash: string } | null> {
     return this.consumeStoredAtKey(CacheKeys.otp(phone));
-  }
-
-  /** Email-OTP twin of `consumeStoredOtp` — same atomic guarantee. */
-  private async consumeStoredEmailOtp(
-    normalizedEmail: string,
-  ): Promise<{ hash: string } | null> {
-    return this.consumeStoredAtKey(CacheKeys.emailOtp(normalizedEmail));
   }
 
   private async consumeStoredAtKey(
@@ -220,6 +230,23 @@ export class OtpService {
       return null;
     }
   }
+}
+
+/** Namespaces the OTP Redis key by purpose so signup / verify / reset don't share buckets. */
+export type OtpEmailPurpose = 'signup' | 'email_verify' | 'password_reset';
+
+function emailOtpKey(email: string, purpose: OtpEmailPurpose): string {
+  // Legacy `signup` uses the unqualified CacheKeys.emailOtp so we don't
+  // orphan already-outstanding pre-registration OTPs across a deploy.
+  return purpose === 'signup'
+    ? CacheKeys.emailOtp(email)
+    : `${CacheKeys.emailOtp(email)}:${purpose}`;
+}
+
+function emailRateKey(email: string, purpose: OtpEmailPurpose): string {
+  return purpose === 'signup'
+    ? CacheKeys.emailOtpRateLimit(email)
+    : `${CacheKeys.emailOtpRateLimit(email)}:${purpose}`;
 }
 
 function hashCode(code: string): string {
