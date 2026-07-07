@@ -391,6 +391,11 @@ export class AdminExplanationsService {
 
     const qb = this.questionsRepo
       .createQueryBuilder('q')
+      // Eager-load subject so the admin explanations table can render
+      // the subject NAME instead of a hex prefix of the UUID. Without
+      // this join, `question.subject` came back undefined and the UI
+      // fell back to `subjectId.slice(0, 6)` which reads as "b80132".
+      .leftJoinAndSelect('q.subject', 's')
       .where('q.explanation IS NULL')
       .andWhere("q.status = 'active'");
     if (params.examType)
