@@ -207,26 +207,37 @@ export class AuthController {
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 15 * 60_000 } })
-  @ApiOperation({ summary: 'Set a new password using a reset token.' })
+  @ApiOperation({
+    summary:
+      'Set a new password using a 6-digit OTP code (delivered by email or SMS depending on which identifier forgot-password was called with).',
+  })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.auth.resetPassword({
-      token: dto.token,
+      email: dto.email,
       phone: dto.phone,
       otp: dto.otp,
       password: dto.password,
     });
   }
 
-  @Public()
-  @Get('email/verify')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Post('email/verify')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Confirm email address from verification link.' })
-  verifyEmail(@Query('token') token?: string) {
-    if (!token?.trim()) {
-      throw new BadRequestException('token is required');
+  @Throttle({ default: { limit: 5, ttl: 10 * 60_000 } })
+  @ApiOperation({
+    summary:
+      'Verify the caller\'s email via the 6-digit OTP code that was sent by /email/verify-request. Replaces the legacy `?token=` link.',
+  })
+  verifyEmailCode(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: { code?: string },
+  ) {
+    const code = (body.code ?? '').trim();
+    if (!/^\d{6}$/.test(code)) {
+      throw new BadRequestException('code must be a 6-digit number');
     }
-    return this.auth.verifyEmail(token.trim());
+    return this.auth.verifyEmailCode(user.id, code);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -234,7 +245,10 @@ export class AuthController {
   @Post('email/verify-request')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
-  @ApiOperation({ summary: 'Resend the email verification link.' })
+  @ApiOperation({
+    summary:
+      'Send a 6-digit OTP code to the caller\'s email address for verification. The code is entered on the mobile via POST /auth/email/verify.',
+  })
   requestEmailVerification(@CurrentUser() user: AuthenticatedUser) {
     return this.auth.requestEmailVerification(user.id);
   }

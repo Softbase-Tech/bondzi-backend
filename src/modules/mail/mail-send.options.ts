@@ -3,12 +3,12 @@ import { MailEvent } from './mail.types';
 /** Engagement emails honour user preference toggles; transactional do not. */
 export const TRANSACTIONAL_MAIL_EVENTS = new Set<MailEvent>([
   MailEvent.WELCOME,
-  MailEvent.EMAIL_VERIFICATION,
-  // Pre-account OTP for the registration journey. Transactional —
-  // the user is mid-signup and unsubscribe / preference toggles
-  // don't apply (they don't have an account yet).
+  // Every 6-digit code email — signup, email verification, and
+  // password reset — funnels through EMAIL_OTP. All transactional:
+  // unsubscribe / preference toggles don't apply because the user is
+  // either pre-account (signup) or actively trying to prove they
+  // control the address (verify / reset).
   MailEvent.EMAIL_OTP,
-  MailEvent.PASSWORD_RESET,
   // Admin grants + winner notifications are account-state changes
   // the user explicitly cares about — they bypass marketing prefs.
   MailEvent.ACCOUNT_CREDITED,

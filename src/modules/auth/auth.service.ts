@@ -594,35 +594,50 @@ export class AuthService {
     return { sent: true };
   }
 
-  async verifyEmail(token: string): Promise<{ verified: boolean }> {
-    const consumed = await this.mail.consumeEmailVerificationToken(token);
-    if (!consumed) {
-      throw new BadRequestException('Invalid or expired verification link');
+  /**
+   * Verify the caller's email via the 6-digit OTP code sent by
+   * `requestEmailVerification`. Consumes the code from the
+   * `email_verify` OTP bucket + stamps `users.email_verified_at` on
+   * success. Throws 400 on wrong / expired code, 429 on brute-force.
+   *
+   * Replaces the legacy `verifyEmail(token: string)` link-based flow.
+   * The user must be signed in to hit this — we look up their email
+   * from the JWT rather than trust the client to pass it, so a
+   * compromised code can only verify the email it was actually sent
+   * to.
+   */
+  async verifyEmailCode(
+    userId: string,
+    code: string,
+  ): Promise<{ verified: boolean }> {
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user?.email) {
+      throw new BadRequestException('No email on file');
     }
-    const user = await this.usersRepo.findOne({
-      where: { id: consumed.userId },
-    });
-    if (!user) {
-      throw new BadRequestException('Invalid or expired verification link');
+    if (user.emailVerifiedAt) {
+      // Idempotent — already verified. Don't burn a verify attempt.
+      return { verified: true };
     }
-    if (!user.emailVerifiedAt) {
-      user.emailVerifiedAt = new Date();
-      await this.usersRepo.save(user);
-    }
+    await this.otp.verifyEmail(user.email, code, 'email_verify');
+    user.emailVerifiedAt = new Date();
+    await this.usersRepo.save(user);
     return { verified: true };
   }
 
   /** Always returns success — do not leak whether the email exists. */
   /**
-   * Begin a password reset. Accepts either an email (sends the
-   * standard reset link) OR a phone (sends a 6-digit SMS OTP). The
-   * response is anti-enumeration — always `{ ok: true }` regardless
+   * Begin a password reset. Accepts either an email OR a phone.
+   *   - Email → 6-digit OTP sent by email (purpose='password_reset').
+   *   - Phone → 6-digit OTP sent by SMS (existing phone-OTP path).
+   *
+   * The response is anti-enumeration — always `{ ok: true }` regardless
    * of whether the identifier matches a user, so callers can't probe
    * for registered accounts.
    *
-   * Rate-limited per-identifier — phone bucket is the existing OTP
-   * send bucket inside OtpService (3 / 10 min); email bucket lives
-   * here (5 / 15 min).
+   * Rate-limited per-identifier. Email path uses the OtpService email
+   * bucket namespaced by purpose (3 sends / 10 min per email); phone
+   * path uses OtpService.send (3 sends / 10 min per phone). Both are
+   * atomic + hash-at-rest.
    */
   async forgotPassword(input: {
     email?: string;
@@ -630,11 +645,6 @@ export class AuthService {
   }): Promise<{ ok: true }> {
     if (input.email) {
       const normalized = input.email.toLowerCase().trim();
-      const rateKey = CacheKeys.forgotPasswordRate(normalized);
-      const attempts = await this.redis.incr(rateKey, 15 * 60);
-      if (attempts > 5) {
-        return { ok: true };
-      }
 
       const user = await this.usersRepo
         .createQueryBuilder('u')
@@ -642,22 +652,24 @@ export class AuthService {
         .where('lower(u.email) = lower(:email)', { email: normalized })
         .getOne();
 
+      // Silent no-op when the account doesn't exist / isn't password-
+      // enabled / isn't active. Attacker sees the same `{ ok: true }`.
       if (!user?.email || !user.passwordHash || !user.isActive) {
         return { ok: true };
       }
 
-      const token = await this.mail.createPasswordResetToken(user.id);
-      const resetUrl = this.mail.buildResetUrl(token);
-      await this.mail.send(
-        MailEvent.PASSWORD_RESET,
-        user.email,
-        {
-          recipientName: user.fullName.split(' ')[0],
-          resetUrl,
-          expiresInMinutes: 60,
-        },
-        { userId: user.id },
-      );
+      // Swallow rate-limit + Resend errors so the caller can't
+      // distinguish "you exist + we sent" from "you don't exist" from
+      // "we couldn't send". OtpService.sendEmail already fire-and-
+      // forgets the mail dispatch; the try/catch here only guards
+      // against the send-cap 429 propagating.
+      await this.otp
+        .sendEmail(user.email, user.fullName.split(' ')[0], 'password_reset')
+        .catch((err) =>
+          this.logger.warn(
+            `[forgot-password] email OTP dispatch failed: ${(err as Error).message}`,
+          ),
+        );
       return { ok: true };
     }
 
@@ -694,29 +706,35 @@ export class AuthService {
 
   /**
    * Complete a password reset. Two shapes accepted:
-   *   1. Email-link reset: `{ token, password }` — token is the
-   *      cryptographically-secure value embedded in the reset email
-   *      URL.
-   *   2. Phone-OTP reset: `{ phone, otp, password }` — the OTP
-   *      came from the SMS sent by `forgotPassword({phone})`.
+   *   1. Email-OTP reset: `{ email, otp, password }` — the code came
+   *      from the email sent by `forgotPassword({email})`.
+   *   2. Phone-OTP reset: `{ phone, otp, password }` — the code came
+   *      from the SMS sent by `forgotPassword({phone})`.
+   *
+   * OTP verification is atomic + single-use in both branches (the
+   * stored code is GETDEL'd on the first successful verify), so a
+   * captured code can't be replayed for a second reset.
    */
   async resetPassword(input: {
-    token?: string;
+    email?: string;
     phone?: string;
     otp?: string;
     password: string;
   }): Promise<{ ok: true }> {
     let userId: string | null = null;
 
-    if (input.token) {
-      const consumed = await this.mail.consumePasswordResetToken(input.token);
-      if (!consumed) {
-        throw new BadRequestException('Invalid or expired reset link');
+    if (input.email && input.otp) {
+      const normalized = input.email.trim().toLowerCase();
+      await this.otp.verifyEmail(normalized, input.otp, 'password_reset');
+      const user = await this.usersRepo
+        .createQueryBuilder('u')
+        .where('lower(u.email) = lower(:email)', { email: normalized })
+        .getOne();
+      if (!user || !user.isActive) {
+        throw new BadRequestException('Invalid or expired reset code');
       }
-      userId = consumed.userId;
+      userId = user.id;
     } else if (input.phone && input.otp) {
-      // OTPService.verify is single-use + atomic — the same code
-      // can't be replayed for a second reset.
       await this.otp.verify(input.phone.trim(), input.otp);
       const user = await this.usersRepo.findOne({
         where: { phone: input.phone.trim() },
@@ -727,7 +745,7 @@ export class AuthService {
       userId = user.id;
     } else {
       throw new BadRequestException(
-        'Provide either an email-reset token or phone + otp',
+        'Provide either { email, otp, password } or { phone, otp, password }.',
       );
     }
 
@@ -767,19 +785,19 @@ export class AuthService {
     }
   }
 
+  /**
+   * Sends a 6-digit OTP code to `user.email` for email verification.
+   * Replaces the previous link-based flow — no more `?token=` URL,
+   * no more website landing page. The code is issued via
+   * OtpService.sendEmail with purpose='email_verify' so the
+   * pre-registration signup OTP bucket stays independent.
+   */
   private async sendEmailVerification(user: User): Promise<void> {
     if (!user.email || user.emailVerifiedAt) return;
-    const token = await this.mail.createEmailVerificationToken(user.id);
-    const verificationUrl = this.mail.buildVerifyUrl(token);
-    await this.mail.send(
-      MailEvent.EMAIL_VERIFICATION,
+    await this.otp.sendEmail(
       user.email,
-      {
-        recipientName: user.fullName.split(' ')[0],
-        verificationUrl,
-        expiresInMinutes: 24 * 60,
-      },
-      { userId: user.id },
+      user.fullName.split(' ')[0],
+      'email_verify',
     );
   }
 
