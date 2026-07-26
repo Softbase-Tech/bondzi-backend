@@ -81,9 +81,11 @@ export const envValidationSchema = Joi.object({
   // one click. Set to 0 to disable co-sign entirely.
   AI_COSIGN_THRESHOLD_USD: Joi.number().min(0).default(50),
   AI_BEDROCK_MAX_RETRIES: Joi.number().integer().min(0).default(3),
+  // Client-side RPM ceiling for Bedrock — set to your granted AWS quota.
+  AI_BEDROCK_MAX_RPM: Joi.number().integer().positive().default(10),
   // Row-count backstop for admin generation batches — fires BEFORE
   // enqueue on either provider. See ai.config.ts / AiService.assertBatchWithinCap.
-  AI_MAX_ITEMS_PER_BATCH: Joi.number().integer().positive().default(200),
+  AI_MAX_ITEMS_PER_BATCH: Joi.number().integer().positive().default(1000),
   // Selects the generation client. `bedrock` is the default AWS path;
   // `self_hosted` routes admin batch generation through OllamaClient
   // (weakness narratives + post-exam breakdowns stay on Bedrock

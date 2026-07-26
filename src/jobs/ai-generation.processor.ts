@@ -209,12 +209,21 @@ export class AiGenerationProcessor extends WorkerHost {
    * ceiling here is `cap * multiplier`.
    */
   private static readonly JOB_COST_CAP_MULTIPLIER = 1.5;
+  /**
+   * Absolute floor for the ratio check. On tiny jobs (a single question costs
+   * a fraction of a cent) natural per-question token variance trivially blows
+   * past 1.5×, so the ratio is meaningless there — this breaker exists to stop
+   * runaway *batches*, not to police pennies. Only enforce the ratio once the
+   * running cost is a real amount.
+   */
+  private static readonly JOB_COST_CAP_MIN_USD = 0.1;
   private exceedsJobCostCap(
     record: AiGenerationJob,
     runningCost: number,
   ): boolean {
     const estimate = parseFloat(record.estimatedCostUsd ?? '0');
     if (!Number.isFinite(estimate) || estimate <= 0) return false;
+    if (runningCost <= AiGenerationProcessor.JOB_COST_CAP_MIN_USD) return false;
     return (
       runningCost > estimate * AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER
     );
@@ -561,7 +570,7 @@ export class AiGenerationProcessor extends WorkerHost {
     // hydrates 50 questions + options + subjects; AI calls remain per-question.
     const BATCH = 50;
     const ids = params.questionIds;
-    for (let start = 0; start < ids.length; start += BATCH) {
+    outer: for (let start = 0; start < ids.length; start += BATCH) {
       const slice = ids.slice(start, start + BATCH);
       const batch = await this.questionsRepo.find({
         where: slice.map((id) => ({ id })),
@@ -601,15 +610,6 @@ export class AiGenerationProcessor extends WorkerHost {
             jobId: record.id,
             maxTokens: 600,
           });
-          totalCost += call.costUsd;
-          if (this.exceedsJobCostCap(record, totalCost)) {
-            this.logger.error(
-              `[ai-job] aborting explanation ${record.id}: running cost $${totalCost.toFixed(2)} exceeds ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× estimate ($${record.estimatedCostUsd}).`,
-            );
-            throw new Error(
-              `Job aborted: running cost exceeded ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× the pre-submit estimate.`,
-            );
-          }
         } catch (err) {
           failed += 1;
           this.logger.warn(
@@ -629,6 +629,7 @@ export class AiGenerationProcessor extends WorkerHost {
           });
           continue;
         }
+        totalCost += call.costUsd;
 
         // Validator gate — students never see a malformed explanation.
         const validation = validateExplanation(call.content, q.body);
@@ -666,6 +667,24 @@ export class AiGenerationProcessor extends WorkerHost {
           failedItems: failed,
           actualCostUsd: totalCost.toFixed(4),
         });
+
+        // Runaway-cost circuit breaker — evaluated AFTER the paid, validated
+        // explanation is persisted, so a billed generation is never discarded
+        // (the old placement threw before the save and lost the call). Stops
+        // the job from processing the remaining items.
+        if (this.exceedsJobCostCap(record, totalCost)) {
+          this.logger.error(
+            `[ai-job] aborting explanation ${record.id}: running cost $${totalCost.toFixed(2)} exceeds ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× estimate ($${record.estimatedCostUsd}).`,
+          );
+          await this.recordRejectSafely({
+            jobId: record.id,
+            action: 'explanation',
+            modelId,
+            reason: 'job_cost_cap_exceeded',
+            detail: `Running cost $${totalCost.toFixed(4)} exceeded ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× the estimate ($${record.estimatedCostUsd}); remaining items skipped.`,
+          });
+          break outer;
+        }
       }
     }
   }
