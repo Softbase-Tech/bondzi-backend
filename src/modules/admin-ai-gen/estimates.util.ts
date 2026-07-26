@@ -34,9 +34,13 @@ import { costUsd } from '../ai/ai-cost.util';
  */
 
 export const TOKEN_ESTIMATES = {
-  // Original conservative defaults — replace with recalibrated values
-  // once /admin/ai/calibration returns enough samples (see service).
-  explanation: { input: 400, output: 200 },
+  // Output must be an UPPER bound, not an average — the estimate is the
+  // denominator of the runaway-cost circuit breaker (JOB_COST_CAP_MULTIPLIER),
+  // so under-counting makes real jobs abort. Explanations are generated with
+  // maxTokens=600 and real math explanations routinely fill it, so the output
+  // estimate tracks that ceiling; input covers a question + options + system
+  // prompt. Recalibrate from /admin/ai/calibration once there are samples.
+  explanation: { input: 500, output: 600 },
   pmTestQuestion: { input: 300, output: 450 },
 } as const;
 
