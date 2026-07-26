@@ -99,7 +99,7 @@ export class WeaknessNarrativeService {
 
     const model =
       this.config.get<string>('ai.defaultModel') ??
-      'anthropic.claude-haiku-4-5-20251001-v1:0';
+      'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
 
     const result = await this.ai.callBedrock(prompt, model, {
       system: SYSTEM_SHELL_WEAKNESS_NARRATIVE,

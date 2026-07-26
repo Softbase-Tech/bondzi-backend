@@ -48,10 +48,13 @@ export type ModelChoice = 'claude-haiku' | 'claude-sonnet';
  * `costUsd()` pricing table expect. Update if AWS publishes newer revisions.
  */
 export function resolveModelId(choice: ModelChoice): string {
+  // Bedrock requires a cross-region inference profile ID (geo-prefixed)
+  // for on-demand invocation of these models — the bare `anthropic.*`
+  // model ID is rejected. `eu.` matches our eu-central-1 deployment.
   if (choice === 'claude-sonnet') {
-    return 'anthropic.claude-sonnet-4-5-20250929-v1:0';
+    return 'eu.anthropic.claude-sonnet-4-5-20250929-v1:0';
   }
-  return 'anthropic.claude-haiku-4-5-20251001-v1:0';
+  return 'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
 }
 
 export interface GenerationEstimate {

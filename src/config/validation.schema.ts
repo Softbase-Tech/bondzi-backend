@@ -64,10 +64,10 @@ export const envValidationSchema = Joi.object({
   // Legacy names AI_EXPLANATION_MODEL / AI_FAST_MODEL are kept as fallbacks
   // — ai.config.ts prefers AI_QUALITY_MODEL / AI_DEFAULT_MODEL.
   AI_QUALITY_MODEL: Joi.string().default(
-    'anthropic.claude-sonnet-4-5-20250929-v1:0',
+    'eu.anthropic.claude-sonnet-4-5-20250929-v1:0',
   ),
   AI_DEFAULT_MODEL: Joi.string().default(
-    'anthropic.claude-haiku-4-5-20251001-v1:0',
+    'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
   ),
   AI_EXPLANATION_MODEL: Joi.string().allow('').default(''),
   AI_FAST_MODEL: Joi.string().allow('').default(''),
