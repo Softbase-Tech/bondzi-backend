@@ -35,6 +35,11 @@ export default registerAs('ai', () => ({
   // admin's sign-off. 0 disables the gate entirely.
   cosignThresholdUsd: parseFloat(process.env.AI_COSIGN_THRESHOLD_USD ?? '50'),
   bedrockMaxRetries: parseInt(process.env.AI_BEDROCK_MAX_RETRIES ?? '3', 10),
+  // Client-side requests-per-minute ceiling for Bedrock. Bedrock enforces an
+  // account-level RPM quota per model; the worker paces bulk calls to stay
+  // under this. Set it to your *granted* RPM (see AWS Service Quotas), with
+  // headroom. Read directly from env in BedrockClient; mirrored here for docs.
+  bedrockMaxRpm: parseInt(process.env.AI_BEDROCK_MAX_RPM ?? '10', 10),
   /**
    * Hard ceiling on items per admin-triggered generation batch. Fires
    * BEFORE anything enters the queue — a request over this cap is
@@ -43,7 +48,7 @@ export default registerAs('ai', () => ({
    * no per-call cost so `AI_MAX_JOB_COST_USD` is meaningless), and
    * defensive against a mistyped `count` on the Bedrock path too.
    */
-  maxItemsPerBatch: parseInt(process.env.AI_MAX_ITEMS_PER_BATCH ?? '200', 10),
+  maxItemsPerBatch: parseInt(process.env.AI_MAX_ITEMS_PER_BATCH ?? '1000', 10),
   /**
    * Selects the generation client at boot. `bedrock` (default) uses
    * AWS Bedrock; `self_hosted` routes through OllamaClient. Any

@@ -233,7 +233,7 @@ async function bootstrap() {
   const aiProvider = (process.env.AI_PROVIDER ?? 'bedrock')
     .trim()
     .toLowerCase();
-  const aiCap = process.env.AI_MAX_ITEMS_PER_BATCH ?? '200';
+  const aiCap = process.env.AI_MAX_ITEMS_PER_BATCH ?? '1000';
   if (aiProvider === 'self_hosted') {
     const base = process.env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434';
     const model = process.env.OLLAMA_MODEL ?? 'llama3.1:8b';
