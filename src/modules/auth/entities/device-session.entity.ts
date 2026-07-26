@@ -72,4 +72,35 @@ export class DeviceSession {
 
   @Column({ name: 'last_rotation_ip', type: 'text', nullable: true })
   lastRotationIp: string | null;
+
+  /**
+   * Refresh-token rotation grace.
+   *
+   * On every rotate(), the OUTGOING (about-to-be-replaced)
+   * refresh-token JTI is stashed here and `previous_jti_expires_at` is
+   * set REFRESH_TOKEN_GRACE_MS in the future. If the CURRENT jti check
+   * fails on the next refresh, we fall back to the previous jti — as
+   * long as we're still inside the grace window — and issue a fresh
+   * pair as if the current one had been used.
+   *
+   * Why: the mobile client can lose the newly-minted pair without ever
+   * persisting it (app force-killed mid-response, TCP reset after the
+   * server rotated but before the body reached the phone, cellular
+   * flap that drops the response, etc.). Without grace, that client is
+   * one race away from DEVICE_KICKED with no recourse but "sign in
+   * again" — and the user experiences it as "the app kicks me out for
+   * no reason." A short grace fixes the honest cases without meaningful
+   * cost to the single-device guarantee: an attacker still gets only
+   * REFRESH_TOKEN_GRACE_MS to use a stolen refresh-token before the
+   * rightful owner's next rotate expires the grace window.
+   */
+  @Column({ name: 'previous_refresh_jti', type: 'text', nullable: true })
+  previousRefreshJti: string | null;
+
+  @Column({
+    name: 'previous_jti_expires_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  previousJtiExpiresAt: Date | null;
 }

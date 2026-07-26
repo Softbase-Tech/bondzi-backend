@@ -20,6 +20,18 @@ export interface TokenPair {
   refreshExpiresAt: Date;
 }
 
+/**
+ * How long the OUTGOING refresh-token JTI keeps working after rotation.
+ *
+ * Covers the mobile client's response-loss window — force-quit
+ * mid-response, TCP reset, cellular flap between our commit and their
+ * setPair. 60 s is long enough for every honest race we've seen in the
+ * wild and short enough that a stolen refresh-token still only gets ONE
+ * one-minute window to be used before the rightful client's next
+ * rotation invalidates it.
+ */
+const REFRESH_TOKEN_GRACE_MS = 60 * 1000;
+
 interface RefreshPayload {
   sub: string;
   jti: string;
@@ -143,22 +155,41 @@ export class TokensService {
     // logins for the same account could either violate the unique index
     // `idx_device_sessions_user` or leave inconsistent state (both deletes
     // succeed, one insert wins, the loser thinks it's the active session).
-    await this.sessionsRepo
-      .createQueryBuilder()
-      .insert()
-      .into(DeviceSession)
-      .values({
-        userId: user.id,
-        deviceId: opts.deviceId,
-        deviceName: opts.deviceName ?? null,
-        refreshTokenJti: refreshJti,
-        ipAddress: opts.ip ?? null,
-      })
-      .orUpdate(
-        ['device_id', 'device_name', 'refresh_token_jti', 'ip_address'],
-        ['user_id'],
+    //
+    // Rotation grace: when the ON CONFLICT branch fires (an existing
+    // session is being rotated), stash the pre-update refresh_token_jti
+    // into previous_refresh_jti and stamp previous_jti_expires_at
+    // REFRESH_TOKEN_GRACE_MS in the future. rotate() will still accept
+    // the stashed jti during that window so a client that never got the
+    // freshly-minted pair (force-quit mid-response, TCP reset, cellular
+    // flap) isn't locked out. `device_sessions.column` in the SET clause
+    // reads the row's PRE-update value, `EXCLUDED.column` reads the
+    // incoming value — this is the only way to move current → previous
+    // in a single atomic statement.
+    const graceIntervalSql = `${Math.floor(REFRESH_TOKEN_GRACE_MS / 1000)} seconds`;
+    await this.sessionsRepo.manager.query(
+      `
+      INSERT INTO device_sessions (
+        user_id, device_id, device_name, refresh_token_jti, ip_address
       )
-      .execute();
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (user_id) DO UPDATE SET
+        previous_refresh_jti = device_sessions.refresh_token_jti,
+        previous_jti_expires_at = now() + $6::interval,
+        device_id = EXCLUDED.device_id,
+        device_name = EXCLUDED.device_name,
+        refresh_token_jti = EXCLUDED.refresh_token_jti,
+        ip_address = EXCLUDED.ip_address
+      `,
+      [
+        user.id,
+        opts.deviceId,
+        opts.deviceName ?? null,
+        refreshJti,
+        opts.ip ?? null,
+        graceIntervalSql,
+      ],
+    );
 
     // Cache the currently-bound deviceId so JwtStrategy can reject access
     // tokens whose `did` claim no longer matches the active session —
@@ -211,11 +242,33 @@ export class TokensService {
     const session = await this.sessionsRepo.findOne({
       where: { userId: payload.sub },
     });
-    if (!session || session.refreshTokenJti !== payload.jti) {
+    if (!session) {
       throw new UnauthorizedException({
         code: 'DEVICE_KICKED',
         message: 'Your account was signed in on another device.',
       });
+    }
+
+    // Accept EITHER the current jti (normal path) OR the previous jti
+    // if we're still inside the rotation grace window. Race the same
+    // request twice, kill the app mid-response, cellular flap — none of
+    // those should force the user to sign back in.
+    const matchesCurrent = session.refreshTokenJti === payload.jti;
+    const withinGrace =
+      session.previousRefreshJti === payload.jti &&
+      session.previousJtiExpiresAt !== null &&
+      session.previousJtiExpiresAt.getTime() > Date.now();
+    if (!matchesCurrent && !withinGrace) {
+      throw new UnauthorizedException({
+        code: 'DEVICE_KICKED',
+        message: 'Your account was signed in on another device.',
+      });
+    }
+    if (!matchesCurrent && withinGrace) {
+      this.logger.log(
+        `[auth] refresh accepted via grace window user=${payload.sub} ` +
+          `graceMs=${session.previousJtiExpiresAt!.getTime() - Date.now()}`,
+      );
     }
 
     const user = await this.sessionsRepo.manager

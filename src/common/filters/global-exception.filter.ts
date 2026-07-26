@@ -12,6 +12,16 @@ interface ErrorPayload {
   statusCode: number;
   error: string;
   message: string | string[];
+  /**
+   * Machine-readable discriminator. NestJS `HttpException` constructors
+   * accept an object body — we forward its `code` verbatim so clients
+   * can branch on stable identifiers (e.g. `DEVICE_KICKED`,
+   * `EMAIL_NOT_VERIFIED`) without string-matching the human message.
+   * Without this the mobile client's DEVICE_KICKED sheet never
+   * triggers and a session rotation force-logouts the user via the
+   * generic "unauthorized → welcome" path instead.
+   */
+  code?: string;
   path: string;
   timestamp: string;
   requestId?: string;
@@ -29,6 +39,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let statusCode: number = HttpStatus.INTERNAL_SERVER_ERROR;
     let message: string | string[] = 'Internal server error';
     let error = 'InternalServerError';
+    let code: string | undefined;
 
     if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
@@ -36,9 +47,17 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       if (typeof res === 'string') {
         message = res;
       } else if (typeof res === 'object' && res !== null) {
-        const r = res as { message?: string | string[]; error?: string };
+        const r = res as {
+          message?: string | string[];
+          error?: string;
+          code?: string;
+        };
         message = r.message ?? message;
         error = r.error ?? exception.name;
+        // Forward `code` when the thrower supplied one. Used by
+        // mobile to distinguish DEVICE_KICKED (show a specific sheet
+        // instead of a silent sign-out).
+        if (typeof r.code === 'string' && r.code.length > 0) code = r.code;
       }
     } else if (exception instanceof Error) {
       // CRITICAL: NEVER pass a raw Error.message through to the client
@@ -55,6 +74,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       statusCode,
       error,
       message,
+      ...(code ? { code } : {}),
       path: request.url,
       timestamp: new Date().toISOString(),
       requestId: (request.headers['x-request-id'] as string) ?? undefined,
