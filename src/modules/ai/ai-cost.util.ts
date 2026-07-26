@@ -2,8 +2,10 @@
  * AI model cost table (USD per 1M tokens). Single source of truth referenced
  * by the daily-budget guard, per-job hard caps, and the admin cost dashboard.
  *
- * AWS Bedrock pricing in eu-central-1 as of 2026-05. Confirm against the
- * AWS Bedrock pricing page before launch — these change.
+ * AWS Bedrock pricing (Anthropic models) verified against the AWS Bedrock
+ * pricing page 2026-07-26: Haiku 4.5 $1.00/$5.00, Sonnet 4.5 $3.00/$15.00 per
+ * 1M input/output tokens. Confirm before launch — these change, and EU regions
+ * can carry a small uplift over the listed cross-region price.
  */
 export interface ModelPricing {
   inputPerM: number;
@@ -14,8 +16,8 @@ const PRICING: Record<string, ModelPricing> = {
   // Bedrock model IDs (anthropic.<name>-v1:0 form). What AwsSdk InvokeModel
   // expects and what AiService receives back from BedrockClient.
   'anthropic.claude-haiku-4-5-20251001-v1:0': {
-    inputPerM: 0.25,
-    outputPerM: 1.25,
+    inputPerM: 1.0,
+    outputPerM: 5.0,
   },
   'anthropic.claude-sonnet-4-5-20250929-v1:0': {
     inputPerM: 3.0,

@@ -12,8 +12,8 @@ describe('costUsd', () => {
   });
 
   it('computes Bedrock Haiku cost correctly', () => {
-    // 2000 input * $0.25/M = $0.0005; 1000 output * $1.25/M = $0.00125; total $0.00175
-    expect(costUsd(HAIKU, 2000, 1000)).toBeCloseTo(0.00175, 6);
+    // 2000 input * $1.00/M = $0.002; 1000 output * $5.00/M = $0.005; total $0.007
+    expect(costUsd(HAIKU, 2000, 1000)).toBeCloseTo(0.007, 6);
   });
 
   it('prices cross-region inference profile IDs like the bare model ID', () => {
