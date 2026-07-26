@@ -12,16 +12,6 @@ import {
   accraMonthStartIso,
 } from '../../common/utils/timezone.util';
 
-function resolveExamType(
-  param: string | undefined,
-  fallback: ExamType | undefined,
-): ExamType {
-  if (param && Object.values(ExamType).includes(param as ExamType)) {
-    return param as ExamType;
-  }
-  return fallback ?? ExamType.WASSCE;
-}
-
 function resolvePeriodType(param: string | undefined): LeaderboardPeriodType {
   return param === LeaderboardPeriodType.MONTHLY
     ? LeaderboardPeriodType.MONTHLY
@@ -48,17 +38,19 @@ export class LeaderboardController {
   @Get()
   @ApiOperation({
     summary:
-      "Top 100 leaderboard for the current user's examType (or override). " +
+      "Top 100 leaderboard for the current user's own examType. " +
       'Supports weekly/monthly. Cached 5m.',
   })
   top(
     @CurrentUser() user: AuthenticatedUser,
-    @Query('examType') examTypeParam?: string,
     @Query('periodType') periodTypeParam?: string,
     @Query('scope') scope?: string,
     @Query('periodStart') periodStart?: string,
   ) {
-    const examType = resolveExamType(examTypeParam, user.examType);
+    // Locked to the caller's own exam level: a user only ever sees their
+    // own board (a WASSCE account cannot view BECE, etc.). Any client
+    // `examType` is intentionally ignored so the scope can't be widened.
+    const examType = user.examType ?? ExamType.WASSCE;
     const periodType = resolvePeriodType(periodTypeParam);
     const effectiveStart = resolvePeriodStart(periodStart, periodType);
     return this.leaderboard.topForPeriod(effectiveStart, {
@@ -76,12 +68,13 @@ export class LeaderboardController {
   })
   myRank(
     @CurrentUser() user: AuthenticatedUser,
-    @Query('examType') examTypeParam?: string,
     @Query('periodType') periodTypeParam?: string,
     @Query('scope') scope?: string,
     @Query('periodStart') periodStart?: string,
   ) {
-    const examType = resolveExamType(examTypeParam, user.examType);
+    // Same exam-level lock as `top` — rank is always within the user's
+    // own board.
+    const examType = user.examType ?? ExamType.WASSCE;
     const periodType = resolvePeriodType(periodTypeParam);
     const effectiveStart = resolvePeriodStart(periodStart, periodType);
     return this.leaderboard.myRank(user.id, effectiveStart, {

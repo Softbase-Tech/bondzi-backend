@@ -19,21 +19,28 @@ describe('WinnersController', () => {
     controller = moduleRef.get(WinnersController);
   });
 
-  it('list forwards (examType, periodType, periodStart) into a single object', () => {
+  it('list scopes to the caller examType (client cannot widen it)', () => {
     controller.list(
-      ExamType.WASSCE,
+      { id: 'u1', examType: ExamType.BECE } as never,
       LeaderboardPeriodType.WEEKLY,
       '2026-05-11',
     );
     expect(winners.listPast).toHaveBeenCalledWith({
-      examType: ExamType.WASSCE,
+      examType: ExamType.BECE,
       periodType: LeaderboardPeriodType.WEEKLY,
       periodStart: '2026-05-11',
     });
   });
 
-  it('hallOfFame forwards only the examType', () => {
-    controller.hallOfFame(ExamType.BECE);
+  it('list defaults to WASSCE when the user has no examType', () => {
+    controller.list({ id: 'u1' } as never, LeaderboardPeriodType.WEEKLY);
+    expect(winners.listPast).toHaveBeenCalledWith(
+      expect.objectContaining({ examType: ExamType.WASSCE }),
+    );
+  });
+
+  it('hallOfFame uses the caller examType', () => {
+    controller.hallOfFame({ id: 'u1', examType: ExamType.BECE } as never);
     expect(winners.allTimeHallOfFame).toHaveBeenCalledWith(ExamType.BECE);
   });
 });
