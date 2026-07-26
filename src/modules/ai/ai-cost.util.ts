@@ -48,11 +48,16 @@ export function costUsd(
   // would fall through to FALLBACK_PRICING and inflate the daily
   // budget counter against imaginary AWS spend.
   if (model.startsWith('ollama:')) return 0;
+  // Cross-region inference profiles prefix the Bedrock model ID with a
+  // geo (`eu.anthropic.claude-...`, `us.anthropic.claude-...`). Strip it
+  // so pricing resolves identically whether we're handed a raw model ID
+  // or an inference-profile ID.
+  const normalized = model.replace(/^(us|eu|apac|us-gov)\./, '');
   // Unknown model -> bill against the most expensive known model. A
   // hardcoded "Sonnet rate" silently bills any future Opus / Claude 5
   // job at Sonnet rates and underflows the daily budget. Computing
   // max dynamically removes that footgun.
-  const price = PRICING[model] ?? FALLBACK_PRICING;
+  const price = PRICING[normalized] ?? PRICING[model] ?? FALLBACK_PRICING;
   return (
     (inputTokens * price.inputPerM + outputTokens * price.outputPerM) /
     1_000_000

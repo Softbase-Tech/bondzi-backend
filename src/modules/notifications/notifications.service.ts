@@ -51,6 +51,14 @@ export class NotificationsService {
     );
   }
 
+  /** Marks every unread notification for the user as read in one UPDATE. */
+  async markAllRead(userId: string): Promise<void> {
+    await this.notificationsRepo.update(
+      { userId, isRead: false },
+      { isRead: true },
+    );
+  }
+
   async send(payload: NotificationPayload): Promise<Notification> {
     const row = this.notificationsRepo.create({
       userId: payload.userId,

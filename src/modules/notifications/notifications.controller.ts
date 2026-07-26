@@ -71,6 +71,12 @@ export class NotificationsController {
     return rows.map(toMobileNotification);
   }
 
+  @Post('read-all')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async markAllRead(@CurrentUser() user: AuthenticatedUser) {
+    await this.notifications.markAllRead(user.id);
+  }
+
   @Post(':id/read')
   @HttpCode(HttpStatus.NO_CONTENT)
   async markRead(

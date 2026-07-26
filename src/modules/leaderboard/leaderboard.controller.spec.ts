@@ -5,8 +5,8 @@ import { ExamType, LeaderboardPeriodType } from '../../common/types/enums';
 
 /**
  * Coverage:
- *  - resolveExamType: query param wins, else falls back to user.examType,
- *    else defaults to WASSCE.
+ *  - examType is locked to the caller's own `user.examType` (any client
+ *    override is ignored), defaulting to WASSCE when absent.
  *  - resolvePeriodType: only MONTHLY counts; everything else defaults to
  *    WEEKLY.
  *  - resolvePeriodStart: explicit `periodStart` query wins; otherwise the
@@ -30,18 +30,7 @@ describe('LeaderboardController', () => {
     controller = moduleRef.get(LeaderboardController);
   });
 
-  it('top: explicit examType query overrides user.examType', () => {
-    controller.top(
-      { id: 'user-1', examType: ExamType.WASSCE } as never,
-      'bece',
-    );
-    expect(leaderboard.topForPeriod).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ examType: ExamType.BECE }),
-    );
-  });
-
-  it('top: falls back to user.examType when query is missing', () => {
+  it('top: uses the caller examType (client cannot widen the scope)', () => {
     controller.top({ id: 'user-1', examType: ExamType.BECE } as never);
     expect(leaderboard.topForPeriod).toHaveBeenCalledWith(
       expect.any(String),
@@ -49,10 +38,17 @@ describe('LeaderboardController', () => {
     );
   });
 
+  it('top: defaults to WASSCE when the user has no examType', () => {
+    controller.top({ id: 'user-1' } as never);
+    expect(leaderboard.topForPeriod).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ examType: ExamType.WASSCE }),
+    );
+  });
+
   it('top: defaults to weekly when periodType is not MONTHLY', () => {
     controller.top(
       { id: 'user-1', examType: ExamType.WASSCE } as never,
-      undefined,
       'weird',
     );
     expect(leaderboard.topForPeriod).toHaveBeenCalledWith(
@@ -64,7 +60,6 @@ describe('LeaderboardController', () => {
   it('top: honours an explicit periodStart query parameter', () => {
     controller.top(
       { id: 'user-1', examType: ExamType.WASSCE } as never,
-      undefined,
       undefined,
       undefined,
       '2026-05-04',
