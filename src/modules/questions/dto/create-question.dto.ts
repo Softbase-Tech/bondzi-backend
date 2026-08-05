@@ -112,6 +112,26 @@ export class CreateQuestionDto {
   @IsUUID()
   topicId?: string;
 
+  /**
+   * Alternative to `topicId` — the topic's TITLE. Convenient for
+   * hand-authored bulk imports where the author knows the topic name
+   * (e.g. "Scientific Units and Measurements") but doesn't want to
+   * look up the UUID for every row. The bulk-import service resolves
+   * this against `topics.title` scoped to the row's `subjectId` and
+   * fails the whole batch fast if any (subject, topic) pair doesn't
+   * match a row. Ignored when `topicId` is also supplied — an
+   * explicit UUID always wins.
+   */
+  @ApiPropertyOptional({
+    description:
+      'Topic title (case-sensitive, scoped to subjectId). Resolved to topicId server-side; ignored if topicId is also set.',
+    maxLength: 200,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  topic?: string;
+
   @ApiPropertyOptional({
     format: 'uuid',
     description:

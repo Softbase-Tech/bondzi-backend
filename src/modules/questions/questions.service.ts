@@ -11,6 +11,7 @@ import { Option } from './entities/option.entity';
 import { QuestionFlag } from './entities/question-flag.entity';
 import { SrsCard } from '../srs/entities/srs-card.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
+import { Topic } from '../subjects/entities/topic.entity';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { sanitizeHtml } from '../../common/utils/sanitize.util';
@@ -47,6 +48,7 @@ export class QuestionsService {
     @InjectRepository(SrsCard) private readonly srsRepo: Repository<SrsCard>,
     @InjectRepository(UserSubjectProgress)
     private readonly progressRepo: Repository<UserSubjectProgress>,
+    @InjectRepository(Topic) private readonly topicsRepo: Repository<Topic>,
     private readonly redis: RedisService,
     private readonly dataSource: DataSource,
     private readonly stimuli: StimuliService,
@@ -521,12 +523,93 @@ export class QuestionsService {
       await this.stimuli.assertExists(sid);
     }
 
+    // Resolve every (subjectId, topic-name) pair the batch mentions to a
+    // real Topic.id UP FRONT. The DB has a unique constraint on
+    // (subject_id, title), so a single findBy per distinct pair is the
+    // cheapest way to look them up. Failing here (rather than mid-
+    // transaction) lets us report every bad row together and keeps the
+    // rest of the batch out of the DB.
+    //
+    // Contract:
+    //   - If a row supplies `topicId`, it wins — we skip the name lookup
+    //     for that row entirely.
+    //   - If a row supplies only `topic` (name), we resolve it against
+    //     topics.title scoped to the row's subjectId. Miss = row error.
+    //   - If a row supplies neither, topicId falls through to null
+    //     (backward-compatible with the original bulk-import shape).
+    type TopicKey = `${string}::${string}`;
+    const topicKey = (subjectId: string, title: string): TopicKey =>
+      `${subjectId}::${title}`;
+    // Pull the topic-name a row wants resolved. Returns the trimmed
+    // string when the row asked for name-based resolution, or null when
+    // there's no work to do (explicit topicId supplied, or no topic).
+    // Extracting this narrows q.topic through eslint's type checker as
+    // well as tsc.
+    const wantedTopicName = (q: CreateQuestionDto): string | null => {
+      if (q.topicId) return null;
+      const raw: string | undefined = q.topic;
+      if (!raw) return null;
+      const trimmed = raw.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    };
+
+    const topicNamePairs = new Map<
+      TopicKey,
+      { subjectId: string; title: string }
+    >();
+    for (const q of dto.questions) {
+      const title = wantedTopicName(q);
+      if (!title) continue;
+      topicNamePairs.set(topicKey(q.subjectId, title), {
+        subjectId: q.subjectId,
+        title,
+      });
+    }
+    const topicIdByPair = new Map<TopicKey, string>();
+    if (topicNamePairs.size > 0) {
+      // One query per distinct pair. The number of distinct pairs in a
+      // typical import is small (usually 1 — a single-chapter file), so
+      // this beats a giant OR-batched query for readability and error
+      // reporting. If a batch ever needs to import into many chapters
+      // at once, this loop can be swapped for a single `IN` fetch.
+      for (const [key, { subjectId, title }] of topicNamePairs) {
+        const row = await this.topicsRepo.findOne({
+          where: { subjectId, title },
+          select: { id: true },
+        });
+        if (row) topicIdByPair.set(key, row.id);
+      }
+      // Per-row reporting: any row that named a topic which didn't
+      // resolve gets its own errors entry. We still bail before writing
+      // anything, keeping the "all-or-nothing" bulk-import guarantee.
+      dto.questions.forEach((q, i) => {
+        const title = wantedTopicName(q);
+        if (!title) return;
+        const key = topicKey(q.subjectId, title);
+        if (!topicIdByPair.has(key)) {
+          errors.push({
+            index: i,
+            message: `Topic "${title}" does not exist under subject ${q.subjectId}. Create the topic first (or supply topicId directly).`,
+          });
+        }
+      });
+      if (errors.length > 0) return { created: 0, errors };
+    }
+
     let created = 0;
     await this.dataSource.transaction(async (em) => {
       const qRepo = em.getRepository(Question);
       const oRepo = em.getRepository(Option);
       const now = new Date();
       for (const q of dto.questions) {
+        // Resolve final topicId: explicit topicId wins; otherwise the
+        // pre-validated name→id map; otherwise null.
+        const requestedName = wantedTopicName(q);
+        const resolvedTopicId =
+          q.topicId ??
+          (requestedName
+            ? (topicIdByPair.get(topicKey(q.subjectId, requestedName)) ?? null)
+            : null);
         // When the import row carries an explanation, stamp it inline
         // and mark `explanation_model='manual'` so the admin AI
         // dashboards can later distinguish admin-entered rows from
@@ -540,7 +623,7 @@ export class QuestionsService {
           q.explanationExamples.length > 0;
         const question = qRepo.create({
           subjectId: q.subjectId,
-          topicId: q.topicId ?? null,
+          topicId: resolvedTopicId,
           stimulusId: q.stimulusId ?? null,
           examType: q.examType,
           questionType: q.questionType,
