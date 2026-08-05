@@ -7,6 +7,7 @@ import { QuestionFlag } from './entities/question-flag.entity';
 import { QuestionStimulus } from './entities/question-stimulus.entity';
 import { SrsCard } from '../srs/entities/srs-card.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
+import { Topic } from '../subjects/entities/topic.entity';
 import { QuestionsController } from './questions.controller';
 import { QuestionsService } from './questions.service';
 import { StimuliAdminController } from './stimuli-admin.controller';
@@ -24,6 +25,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
       SrsCard,
       UserSubjectProgress,
       AuditLog,
+      Topic,
     ]),
     SubscriptionsModule,
   ],

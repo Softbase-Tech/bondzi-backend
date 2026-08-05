@@ -12,6 +12,7 @@ import { Option } from './entities/option.entity';
 import { QuestionFlag } from './entities/question-flag.entity';
 import { SrsCard } from '../srs/entities/srs-card.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
+import { Topic } from '../subjects/entities/topic.entity';
 import { RedisService } from '../../common/redis/redis.service';
 import { StimuliService } from './stimuli.service';
 
@@ -41,6 +42,7 @@ describe('QuestionsService', () => {
   let flagsRepo: Record<string, unknown>;
   let srsRepo: Record<string, unknown>;
   let progressRepo: Record<string, unknown>;
+  let topicsRepo: { findOne: jest.Mock };
   let redis: { getJson: jest.Mock; setJson: jest.Mock; del: jest.Mock };
   let stimuli: { assertExists: jest.Mock };
   let dataSource: {
@@ -73,6 +75,7 @@ describe('QuestionsService', () => {
     flagsRepo = {};
     srsRepo = {};
     progressRepo = {};
+    topicsRepo = { findOne: jest.fn() };
     redis = {
       getJson: jest.fn(),
       setJson: jest.fn().mockResolvedValue(undefined),
@@ -99,6 +102,7 @@ describe('QuestionsService', () => {
           provide: getRepositoryToken(UserSubjectProgress),
           useValue: progressRepo,
         },
+        { provide: getRepositoryToken(Topic), useValue: topicsRepo },
         { provide: RedisService, useValue: redis },
         { provide: DataSource, useValue: dataSource },
         { provide: StimuliService, useValue: stimuli },
@@ -290,5 +294,146 @@ describe('QuestionsService', () => {
     expect(out.created).toBe(0);
     expect(out.errors).toHaveLength(1);
     expect(dataSource.transaction).not.toHaveBeenCalled();
+  });
+
+  it('bulkImport rejects when a row names a topic that does not exist under the subject', async () => {
+    // Topic lookup returns null → the row cites a topic that isn't in
+    // the DB. The whole batch should fail before any write happens,
+    // with a per-row error naming the missing topic and its subject.
+    topicsRepo.findOne.mockResolvedValueOnce(null);
+    const out = await service.bulkImport({
+      questions: [
+        {
+          subjectId: 's1',
+          topic: 'Non-existent chapter',
+          examType: 'wassce',
+          questionType: 'mcq',
+          source: 'past_paper',
+          body: 'b',
+          difficulty: 'easy',
+          options: [
+            { label: 'A', body: 'a', isCorrect: true },
+            { label: 'B', body: 'b', isCorrect: false },
+          ],
+        },
+      ],
+    } as never);
+    expect(out.created).toBe(0);
+    expect(out.errors).toHaveLength(1);
+    expect(out.errors[0].message).toContain('Non-existent chapter');
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+  });
+
+  it('bulkImport resolves a topic name to its id and applies it to the created row', async () => {
+    // One-shot lookup returns the resolved Topic. The transactional
+    // path then writes the question with that resolved topicId — no
+    // matter that the caller supplied a name instead of a UUID.
+    topicsRepo.findOne.mockResolvedValueOnce({ id: 't-resolved' });
+    const qRepoInTx = {
+      create: jest.fn((row: Record<string, unknown>) => row),
+      save: jest.fn(async (row: unknown) => {
+        (row as { id: string }).id = 'q1';
+        return row;
+      }),
+    };
+    const oRepoInTx = {
+      create: jest.fn((row: unknown) => row),
+      save: jest.fn(async (rows: unknown) => rows),
+    };
+    dataSource.transaction.mockImplementationOnce(
+      async (fn: (em: EntityManager) => Promise<unknown>) =>
+        fn({
+          getRepository: (target: { name?: string } | string) => {
+            const name = typeof target === 'string' ? target : target.name;
+            if (name === 'Question') return qRepoInTx;
+            if (name === 'Option') return oRepoInTx;
+            return {};
+          },
+        } as unknown as EntityManager),
+    );
+
+    const out = await service.bulkImport({
+      questions: [
+        {
+          subjectId: 's1',
+          topic: 'Scientific Units and Measurements',
+          examType: 'wassce',
+          questionType: 'mcq',
+          source: 'past_paper',
+          body: 'q body',
+          difficulty: 'easy',
+          options: [
+            { label: 'A', body: 'a', isCorrect: true },
+            { label: 'B', body: 'b', isCorrect: false },
+          ],
+        },
+      ],
+    } as never);
+    expect(out.created).toBe(1);
+    expect(out.errors).toHaveLength(0);
+    // topicId on the created row must be the resolved UUID, not the name.
+    expect(qRepoInTx.create).toHaveBeenCalledWith(
+      expect.objectContaining({ topicId: 't-resolved' }),
+    );
+    // Lookup was scoped to (subjectId, title).
+    expect(topicsRepo.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          subjectId: 's1',
+          title: 'Scientific Units and Measurements',
+        },
+      }),
+    );
+  });
+
+  it('bulkImport prefers explicit topicId over the topic name lookup', async () => {
+    // If both are supplied, topicId wins and the topic name is ignored
+    // — topicsRepo.findOne must NOT be called for that row.
+    const qRepoInTx = {
+      create: jest.fn((row: Record<string, unknown>) => row),
+      save: jest.fn(async (row: unknown) => {
+        (row as { id: string }).id = 'q2';
+        return row;
+      }),
+    };
+    const oRepoInTx = {
+      create: jest.fn((row: unknown) => row),
+      save: jest.fn(async (rows: unknown) => rows),
+    };
+    dataSource.transaction.mockImplementationOnce(
+      async (fn: (em: EntityManager) => Promise<unknown>) =>
+        fn({
+          getRepository: (target: { name?: string } | string) => {
+            const name = typeof target === 'string' ? target : target.name;
+            if (name === 'Question') return qRepoInTx;
+            if (name === 'Option') return oRepoInTx;
+            return {};
+          },
+        } as unknown as EntityManager),
+    );
+
+    const out = await service.bulkImport({
+      questions: [
+        {
+          subjectId: 's1',
+          topicId: 't-explicit',
+          topic: 'Some other name that would fail lookup',
+          examType: 'wassce',
+          questionType: 'mcq',
+          source: 'past_paper',
+          body: 'q body',
+          difficulty: 'easy',
+          options: [
+            { label: 'A', body: 'a', isCorrect: true },
+            { label: 'B', body: 'b', isCorrect: false },
+          ],
+        },
+      ],
+    } as never);
+    expect(out.created).toBe(1);
+    expect(topicsRepo.findOne).not.toHaveBeenCalled();
+    expect(qRepoInTx.create).toHaveBeenCalledWith(
+      expect.objectContaining({ topicId: 't-explicit' }),
+    );
   });
 });
