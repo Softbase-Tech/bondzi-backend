@@ -47,12 +47,14 @@ export const CacheKeys = {
   revokedJti: (jti: string) => `revoked_jti:${jti}`,
   refreshFamily: (familyId: string) => `refresh_family:${familyId}`,
   /**
-   * The deviceId currently bound to `device_sessions(user_id)`. Used by
-   * JwtStrategy to reject access tokens whose `did` claim no longer
-   * matches the active session — closes the "DEVICE_KICKED token survives
-   * 15 minutes" hole.
+   * Per-(user, device) session marker. Set on login/refresh, deleted
+   * on logout / logout-all. JwtStrategy checks presence to reject
+   * access tokens for signed-out devices without a DB round-trip —
+   * a per-device key (rather than a single per-user value) means a
+   * logout on device A never affects device B's marker.
    */
-  activeDeviceId: (userId: string) => `active_device:${userId}`,
+  activeDeviceId: (userId: string, deviceId: string) =>
+    `active_device:${userId}:${deviceId}`,
   aiCostDay: (date: string) => `ai_cost:day:${date}`,
   aiCostUserDay: (userId: string, date: string) =>
     `ai_cost:user:${userId}:${date}`,

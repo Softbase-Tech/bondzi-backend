@@ -50,22 +50,21 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     }
 
     // Device-binding check: every access token carries a `did` claim
-    // identifying the `device_sessions` row it was issued for. After a
-    // DEVICE_KICKED event the old token's `did` no longer matches the
-    // active session, and the rightful owner's "force-logout via new
-    // login" guarantee is preserved without waiting for the 15-min
-    // access-token TTL.
+    // identifying the `device_sessions` row it was issued for. If the
+    // (user, device) row was deleted (single-device logout, logoutAll,
+    // password reset), the corresponding token stops working
+    // immediately — no waiting on the 15-min TTL.
     //
-    // Two-tier check: Redis-cached deviceId first (sub-ms), DB row only
-    // on cache miss. A token without a `did` claim is a legacy issuance
-    // from before this binding existed — accept it; the next refresh
-    // will mint a properly bound pair.
+    // Two-tier check: Redis presence marker first (sub-ms), DB row
+    // fallback on cache miss. A token without a `did` claim is a
+    // legacy issuance from before device binding existed — accept it;
+    // the next refresh mints a properly bound pair.
     if (payload.did) {
       const ok = await this.isDeviceBindingValid(payload.sub, payload.did);
       if (!ok) {
         throw new UnauthorizedException({
           code: 'DEVICE_KICKED',
-          message: 'Your account was signed in on another device.',
+          message: 'This device was signed out. Please sign in again.',
         });
       }
     }
@@ -78,6 +77,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       examType: payload.examType,
       subscriptionStatus: payload.subscriptionStatus,
       jti: payload.jti,
+      did: payload.did,
       // Pass the raw expiry through so callers that need to revoke
       // this exact token (e.g. examType rotation) can compute the
       // Redis TTL without re-decoding the JWT.
@@ -89,22 +89,31 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     userId: string,
     claimedDeviceId: string,
   ): Promise<boolean> {
+    // Per-device cache marker: presence of the key = the (user,
+    // device) session is live. Absence = check the DB.
     const cached = await this.redis.getJson<string>(
-      CacheKeys.activeDeviceId(userId),
+      CacheKeys.activeDeviceId(userId, claimedDeviceId),
     );
     if (typeof cached === 'string' && cached.length > 0) {
-      return cached === claimedDeviceId;
+      return true;
     }
-    // Cache miss — fall back to the source of truth and re-warm the
-    // cache (best-effort; the next token issuance refreshes it anyway).
+    // Cache miss — the DB is the source of truth. The (userId,
+    // deviceId) UNIQUE index makes this a single-row primary-key
+    // lookup, so it's cheap.
     const session = await this.sessionsRepo.findOne({
-      where: { userId },
-      select: { id: true, deviceId: true },
+      where: { userId, deviceId: claimedDeviceId },
+      select: { id: true },
     });
     if (!session) return false;
+    // Re-warm the cache (best-effort). Next token issuance refreshes
+    // it anyway; we just avoid another DB hit until then.
     await this.redis
-      .setJson(CacheKeys.activeDeviceId(userId), session.deviceId, 15 * 60)
+      .setJson(
+        CacheKeys.activeDeviceId(userId, claimedDeviceId),
+        '1',
+        15 * 60,
+      )
       .catch(() => undefined);
-    return session.deviceId === claimedDeviceId;
+    return true;
   }
 }

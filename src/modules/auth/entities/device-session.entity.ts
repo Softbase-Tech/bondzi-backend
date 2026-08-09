@@ -10,13 +10,23 @@ import {
 import { User } from '../../users/entities/user.entity';
 
 /**
- * v2 single-device enforcement. At most one row per user. New login deletes any
- * existing row; refresh token use updates last_seen_at; logout deletes the row.
- * Kicked sessions return DEVICE_KICKED on refresh to distinguish from generic
- * expiry.
+ * Per-device session enforcement. At most one row per
+ * (user, device_id). A student can be signed in on multiple devices
+ * concurrently (web + mobile + tablet) without the newest login
+ * kicking the others out. Each device's row rotates independently
+ * on refresh; a re-login for the same (user, device_id) UPSERTs and
+ * rotates that device's row only.
+ *
+ * DEVICE_KICKED is now issued strictly when a refresh token's
+ * `(user_id, device_id)` no longer resolves to a session row —
+ * either because that specific device was logged out, or because
+ * the user's password was reset (which nukes every session, via
+ * logoutAll).
  */
 @Entity({ name: 'device_sessions' })
-@Index('idx_device_sessions_user', ['userId'], { unique: true })
+@Index('idx_device_sessions_user_device', ['userId', 'deviceId'], {
+  unique: true,
+})
 export class DeviceSession {
   @PrimaryGeneratedColumn('uuid')
   id: string;

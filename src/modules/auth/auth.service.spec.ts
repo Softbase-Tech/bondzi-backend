@@ -397,15 +397,24 @@ describe('AuthService', () => {
     });
 
     it('revokes the access jti on logout when both jti and exp are supplied', async () => {
-      await service.logout('user-1', 'jti-1', 999);
+      await service.logout('user-1', 'jti-1', 999, 'd1');
       expect(tokens.revokeByAccessJti).toHaveBeenCalledWith('jti-1', 999);
-      expect(tokens.logoutUser).toHaveBeenCalledWith('user-1');
+      // Per-device logout: only this device's session is closed.
+      expect(tokens.logoutUser).toHaveBeenCalledWith('user-1', 'd1');
     });
 
     it('logout skips access-jti revocation when jti is missing', async () => {
-      await service.logout('user-1', undefined, undefined);
+      await service.logout('user-1', undefined, undefined, 'd1');
       expect(tokens.revokeByAccessJti).not.toHaveBeenCalled();
-      expect(tokens.logoutUser).toHaveBeenCalled();
+      expect(tokens.logoutUser).toHaveBeenCalledWith('user-1', 'd1');
+    });
+
+    it('logout without a deviceId falls back to logout-everywhere semantics', async () => {
+      // Legacy access tokens without a `did` claim still work — the
+      // safer default is a full sign-out (delegated inside
+      // logoutUser) rather than a silent no-op.
+      await service.logout('user-1', 'jti-1', 999, undefined);
+      expect(tokens.logoutUser).toHaveBeenCalledWith('user-1', undefined);
     });
   });
 

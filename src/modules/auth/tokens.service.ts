@@ -39,15 +39,17 @@ interface RefreshPayload {
 }
 
 /**
- * v2 token issuance with single-device enforcement.
+ * v3 token issuance with PER-DEVICE session enforcement.
  *
- * The previous per-family refresh-token table is replaced by `device_sessions`
- * — at most one active session per user. Every fresh login removes any
- * existing session for the user and inserts a new row keyed by device_id.
+ * `device_sessions` holds at most one row per (user_id, device_id) —
+ * a student can be signed in on web + mobile + tablet simultaneously.
+ * Each device's row rotates independently on refresh; a re-login for
+ * the same (user, device) UPSERTs that one row only.
  *
- * A refresh token carries (userId, jti, deviceId). On rotation we verify that
- * (userId, jti) still matches the `device_sessions` row. If not, it means the
- * session was kicked by another device login and we return DEVICE_KICKED.
+ * A refresh token carries (userId, jti, deviceId). On rotation we
+ * verify that (userId, deviceId, jti) still resolves to a session
+ * row. Missing row → DEVICE_KICKED (that specific device was
+ * logged out, OR a password reset nuked every session).
  */
 @Injectable()
 export class TokensService {
@@ -150,22 +152,22 @@ export class TokensService {
       },
     );
 
-    // Single-device enforcement: atomic UPSERT keyed by user_id. Replacing
-    // a separate delete-then-insert closes a race where two simultaneous
-    // logins for the same account could either violate the unique index
-    // `idx_device_sessions_user` or leave inconsistent state (both deletes
-    // succeed, one insert wins, the loser thinks it's the active session).
+    // Per-device enforcement: atomic UPSERT keyed by (user_id, device_id).
+    // Two simultaneous logins for the same account on different devices
+    // insert two separate rows; two simultaneous logins for the same
+    // (user, device) UPSERT the single row.
     //
-    // Rotation grace: when the ON CONFLICT branch fires (an existing
-    // session is being rotated), stash the pre-update refresh_token_jti
-    // into previous_refresh_jti and stamp previous_jti_expires_at
-    // REFRESH_TOKEN_GRACE_MS in the future. rotate() will still accept
-    // the stashed jti during that window so a client that never got the
-    // freshly-minted pair (force-quit mid-response, TCP reset, cellular
-    // flap) isn't locked out. `device_sessions.column` in the SET clause
-    // reads the row's PRE-update value, `EXCLUDED.column` reads the
-    // incoming value — this is the only way to move current → previous
-    // in a single atomic statement.
+    // Rotation grace: when the ON CONFLICT branch fires (existing row
+    // for THIS device being rotated), stash the pre-update
+    // refresh_token_jti into previous_refresh_jti and stamp
+    // previous_jti_expires_at REFRESH_TOKEN_GRACE_MS in the future.
+    // rotate() will still accept the stashed jti during that window so
+    // a client that never got the freshly-minted pair (force-quit
+    // mid-response, TCP reset, cellular flap) isn't locked out.
+    // `device_sessions.column` in the SET clause reads the row's
+    // PRE-update value, `EXCLUDED.column` reads the incoming value —
+    // this is the only way to move current → previous in a single
+    // atomic statement.
     const graceIntervalSql = `${Math.floor(REFRESH_TOKEN_GRACE_MS / 1000)} seconds`;
     await this.sessionsRepo.manager.query(
       `
@@ -173,10 +175,9 @@ export class TokensService {
         user_id, device_id, device_name, refresh_token_jti, ip_address
       )
       VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (user_id) DO UPDATE SET
+      ON CONFLICT (user_id, device_id) DO UPDATE SET
         previous_refresh_jti = device_sessions.refresh_token_jti,
         previous_jti_expires_at = now() + $6::interval,
-        device_id = EXCLUDED.device_id,
         device_name = EXCLUDED.device_name,
         refresh_token_jti = EXCLUDED.refresh_token_jti,
         ip_address = EXCLUDED.ip_address
@@ -191,14 +192,13 @@ export class TokensService {
       ],
     );
 
-    // Cache the currently-bound deviceId so JwtStrategy can reject access
-    // tokens whose `did` claim no longer matches the active session —
-    // closes the "DEVICE_KICKED access-token survives 15 min" hole.
-    // TTL matches the access-token window; after that the token has
-    // expired anyway.
+    // Cache the deviceId as an active-session marker so JwtStrategy can
+    // reject access tokens for logged-out devices without a DB round-trip.
+    // Key is per-device so a logout on device A doesn't invalidate the
+    // marker for device B. TTL matches the access-token window.
     await this.redis.setJson(
-      CacheKeys.activeDeviceId(user.id),
-      opts.deviceId,
+      CacheKeys.activeDeviceId(user.id, opts.deviceId),
+      '1',
       Math.floor(accessExpiryMs / 1000),
     );
 
@@ -223,8 +223,11 @@ export class TokensService {
   }
 
   /**
-   * Exchange a refresh token for a new pair. Returns 401 DEVICE_KICKED when
-   * the session has been taken over by another device.
+   * Exchange a refresh token for a new pair. Returns 401 DEVICE_KICKED
+   * when the session for this specific (user, device) has been
+   * revoked — either by an explicit logout on that device, a
+   * password reset, or an admin action. Other devices for the same
+   * user are unaffected.
    */
   async rotate(
     refreshToken: string,
@@ -239,13 +242,17 @@ export class TokensService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
+    // Look up strictly the (user, device) row this refresh token
+    // belongs to. Under per-device enforcement, another device's row
+    // being present must never authorise a stale token from a
+    // different device — even if the JTI happened to match.
     const session = await this.sessionsRepo.findOne({
-      where: { userId: payload.sub },
+      where: { userId: payload.sub, deviceId: payload.did },
     });
     if (!session) {
       throw new UnauthorizedException({
         code: 'DEVICE_KICKED',
-        message: 'Your account was signed in on another device.',
+        message: 'This device was signed out. Please sign in again.',
       });
     }
 
@@ -261,7 +268,7 @@ export class TokensService {
     if (!matchesCurrent && !withinGrace) {
       throw new UnauthorizedException({
         code: 'DEVICE_KICKED',
-        message: 'Your account was signed in on another device.',
+        message: 'This device was signed out. Please sign in again.',
       });
     }
     if (!matchesCurrent && withinGrace) {
@@ -312,7 +319,11 @@ export class TokensService {
     }
 
     return this.issuePair(user, {
-      deviceId: session.deviceId,
+      // Trust the JWT-verified deviceId (payload.did was matched
+      // against the session row we just resolved). session.deviceId
+      // would be identical here — we prefer payload.did as a defence
+      // against any future refactor that widens the WHERE clause.
+      deviceId: payload.did,
       deviceName: session.deviceName ?? undefined,
       ip: opts.ip,
     });
@@ -324,18 +335,42 @@ export class TokensService {
     await this.redis.setJson(CacheKeys.revokedJti(jti), '1', ttl);
   }
 
-  /** Logout — delete the user's current device session. */
-  async logoutUser(userId: string): Promise<void> {
-    await this.sessionsRepo.delete({ userId });
-    // Drop the cached deviceId so any in-flight access tokens with the
-    // old `did` fail their JwtStrategy device-binding check immediately
-    // (no need to wait the 15-min access-token TTL).
-    await this.redis.del(CacheKeys.activeDeviceId(userId));
+  /**
+   * Logout ONE device — delete the (user, device) row. Other devices
+   * signed into the same account are unaffected.
+   *
+   * `deviceId` is optional to keep older callers compiling; when
+   * omitted we fall back to logoutAll semantics (delete every row).
+   * All in-tree callers should pass a deviceId now.
+   */
+  async logoutUser(userId: string, deviceId?: string): Promise<void> {
+    if (deviceId) {
+      await this.sessionsRepo.delete({ userId, deviceId });
+      await this.redis.del(CacheKeys.activeDeviceId(userId, deviceId));
+      return;
+    }
+    // No deviceId supplied — fall back to full sign-out. Safer than
+    // a silent no-op.
+    await this.logoutAll(userId);
   }
 
-  /** Logout from all devices — same action because only one session exists. */
+  /**
+   * Nuke every session for the user across every device. Used on
+   * password reset and the explicit "sign out everywhere" affordance.
+   */
   async logoutAll(userId: string): Promise<void> {
+    const sessions = await this.sessionsRepo.find({
+      where: { userId },
+      select: { deviceId: true },
+    });
     await this.sessionsRepo.delete({ userId });
-    await this.redis.del(CacheKeys.activeDeviceId(userId));
+    // Drop every per-device cache marker so any in-flight access token
+    // with a `did` claim for this user fails its JwtStrategy check
+    // without waiting for the 15-min TTL to lapse.
+    await Promise.all(
+      sessions.map((s) =>
+        this.redis.del(CacheKeys.activeDeviceId(userId, s.deviceId)),
+      ),
+    );
   }
 }

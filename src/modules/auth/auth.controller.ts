@@ -328,7 +328,11 @@ export class AuthController {
         /* ignore */
       }
     }
-    await this.auth.logout(user.id, user.jti, exp);
+    // Under per-device enforcement, `logout` closes only THIS device's
+    // session. `user.did` comes from the access token's `did` claim
+    // (see AuthenticatedUser). Legacy tokens without a `did` fall
+    // through to a full sign-out (safer default than a no-op).
+    await this.auth.logout(user.id, user.jti, exp, user.did);
   }
 
   @UseGuards(JwtAuthGuard)

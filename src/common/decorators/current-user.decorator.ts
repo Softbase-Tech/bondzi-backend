@@ -23,6 +23,13 @@ export interface AuthenticatedUser {
   subscriptionStatus?: string;
   jti?: string;
   /**
+   * Device id from the JWT `did` claim — the session row this token
+   * was issued for. Used by `logout` to close only THIS device's
+   * session instead of every session for the user. Absent on legacy
+   * pre-per-device tokens.
+   */
+  did?: string;
+  /**
    * Standard JWT expiry (unix seconds). Required when blacklisting
    * the current token (e.g. examType rotation revokes the
    * pre-rotation jti so its remaining TTL can't be replayed). Optional

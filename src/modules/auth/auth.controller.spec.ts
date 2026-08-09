@@ -126,23 +126,25 @@ describe('AuthController', () => {
 
   // ----------------------------- logout -----------------------------
 
-  it('logout decodes the JWT exp claim and forwards jti + exp to the service', async () => {
+  it('logout decodes the JWT exp claim and forwards jti + exp + did to the service', async () => {
     const exp = Math.floor(Date.now() / 1000) + 900;
     const payload = Buffer.from(JSON.stringify({ exp })).toString('base64');
     const token = `header.${payload}.sig`;
     await controller.logout(
-      { id: 'u', jti: 'jti-1' } as never,
+      { id: 'u', jti: 'jti-1', did: 'd1' } as never,
       makeReq({ authorization: `Bearer ${token}` }),
     );
-    expect(auth.logout).toHaveBeenCalledWith('u', 'jti-1', exp);
+    // Under per-device the deviceId flows through so only this
+    // device's session is closed.
+    expect(auth.logout).toHaveBeenCalledWith('u', 'jti-1', exp, 'd1');
   });
 
   it('logout tolerates a malformed token (exp left undefined)', async () => {
     await controller.logout(
-      { id: 'u', jti: 'jti-1' } as never,
+      { id: 'u', jti: 'jti-1', did: 'd1' } as never,
       makeReq({ authorization: 'Bearer not-a-jwt' }),
     );
-    expect(auth.logout).toHaveBeenCalledWith('u', 'jti-1', undefined);
+    expect(auth.logout).toHaveBeenCalledWith('u', 'jti-1', undefined, 'd1');
   });
 
   // ------------------------- checkReferral -------------------------
