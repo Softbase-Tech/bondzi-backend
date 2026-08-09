@@ -23,7 +23,9 @@ export async function seedAdmin(ds: DataSource): Promise<void> {
     process.env.SEED_ADMIN_PASSWORD ??
     'a65dbe5d13663f4a421c94d8f846b1bfafdefb6dcc6da3d1';
   const name = process.env.SEED_ADMIN_NAME ?? 'Platform Admin';
-  const referralCode = process.env.SEED_ADMIN_REFERRAL_CODE ?? 'PM-ADMIN';
+  // No dashes / no PM- prefix — matches the new referral-code layout
+  // (see generateReferralCode in auth.service.ts).
+  const referralCode = process.env.SEED_ADMIN_REFERRAL_CODE ?? 'ADMINGH';
 
   const repo = ds.getRepository(User);
   const existing = await repo.findOne({ where: { email } });

@@ -42,12 +42,21 @@ import { MailEvent } from '../mail/mail.types';
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_TTL_SECONDS = 15 * 60;
 
+/**
+ * Referral codes are 7 characters, uppercase alphanumeric, no
+ * separators. The layout is intentionally simple to type on a phone
+ * keyboard (no dashes, no branded prefix): 4 hex chars from crypto
+ * randomness + 3 letters seeded from the user's name (padded with
+ * 'GHN' so single-name accounts still get a stable suffix).
+ *
+ * Example: `A1B2CJO`
+ */
 function generateReferralCode(fullName: string): string {
   const prefix = randomBytes(2).toString('hex').toUpperCase().slice(0, 4);
   const suffix = (
     fullName.replace(/[^A-Za-z]/g, '').toUpperCase() + 'GHN'
   ).slice(0, 3);
-  return `PM-${prefix}-${suffix}`;
+  return `${prefix}${suffix}`;
 }
 
 function schoolLevelFor(examType: ExamType): SchoolLevel {
@@ -181,7 +190,11 @@ export class AuthService {
       });
       if (!clash) return code;
     }
-    return `${generateReferralCode(fullName)}-${randomBytes(2)
+    // Ultimate-fallback path: append 4 more hex chars so the total
+    // stays in the same character set (no dashes). Only reached
+    // after 5 collision retries, which is astronomically unlikely
+    // for the 7-char alphanumeric space.
+    return `${generateReferralCode(fullName)}${randomBytes(2)
       .toString('hex')
       .toUpperCase()}`;
   }
@@ -208,8 +221,18 @@ export class AuthService {
     referralCode: string,
     deviceId?: string,
   ): Promise<void> {
+    // Normalise legacy formatting: strip a leading `PM-` and any
+    // dashes so students pasting an old-format code from a
+    // pre-migration flyer or screenshot still resolve to the right
+    // referrer. New codes never carry either.
+    const normalized = referralCode
+      .trim()
+      .toUpperCase()
+      .replace(/^PM-/, '')
+      .replace(/-/g, '');
+    if (!normalized) return;
     const referrer = await this.usersRepo.findOne({
-      where: { referralCode },
+      where: { referralCode: normalized },
     });
     if (!referrer || referrer.id === newUser.id) return;
 

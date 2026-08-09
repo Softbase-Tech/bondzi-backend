@@ -48,7 +48,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     schoolName: null,
     region: null,
     avatarUrl: null,
-    referralCode: 'PM-AAAA-JAN',
+    referralCode: 'AAAAJAN',
     referralQualified: false,
     referredBy: null,
     levelXp: 0 as unknown as number,
@@ -310,18 +310,18 @@ describe('AuthService', () => {
         .mockResolvedValueOnce(null) // email check
         .mockResolvedValueOnce(null) // referral-code clash check
         .mockResolvedValueOnce(
-          makeUser({ id: 'ref-1', referralCode: 'PM-XXXX-MEN' }),
+          makeUser({ id: 'ref-1', referralCode: 'XXXXMEN' }),
         ); // referrer lookup
       mockUsernameFree();
       jest.spyOn(passwordUtil, 'hashPassword').mockResolvedValueOnce('hash');
       await service.register(
-        { ...baseDto, referralCode: 'PM-XXXX-MEN' } as never,
+        { ...baseDto, referralCode: 'XXXXMEN' } as never,
         {},
       );
       expect(referralsRepo.insert).toHaveBeenCalledWith(
         expect.objectContaining({
           referrerId: 'ref-1',
-          referralCode: 'PM-XXXX-MEN',
+          referralCode: 'XXXXMEN',
         }),
       );
       expect(referrals.issueSignupRewards).toHaveBeenCalledTimes(1);
@@ -477,14 +477,14 @@ describe('AuthService', () => {
 
     it('checkReferralCode reports valid when the code owner exists', async () => {
       usersRepo.findOne.mockResolvedValueOnce({ id: 'x' });
-      expect(await service.checkReferralCode('PM-ANY')).toEqual({
+      expect(await service.checkReferralCode('ANYXXXX')).toEqual({
         valid: true,
       });
     });
 
     it('checkReferralCode reports invalid when the code is unknown', async () => {
       usersRepo.findOne.mockResolvedValueOnce(null);
-      expect(await service.checkReferralCode('PM-UNKNOWN')).toEqual({
+      expect(await service.checkReferralCode('UNKN123')).toEqual({
         valid: false,
       });
     });
