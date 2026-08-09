@@ -362,7 +362,16 @@ export class AuthController {
       'Validate a referral code — called during registration before submit.',
   })
   async checkReferral(@Query('code') code?: string) {
-    const trimmed = (code ?? '').trim().toUpperCase();
+    // Normalise: trim, upper-case, and strip any legacy formatting
+    // (leading "PM-", internal dashes, or stray whitespace). This
+    // keeps old flyers / screenshots that show the pre-migration
+    // `PM-XXXX-YYY` shape usable without forcing the student to
+    // guess which characters count.
+    const trimmed = (code ?? '')
+      .trim()
+      .toUpperCase()
+      .replace(/^PM-/, '')
+      .replace(/-/g, '');
     if (!trimmed) return { valid: false };
     return this.auth.checkReferralCode(trimmed);
   }

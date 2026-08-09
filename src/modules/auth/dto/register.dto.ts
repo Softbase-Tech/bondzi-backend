@@ -99,7 +99,8 @@ export class RegisterDto {
   formLevel?: number | null;
 
   @ApiPropertyOptional({
-    description: 'PM-XXXX-XXX referral code from another user.',
+    description:
+      '7-character alphanumeric referral code from another user (e.g. A1B2CJO).',
   })
   @IsOptional()
   @IsString()

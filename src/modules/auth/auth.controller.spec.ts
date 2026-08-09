@@ -157,6 +157,6 @@ describe('AuthController', () => {
   it('checkReferral upper-cases and trims before forwarding', async () => {
     auth.checkReferralCode.mockResolvedValue({ valid: true });
     await controller.checkReferral(' pm-aaaa-jan ');
-    expect(auth.checkReferralCode).toHaveBeenCalledWith('PM-AAAA-JAN');
+    expect(auth.checkReferralCode).toHaveBeenCalledWith('AAAAJAN');
   });
 });

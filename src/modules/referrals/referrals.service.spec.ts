@@ -190,7 +190,7 @@ describe('ReferralsService', () => {
 
   it('statsForUser computes pending = referred - qualified', async () => {
     usersRepo.findOne.mockResolvedValueOnce({
-      referralCode: 'PM-AB-CD',
+      referralCode: 'ABCDGHN',
       referralQualified: true,
     });
     eventsRepo.count
@@ -199,7 +199,7 @@ describe('ReferralsService', () => {
 
     const out = await service.statsForUser('user-1');
     expect(out).toEqual({
-      referralCode: 'PM-AB-CD',
+      referralCode: 'ABCDGHN',
       referredCount: 8,
       qualifiedCount: 3,
       pendingCount: 5,
