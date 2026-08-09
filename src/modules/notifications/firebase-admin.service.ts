@@ -72,7 +72,7 @@ export class FirebaseAdminService implements OnModuleInit {
 
     try {
       this.app =
-        admin.apps.find((a) => a?.name === 'passmaster') ??
+        admin.apps.find((a) => a?.name === 'bondzi') ??
         admin.initializeApp(
           {
             credential: admin.credential.cert({
@@ -81,7 +81,7 @@ export class FirebaseAdminService implements OnModuleInit {
               privateKey,
             }),
           },
-          'passmaster',
+          'bondzi',
         );
       this.logger.log('Firebase Admin initialised');
     } catch (err) {
@@ -98,6 +98,13 @@ export class FirebaseAdminService implements OnModuleInit {
     return this.app !== null;
   }
 
+  /** Hard ceiling on a single FCM batch. The firebase-admin SDK's */
+  /** internal HTTP client doesn't expose a timeout for sendEachForMulticast, */
+  /** so we race the call against a manual timeout — a flaky FCM upstream */
+  /** would otherwise wedge all `concurrency` notification-queue workers */
+  /** for ~60s waiting on a TCP socket. */
+  private static readonly FCM_SEND_TIMEOUT_MS = 10_000;
+
   /**
    * Send to multiple tokens and return the tokens that FCM reports as
    * invalid (UNREGISTERED / INVALID_ARGUMENT) so the caller can prune them.
@@ -109,13 +116,27 @@ export class FirebaseAdminService implements OnModuleInit {
     if (!this.app || tokens.length === 0) {
       return { successCount: 0, invalidTokens: [] };
     }
-    const resp = await this.app.messaging().sendEachForMulticast({
+    const sendPromise = this.app.messaging().sendEachForMulticast({
       tokens,
       notification: { title: message.title, body: message.body },
       data: message.data ?? {},
       android: { priority: 'high' },
       apns: { payload: { aps: { sound: 'default' } } },
     });
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      const t = setTimeout(() => {
+        reject(
+          new Error(
+            `FCM sendEachForMulticast exceeded ${FirebaseAdminService.FCM_SEND_TIMEOUT_MS}ms`,
+          ),
+        );
+      }, FirebaseAdminService.FCM_SEND_TIMEOUT_MS);
+      // Don't keep the event loop alive for the timeout once the real
+      // call resolves — `unref` is safe here because the consumer is
+      // already awaiting on the race.
+      t.unref?.();
+    });
+    const resp = await Promise.race([sendPromise, timeoutPromise]);
     const invalidTokens: string[] = [];
     resp.responses.forEach((r, i) => {
       if (!r.success) {

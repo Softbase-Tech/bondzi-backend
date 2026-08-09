@@ -14,6 +14,7 @@ import {
   ExamType,
   QuestionPool,
   QuestionStatus,
+  questionPoolFor,
 } from '../../common/types/enums';
 import {
   StudentPmTestQuestion,
@@ -53,19 +54,23 @@ export class PmTestService {
   /**
    * Subjects that have at least one active PM Test question for the user's
    * (examType, formLevel) combo. Drives the subject picker on the mobile
-   * PassMaster Test screen.
+   * Bondzi Test screen.
    */
   async listSubjectsForUser(userId: string): Promise<PmTestSubjectRow[]> {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
-    return this.listSubjects(user.examType, user.formLevel);
+    // NOVDEC reuses the WASSCE PM Test pool — they study the same syllabus.
+    return this.listSubjects(questionPoolFor(user.examType), user.formLevel);
   }
 
   async listSubjects(
     examType: ExamType,
-    formLevel: number,
+    formLevel: number | null,
   ): Promise<PmTestSubjectRow[]> {
-    const rows = await this.qRepo
+    // Remedial (NOVDEC) users have NULL form_level — they sit WASSCE re-sits
+    // as private candidates so they aren't bound to a school form. Skip the
+    // form-level filter for them.
+    const qb = this.qRepo
       .createQueryBuilder('q')
       .innerJoin(Subject, 's', 's.id = q.subject_id')
       .select('s.id', 'id')
@@ -73,8 +78,11 @@ export class PmTestService {
       .addSelect('s.name', 'name')
       .addSelect('COUNT(q.id)', 'questionCount')
       .where('q.exam_type = :et', { et: examType })
-      .andWhere('q.form_level = :fl', { fl: formLevel })
-      .andWhere('q.status = :st', { st: QuestionStatus.ACTIVE })
+      .andWhere('q.status = :st', { st: QuestionStatus.ACTIVE });
+    if (formLevel != null) {
+      qb.andWhere('q.form_level = :fl', { fl: formLevel });
+    }
+    const rows = await qb
       .groupBy('s.id')
       .addGroupBy('s.code')
       .addGroupBy('s.name')
@@ -112,16 +120,17 @@ export class PmTestService {
     const formLevel = params.formLevel ?? user.formLevel;
     const limit = Math.min(100, Math.max(1, params.limit ?? 20));
 
-    const rows = await this.qRepo
+    const qb = this.qRepo
       .createQueryBuilder('q')
       .leftJoinAndSelect('q.options', 'o')
-      .where('q.exam_type = :et', { et: user.examType })
-      .andWhere('q.form_level = :fl', { fl: formLevel })
+      // NOVDEC → WASSCE pool remap (PM Test questions aren't tagged novdec).
+      .where('q.exam_type = :et', { et: questionPoolFor(user.examType) })
       .andWhere('q.subject_id = :sid', { sid: params.subjectId })
-      .andWhere('q.status = :st', { st: QuestionStatus.ACTIVE })
-      .orderBy('random()')
-      .limit(limit)
-      .getMany();
+      .andWhere('q.status = :st', { st: QuestionStatus.ACTIVE });
+    if (formLevel != null) {
+      qb.andWhere('q.form_level = :fl', { fl: formLevel });
+    }
+    const rows = await qb.orderBy('random()').limit(limit).getMany();
 
     if (rows.length === 0) {
       throw new BadRequestException(

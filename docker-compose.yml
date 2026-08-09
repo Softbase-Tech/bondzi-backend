@@ -1,36 +1,36 @@
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: passmaster_postgres
+    container_name: bondzi_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: passmaster
-      POSTGRES_PASSWORD: passmaster
-      POSTGRES_DB: passmaster
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: cloudWatcher
+      POSTGRES_DB: pasco
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
-      - passmaster_pg_data:/var/lib/postgresql/data
+      - bondzi_pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "passmaster"]
+      test: ['CMD', 'pg_isready', '-U', 'bondzi']
       interval: 5s
       timeout: 5s
       retries: 10
 
   redis:
     image: redis:7-alpine
-    container_name: passmaster_redis
+    container_name: bondzi_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - '6379:6379'
     volumes:
-      - passmaster_redis_data:/data
+      - bondzi_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 5s
       retries: 10
 
 volumes:
-  passmaster_pg_data:
-  passmaster_redis_data:
+  bondzi_pg_data:
+  bondzi_redis_data:

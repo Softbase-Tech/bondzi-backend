@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
- * PassMaster v2 initial schema.
+ * Bondzi v2 initial schema.
  *
  * This is the single source of truth for the entire database layout. It
  * supersedes any previous schema files. Creates every native PG enum, every
@@ -10,7 +10,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *
  *   Dual exam platform:    BECE (JHS) + WASSCE (SHS)
  *   Free core product:     past papers, streaks, XP, leaderboard, SRS
- *   Pro unlocks:           inline AI explanations, PassMaster Test, ad-free
+ *   Pro unlocks:           inline AI explanations, Bondzi Test, ad-free
  *   Single-device login:   device_sessions (one row per user)
  *   XP economy:            admin-configurable earn rates + redemption tiers
  *   Referrals:             two-step XP reward (signup + qualification)

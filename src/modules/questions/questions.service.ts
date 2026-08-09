@@ -11,6 +11,7 @@ import { Option } from './entities/option.entity';
 import { QuestionFlag } from './entities/question-flag.entity';
 import { SrsCard } from '../srs/entities/srs-card.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
+import { Topic } from '../subjects/entities/topic.entity';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { sanitizeHtml } from '../../common/utils/sanitize.util';
@@ -25,12 +26,14 @@ import { QuestionQueryDto } from './dto/question-query.dto';
 import { PastPaperQueryDto, AdaptiveQueryDto } from './dto/past-paper.dto';
 import {
   BulkImportDto,
+  BulkImportExplanationsDto,
   CreateQuestionDto,
   UpdateQuestionDto,
 } from './dto/create-question.dto';
 import { FlagQuestionDto } from './dto/flag-question.dto';
 import { PaginatedResult } from '../../common/dto/pagination.dto';
 import { StimuliService } from './stimuli.service';
+import { WorkedExample } from './types/worked-example';
 
 const PAST_PAPER_TTL_SECONDS = 24 * 60 * 60;
 
@@ -45,6 +48,7 @@ export class QuestionsService {
     @InjectRepository(SrsCard) private readonly srsRepo: Repository<SrsCard>,
     @InjectRepository(UserSubjectProgress)
     private readonly progressRepo: Repository<UserSubjectProgress>,
+    @InjectRepository(Topic) private readonly topicsRepo: Repository<Topic>,
     private readonly redis: RedisService,
     private readonly dataSource: DataSource,
     private readonly stimuli: StimuliService,
@@ -90,8 +94,13 @@ export class QuestionsService {
     if (query.isVerified !== undefined)
       qb.andWhere('q.isVerified = :iv', { iv: query.isVerified });
     if (query.search) {
+      // CRITICAL: the GIN index on questions(body) is built over
+      // `to_tsvector('english', coalesce(body, ''))` (see InitialSchemaV2).
+      // The expression here MUST match the index expression exactly —
+      // without the `coalesce(..., '')` wrapper Postgres treats this as
+      // a different expression and silently falls back to a seq scan.
       qb.andWhere(
-        `to_tsvector('english', q.body) @@ plainto_tsquery('english', :search)`,
+        `to_tsvector('english', coalesce(q.body, '')) @@ plainto_tsquery('english', :search)`,
         {
           search: query.search,
         },
@@ -127,11 +136,11 @@ export class QuestionsService {
       .leftJoinAndSelect('q.stimulus', 'stim')
       .where("q.status = 'active'")
       .andWhere(
-        `to_tsvector('english', q.body) @@ plainto_tsquery('english', :search)`,
+        `to_tsvector('english', coalesce(q.body, '')) @@ plainto_tsquery('english', :search)`,
         { search: q },
       )
       .orderBy(
-        `ts_rank(to_tsvector('english', q.body), plainto_tsquery('english', :search))`,
+        `ts_rank(to_tsvector('english', coalesce(q.body, '')), plainto_tsquery('english', :search))`,
         'DESC',
       )
       .setParameters({ search: q })
@@ -259,13 +268,16 @@ export class QuestionsService {
 
     // Spec §3.1: adaptive results are always scoped by the caller's exam_type
     // from the JWT. Fetch once and apply to every step's WHERE clause.
+    // NOVDEC users share the WASSCE question pool — remap so adaptive
+    // pulls from the same questions a WASSCE student would see.
     const user = await this.dataSource
       .getRepository('users')
       .createQueryBuilder('u')
       .select('u.exam_type', 'examType')
       .where('u.id = :uid', { uid: userId })
       .getRawOne<{ examType: string }>();
-    const examType = user?.examType;
+    const examType =
+      user?.examType === 'novdec' ? 'wassce' : (user?.examType ?? undefined);
 
     const recentIds = await this.dataSource.query<
       Array<{ question_id: string }>
@@ -279,15 +291,18 @@ export class QuestionsService {
     const excludeIds = recentIds.map((r) => r.question_id);
 
     // Step 1: due SRS cards in this subject.
-    const dueSrs = await this.srsRepo
+    const dueQb = this.srsRepo
       .createQueryBuilder('sc')
       .innerJoin('sc.question', 'q')
       .select('sc.question_id', 'questionId')
       .where('sc.user_id = :userId', { userId })
       .andWhere('sc.next_review_at <= now()')
       .andWhere('q.subject_id = :sid', { sid: query.subjectId })
-      .andWhere("q.status = 'active'")
-      .andWhere(examType ? 'q.exam_type = :et' : '1=1', { et: examType })
+      .andWhere("q.status = 'active'");
+    if (examType) {
+      dueQb.andWhere('q.exam_type = :et', { et: examType });
+    }
+    const dueSrs = await dueQb
       .limit(count * 2)
       .getRawMany<{ questionId: string }>();
 
@@ -310,16 +325,24 @@ export class QuestionsService {
         );
       }
       if (weakTopics.length > 0) {
-        const rows = await this.questionsRepo
+        // Build NOT-IN clause only when there's something to exclude.
+        // The previous shape passed `['']` (an invalid UUID) to satisfy
+        // the IN clause when the list was empty — risk of a UUID cast
+        // error in some Postgres versions, and unnecessarily added a
+        // useless `id NOT IN ('')` predicate.
+        const qb = this.questionsRepo
           .createQueryBuilder('q')
           .select('q.id', 'id')
           .where('q.subject_id = :sid', { sid: query.subjectId })
           .andWhere('q.topic_id IN (:...topics)', { topics: weakTopics })
-          .andWhere("q.status = 'active'")
-          .andWhere(examType ? 'q.exam_type = :et' : '1=1', { et: examType })
-          .andWhere(excludeIds.length > 0 ? 'q.id NOT IN (:...ex)' : '1=1', {
-            ex: excludeIds.length ? excludeIds : [''],
-          })
+          .andWhere("q.status = 'active'");
+        if (examType) {
+          qb.andWhere('q.exam_type = :et', { et: examType });
+        }
+        if (excludeIds.length > 0) {
+          qb.andWhere('q.id NOT IN (:...ex)', { ex: excludeIds });
+        }
+        const rows = await qb
           .orderBy('random()')
           .limit((count - picked.size) * 2)
           .getRawMany<{ id: string }>();
@@ -334,15 +357,18 @@ export class QuestionsService {
     if (picked.size < count) {
       const remaining = count - picked.size;
       const existing = [...picked, ...excludeIds];
-      const rows = await this.questionsRepo
+      const qb = this.questionsRepo
         .createQueryBuilder('q')
         .select('q.id', 'id')
         .where('q.subject_id = :sid', { sid: query.subjectId })
-        .andWhere("q.status = 'active'")
-        .andWhere(examType ? 'q.exam_type = :et' : '1=1', { et: examType })
-        .andWhere(existing.length > 0 ? 'q.id NOT IN (:...ex)' : '1=1', {
-          ex: existing.length ? existing : [''],
-        })
+        .andWhere("q.status = 'active'");
+      if (examType) {
+        qb.andWhere('q.exam_type = :et', { et: examType });
+      }
+      if (existing.length > 0) {
+        qb.andWhere('q.id NOT IN (:...ex)', { ex: existing });
+      }
+      const rows = await qb
         .orderBy('random()')
         .limit(remaining)
         .getRawMany<{ id: string }>();
@@ -425,7 +451,7 @@ export class QuestionsService {
     }
     // stimulusId is tri-state: undefined (no change), null (detach), uuid
     // (attach). Validate the attach case before we touch the row.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
     const nextStimulusId = dto.stimulusId;
     if (typeof nextStimulusId === 'string') {
       await this.stimuli.assertExists(nextStimulusId);
@@ -497,14 +523,107 @@ export class QuestionsService {
       await this.stimuli.assertExists(sid);
     }
 
+    // Resolve every (subjectId, topic-name) pair the batch mentions to a
+    // real Topic.id UP FRONT. The DB has a unique constraint on
+    // (subject_id, title), so a single findBy per distinct pair is the
+    // cheapest way to look them up. Failing here (rather than mid-
+    // transaction) lets us report every bad row together and keeps the
+    // rest of the batch out of the DB.
+    //
+    // Contract:
+    //   - If a row supplies `topicId`, it wins — we skip the name lookup
+    //     for that row entirely.
+    //   - If a row supplies only `topic` (name), we resolve it against
+    //     topics.title scoped to the row's subjectId. Miss = row error.
+    //   - If a row supplies neither, topicId falls through to null
+    //     (backward-compatible with the original bulk-import shape).
+    type TopicKey = `${string}::${string}`;
+    const topicKey = (subjectId: string, title: string): TopicKey =>
+      `${subjectId}::${title}`;
+    // Pull the topic-name a row wants resolved. Returns the trimmed
+    // string when the row asked for name-based resolution, or null when
+    // there's no work to do (explicit topicId supplied, or no topic).
+    // Extracting this narrows q.topic through eslint's type checker as
+    // well as tsc.
+    const wantedTopicName = (q: CreateQuestionDto): string | null => {
+      if (q.topicId) return null;
+      const raw: string | undefined = q.topic;
+      if (!raw) return null;
+      const trimmed = raw.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    };
+
+    const topicNamePairs = new Map<
+      TopicKey,
+      { subjectId: string; title: string }
+    >();
+    for (const q of dto.questions) {
+      const title = wantedTopicName(q);
+      if (!title) continue;
+      topicNamePairs.set(topicKey(q.subjectId, title), {
+        subjectId: q.subjectId,
+        title,
+      });
+    }
+    const topicIdByPair = new Map<TopicKey, string>();
+    if (topicNamePairs.size > 0) {
+      // One query per distinct pair. The number of distinct pairs in a
+      // typical import is small (usually 1 — a single-chapter file), so
+      // this beats a giant OR-batched query for readability and error
+      // reporting. If a batch ever needs to import into many chapters
+      // at once, this loop can be swapped for a single `IN` fetch.
+      for (const [key, { subjectId, title }] of topicNamePairs) {
+        const row = await this.topicsRepo.findOne({
+          where: { subjectId, title },
+          select: { id: true },
+        });
+        if (row) topicIdByPair.set(key, row.id);
+      }
+      // Per-row reporting: any row that named a topic which didn't
+      // resolve gets its own errors entry. We still bail before writing
+      // anything, keeping the "all-or-nothing" bulk-import guarantee.
+      dto.questions.forEach((q, i) => {
+        const title = wantedTopicName(q);
+        if (!title) return;
+        const key = topicKey(q.subjectId, title);
+        if (!topicIdByPair.has(key)) {
+          errors.push({
+            index: i,
+            message: `Topic "${title}" does not exist under subject ${q.subjectId}. Create the topic first (or supply topicId directly).`,
+          });
+        }
+      });
+      if (errors.length > 0) return { created: 0, errors };
+    }
+
     let created = 0;
     await this.dataSource.transaction(async (em) => {
       const qRepo = em.getRepository(Question);
       const oRepo = em.getRepository(Option);
+      const now = new Date();
       for (const q of dto.questions) {
+        // Resolve final topicId: explicit topicId wins; otherwise the
+        // pre-validated name→id map; otherwise null.
+        const requestedName = wantedTopicName(q);
+        const resolvedTopicId =
+          q.topicId ??
+          (requestedName
+            ? (topicIdByPair.get(topicKey(q.subjectId, requestedName)) ?? null)
+            : null);
+        // When the import row carries an explanation, stamp it inline
+        // and mark `explanation_model='manual'` so the admin AI
+        // dashboards can later distinguish admin-entered rows from
+        // AI-generated ones. Both columns stay NULL when the import
+        // omits explanation — backward-compatible with the original
+        // "bulk import skeleton, AI fills explanations later" flow.
+        const hasExplanation =
+          q.explanation !== undefined && q.explanation !== null;
+        const hasExamples =
+          q.explanationExamples !== undefined &&
+          q.explanationExamples.length > 0;
         const question = qRepo.create({
           subjectId: q.subjectId,
-          topicId: q.topicId ?? null,
+          topicId: resolvedTopicId,
           stimulusId: q.stimulusId ?? null,
           examType: q.examType,
           questionType: q.questionType,
@@ -517,6 +636,15 @@ export class QuestionsService {
           section: q.section ?? null,
           difficulty: q.difficulty,
           tags: q.tags ?? [],
+          explanation: hasExplanation ? q.explanation : null,
+          explanationHtml: hasExplanation
+            ? sanitizeHtml(markdownToHtml(q.explanation as string))
+            : null,
+          explanationExamples: hasExamples
+            ? (q.explanationExamples as WorkedExample[])
+            : null,
+          explanationModel: hasExplanation ? 'manual' : null,
+          explanationGeneratedAt: hasExplanation ? now : null,
         });
         await qRepo.save(question);
         const options = q.options.map((o, idx) =>
@@ -535,6 +663,73 @@ export class QuestionsService {
       }
     });
     return { created, errors };
+  }
+
+  /**
+   * Bulk-overwrite explanations on already-existing questions.
+   *
+   * Idempotency: each row REPLACES the question's explanation +
+   * examples. Re-running the import with the same payload produces
+   * the same end state. Pass an empty `explanationExamples` array
+   * to clear examples without touching the paragraph; omit the
+   * field to leave examples unchanged is NOT supported — we always
+   * treat the row as authoritative for both fields (the alternative
+   * "merge" semantics is ambiguous and error-prone at bulk scale).
+   *
+   * Validation up-front: every questionId must exist. Mixed batches
+   * (some valid + some not) return errors for the unknown ids and
+   * commit nothing — admins re-run after fixing the file.
+   */
+  async bulkImportExplanations(dto: BulkImportExplanationsDto): Promise<{
+    updated: number;
+    errors: Array<{ index: number; questionId: string; message: string }>;
+  }> {
+    const errors: Array<{
+      index: number;
+      questionId: string;
+      message: string;
+    }> = [];
+
+    // Pre-validate: every questionId must exist. One round trip with
+    // an IN clause beats per-row lookups during a transaction.
+    const ids = dto.explanations.map((e) => e.questionId);
+    const found = await this.questionsRepo.find({
+      where: ids.map((id) => ({ id })),
+      select: { id: true },
+    });
+    const foundSet = new Set(found.map((r) => r.id));
+    dto.explanations.forEach((row, i) => {
+      if (!foundSet.has(row.questionId)) {
+        errors.push({
+          index: i,
+          questionId: row.questionId,
+          message: 'Question not found',
+        });
+      }
+    });
+    if (errors.length > 0) return { updated: 0, errors };
+
+    let updated = 0;
+    await this.dataSource.transaction(async (em) => {
+      const qRepo = em.getRepository(Question);
+      const now = new Date();
+      for (const row of dto.explanations) {
+        const explanationHtml = sanitizeHtml(markdownToHtml(row.explanation));
+        const examples =
+          row.explanationExamples !== undefined
+            ? (row.explanationExamples as WorkedExample[])
+            : null;
+        await qRepo.update(row.questionId, {
+          explanation: row.explanation,
+          explanationHtml,
+          explanationExamples: examples,
+          explanationModel: 'manual',
+          explanationGeneratedAt: now,
+        });
+        updated++;
+      }
+    });
+    return { updated, errors };
   }
 
   async flag(

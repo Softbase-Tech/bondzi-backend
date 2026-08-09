@@ -13,6 +13,14 @@ import { SyllabusTopic } from '../modules/subjects/entities/syllabus-topic.entit
 import { AiService } from '../modules/ai/ai.service';
 import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
 import { NotificationsService } from '../modules/notifications/notifications.service';
+import { buildQuestionGenerationPrompt } from '../modules/ai/instruction-layer/question-generation.prompt';
+import { buildExplanationPrompt } from '../modules/ai/instruction-layer/explanation.prompt';
+import {
+  validateQuestionBatch,
+  type ParsedQuestion,
+} from '../modules/ai/validation/question.validator';
+import { validateExplanation } from '../modules/ai/validation/explanation.validator';
+import { RejectLogService } from '../modules/ai/reject-log.service';
 import {
   AiAction,
   AiJobStatus,
@@ -21,7 +29,6 @@ import {
   ExamType,
   NotificationChannel,
   QuestionStatus,
-  SchoolLevel,
 } from '../common/types/enums';
 import { sanitizeHtml } from '../common/utils/sanitize.util';
 import { resolveModelId } from '../modules/admin-ai-gen/estimates.util';
@@ -53,56 +60,6 @@ interface ExplanationBulkParams {
   regenerate?: boolean;
 }
 
-/**
- * Shape the Claude response for PM Test generation must conform to.
- * Anything that doesn't match is logged and skipped — NEVER inserted.
- */
-interface GeneratedOption {
-  label: string;
-  body: string;
-  isCorrect: boolean;
-}
-
-interface GeneratedQuestion {
-  body: string;
-  difficulty: 'easy' | 'medium' | 'hard';
-  explanation?: string;
-  options: GeneratedOption[];
-}
-
-function isGeneratedOption(v: unknown): v is GeneratedOption {
-  if (!v || typeof v !== 'object') return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o.label === 'string' &&
-    o.label.length > 0 &&
-    o.label.length <= 2 &&
-    typeof o.body === 'string' &&
-    o.body.length > 0 &&
-    typeof o.isCorrect === 'boolean'
-  );
-}
-
-function isGeneratedQuestion(v: unknown): v is GeneratedQuestion {
-  if (!v || typeof v !== 'object') return false;
-  const q = v as Record<string, unknown>;
-  if (typeof q.body !== 'string' || q.body.length < 10) return false;
-  if (
-    q.difficulty !== 'easy' &&
-    q.difficulty !== 'medium' &&
-    q.difficulty !== 'hard'
-  ) {
-    return false;
-  }
-  if (q.explanation !== undefined && typeof q.explanation !== 'string') {
-    return false;
-  }
-  if (!Array.isArray(q.options) || q.options.length !== 4) return false;
-  if (!q.options.every(isGeneratedOption)) return false;
-  const correctCount = q.options.filter((o) => o.isCorrect).length;
-  return correctCount === 1;
-}
-
 function distributeByDifficulty(
   total: number,
   mix: { easy: number; medium: number; hard: number },
@@ -111,30 +68,6 @@ function distributeByDifficulty(
   const medium = Math.floor((mix.medium / 100) * total);
   const hard = Math.max(0, total - easy - medium);
   return { easy, medium, hard };
-}
-
-function schoolLevelFor(examType: ExamType): SchoolLevel {
-  return examType === ExamType.BECE ? SchoolLevel.JHS : SchoolLevel.SHS;
-}
-
-function stripCodeFences(text: string): string {
-  // Claude occasionally wraps JSON in ```json ... ``` despite the instruction.
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/;
-  const m = text.match(fence);
-  return m ? m[1] : text;
-}
-
-function parseGeneratedBatch(raw: string): GeneratedQuestion[] {
-  const cleaned = stripCodeFences(raw.trim());
-  const parsed: unknown = JSON.parse(cleaned);
-  if (!Array.isArray(parsed)) {
-    throw new Error('expected array of generated questions');
-  }
-  const valid: GeneratedQuestion[] = [];
-  for (const item of parsed) {
-    if (isGeneratedQuestion(item)) valid.push(item);
-  }
-  return valid;
 }
 
 /**
@@ -163,8 +96,42 @@ export class AiGenerationProcessor extends WorkerHost {
     private readonly syllabusRepo: Repository<SyllabusTopic>,
     private readonly ai: AiService,
     private readonly notifications: NotificationsService,
+    private readonly rejectLog: RejectLogService,
   ) {
     super();
+  }
+
+  /**
+   * Best-effort reject-log write. Never propagates errors — losing one
+   * log row is preferable to failing the parent generation loop over a
+   * transient DB blip.
+   */
+  private async recordRejectSafely(input: {
+    jobId: string;
+    action: 'question_generation' | 'explanation';
+    modelId: string;
+    reason: string;
+    detail?: string | null;
+    rawOutput?: string | null;
+  }): Promise<void> {
+    const provider: 'bedrock' | 'ollama' = input.modelId.startsWith('ollama:')
+      ? 'ollama'
+      : 'bedrock';
+    try {
+      await this.rejectLog.record({
+        jobId: input.jobId,
+        action: input.action,
+        provider,
+        model: input.modelId,
+        reason: input.reason,
+        detail: input.detail ?? null,
+        rawOutput: input.rawOutput ?? null,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `[reject-log] write failed for job=${input.jobId} reason=${input.reason}: ${(err as Error).message}`,
+      );
+    }
   }
 
   async process(bullJob: Job<GenerationJobData>): Promise<void> {
@@ -173,6 +140,31 @@ export class AiGenerationProcessor extends WorkerHost {
     });
     if (!record) {
       this.logger.warn(`job ${bullJob.data.jobId} no longer exists; skipping.`);
+      return;
+    }
+
+    // CRITICAL #15: enforce the global daily-budget gate at job START.
+    // checkBudget throws AiBudgetExceededException when daily AI spend
+    // is over the cap. The previous shape never called this — the cap
+    // was effectively cosmetic. Per-user limits don't apply to admin
+    // jobs (no `userId`), so only the global $ ceiling is checked here.
+    try {
+      await this.ai.checkBudget();
+    } catch (err) {
+      const message = (err as Error).message;
+      this.logger.error(
+        `[ai-job] daily budget exceeded; refusing job ${record.id}: ${message}`,
+      );
+      await this.jobsRepo.update(record.id, {
+        status: AiJobStatus.FAILED,
+        completedAt: new Date(),
+        errorLog: `Daily AI budget exceeded — ${message}`,
+      });
+      await this.sendJobSummary(
+        record.id,
+        AiJobStatus.FAILED,
+        'Daily AI budget exceeded',
+      );
       return;
     }
 
@@ -204,6 +196,37 @@ export class AiGenerationProcessor extends WorkerHost {
       });
       await this.sendJobSummary(record.id, AiJobStatus.FAILED, message);
     }
+  }
+
+  /**
+   * #16 — per-job runaway-cost circuit breaker. The estimate is based on
+   * fixed 400/200 token guesses, but Sonnet math explanations regularly
+   * run 600–900 output tokens, so actual cost can be 3–5× the estimate.
+   * If the running total exceeds the estimate by `JOB_COST_CAP_MULTIPLIER`
+   * we abort the job mid-flight instead of bleeding budget. The estimate
+   * itself was already capped at AI_MAX_JOB_COST_USD at submit time
+   * (see AdminExplanationsService.assertUnderMaxCost), so the absolute
+   * ceiling here is `cap * multiplier`.
+   */
+  private static readonly JOB_COST_CAP_MULTIPLIER = 1.5;
+  /**
+   * Absolute floor for the ratio check. On tiny jobs (a single question costs
+   * a fraction of a cent) natural per-question token variance trivially blows
+   * past 1.5×, so the ratio is meaningless there — this breaker exists to stop
+   * runaway *batches*, not to police pennies. Only enforce the ratio once the
+   * running cost is a real amount.
+   */
+  private static readonly JOB_COST_CAP_MIN_USD = 0.1;
+  private exceedsJobCostCap(
+    record: AiGenerationJob,
+    runningCost: number,
+  ): boolean {
+    const estimate = parseFloat(record.estimatedCostUsd ?? '0');
+    if (!Number.isFinite(estimate) || estimate <= 0) return false;
+    if (runningCost <= AiGenerationProcessor.JOB_COST_CAP_MIN_USD) return false;
+    return (
+      runningCost > estimate * AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER
+    );
   }
 
   /**
@@ -341,21 +364,37 @@ export class AiGenerationProcessor extends WorkerHost {
         for (let i = 0; i < picks.length; i += params.batchSize) {
           const batch = picks.slice(i, i + params.batchSize);
           const topicTitle = batch[0].topicTitle;
-          const prompt = this.buildPmTestPrompt({
+          // Instruction-layer prompt (system + user). Grounds on a
+          // syllabus-context snippet built from the picked topic — for
+          // subjects with no active syllabus topics we fall through
+          // with the subject name as the topic and an empty context;
+          // the shell's grounding rule still holds but the model has
+          // less signal, so we accept a higher validator-reject rate
+          // on that path.
+          const topicRow = batch[0].topicId
+            ? (topics.find((t) => t.id === batch[0].topicId) ?? null)
+            : null;
+          const syllabusContext =
+            topicRow?.description?.trim() ?? topicRow?.title ?? '';
+          const built = buildQuestionGenerationPrompt({
             examType: params.examType,
             subjectName: subject.name,
             formLevel: selection.formLevel,
             difficulty: diff,
             topicTitle,
             count: batch.length,
+            syllabusContext,
             includeExplanations: params.includeExplanations,
           });
 
+          let call: Awaited<ReturnType<typeof this.ai.callBedrock>> | null =
+            null;
           try {
             // Spec §4.4: exponential backoff, 3 attempts.
-            const call = await this.callClaudeWithBackoff(
+            call = await this.callBedrockWithBackoff(
               () =>
-                this.ai.callClaude(prompt, modelId, {
+                this.ai.callBedrock(built.user, modelId, {
+                  system: built.system,
                   action: AiAction.QUESTION_GEN,
                   jobId: record.id,
                   maxTokens: 200 + batch.length * 500,
@@ -363,33 +402,88 @@ export class AiGenerationProcessor extends WorkerHost {
               `pm-test-batch ${topicTitle}/${diff}`,
             );
             totalCost += call.costUsd;
-            const generated = parseGeneratedBatch(call.content);
-
-            for (let j = 0; j < generated.length; j++) {
-              const spec = generated[j];
-              const target = batch[Math.min(j, batch.length - 1)];
-              await this.insertPmTestQuestion({
-                subjectId: selection.subjectId,
-                syllabusTopicId: target.topicId,
-                examType: params.examType,
-                formLevel: selection.formLevel,
-                difficulty: spec.difficulty as Difficulty,
-                body: spec.body,
-                explanation: params.includeExplanations
-                  ? (spec.explanation ?? null)
-                  : null,
-                options: spec.options,
-                generationBatchId: record.id,
-              });
-              completed += 1;
+            if (this.exceedsJobCostCap(record, totalCost)) {
+              this.logger.error(
+                `[ai-job] aborting pm-test ${record.id}: running cost $${totalCost.toFixed(2)} exceeds ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× estimate ($${record.estimatedCostUsd}).`,
+              );
+              throw new Error(
+                `Job aborted: running cost exceeded ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× the pre-submit estimate.`,
+              );
             }
-            failed += Math.max(0, batch.length - generated.length);
           } catch (err) {
+            // Bedrock transport failure (post-backoff). Nothing to
+            // validate. Whole batch counts as failed and we log to the
+            // reject-log so ops can see WHY the generation broke —
+            // "the model 500'd" vs "the model produced garbage" have
+            // very different remediations.
             failed += batch.length;
             this.logger.warn(
-              `pm-test batch (${topicTitle}, ${diff}, ${batch.length}) failed: ${(err as Error).message}`,
+              `pm-test batch (${topicTitle}, ${diff}, ${batch.length}) transport failed: ${(err as Error).message}`,
             );
+            await this.recordRejectSafely({
+              jobId: record.id,
+              action: 'question_generation',
+              modelId,
+              reason: 'bedrock_transport_error',
+              detail: (err as Error).message,
+            });
+            await this.jobsRepo.update(record.id, {
+              completedItems: completed,
+              failedItems: failed,
+              actualCostUsd: totalCost.toFixed(4),
+            });
+            continue;
           }
+
+          // Rule-based validator replaces the inline guard-parse.
+          // Rejections don't insert anything and land in the log so
+          // ops can spot patterns (e.g. one model consistently misses
+          // "exactly one correct answer").
+          const validation = validateQuestionBatch(call.content);
+          if (!validation.ok) {
+            failed += batch.length;
+            this.logger.warn(
+              `pm-test batch (${topicTitle}, ${diff}) rejected: ${validation.reason} — ${validation.detail}`,
+            );
+            await this.recordRejectSafely({
+              jobId: record.id,
+              action: 'question_generation',
+              modelId,
+              reason: validation.reason,
+              detail: validation.detail,
+              rawOutput: call.content,
+            });
+            await this.jobsRepo.update(record.id, {
+              completedItems: completed,
+              failedItems: failed,
+              actualCostUsd: totalCost.toFixed(4),
+            });
+            continue;
+          }
+
+          const generated: ParsedQuestion[] = validation.value;
+          for (let j = 0; j < generated.length; j++) {
+            const spec = generated[j];
+            const target = batch[Math.min(j, batch.length - 1)];
+            await this.insertPmTestQuestion({
+              subjectId: selection.subjectId,
+              syllabusTopicId: target.topicId,
+              examType: params.examType,
+              formLevel: selection.formLevel,
+              difficulty: spec.difficulty as Difficulty,
+              body: spec.body,
+              explanation: params.includeExplanations
+                ? spec.explanation || null
+                : null,
+              options: spec.options,
+              generationBatchId: record.id,
+            });
+            completed += 1;
+          }
+          // If the validator returned fewer items than requested (the
+          // batch validator is all-or-nothing today, but future rules
+          // may drop individual items), reflect the shortfall.
+          failed += Math.max(0, batch.length - generated.length);
 
           await this.jobsRepo.update(record.id, {
             completedItems: completed,
@@ -435,40 +529,13 @@ export class AiGenerationProcessor extends WorkerHost {
     await this.pmTestORepo.save(opts);
   }
 
-  private buildPmTestPrompt(args: {
-    examType: ExamType;
-    subjectName: string;
-    formLevel: number;
-    difficulty: 'easy' | 'medium' | 'hard';
-    topicTitle: string;
-    count: number;
-    includeExplanations: boolean;
-  }): string {
-    const schoolLevel = schoolLevelFor(args.examType).toUpperCase();
-    const explanationLine = args.includeExplanations
-      ? '- Include a concise explanation (2–3 sentences) of why the answer is correct.'
-      : '';
-    return `You are an expert ${args.examType.toUpperCase()} exam question writer for Ghanaian students.
-You create high-quality ${args.difficulty} multiple-choice questions for ${args.subjectName}
-at Form ${args.formLevel} level (${schoolLevel}).
-
-Generate exactly ${args.count} unique MCQ questions on the topic: ${args.topicTitle}.
-Each question must:
-- Be answerable by a Form ${args.formLevel} ${schoolLevel} student in Ghana
-- Follow WAEC question format and style
-- Have exactly 4 options (A, B, C, D)
-- Have exactly one correct answer
-${explanationLine}
-
-Return ONLY a valid JSON array. No preamble. No markdown fences. No commentary.
-Format: [{"body":"...","difficulty":"${args.difficulty}","options":[{"label":"A","body":"...","isCorrect":false},...],"explanation":"..."}]`;
-  }
-
   /**
    * Spec §4.4: "On API failure: exponential backoff 3 attempts, then marks
    * batch failed." 3 total attempts with delays 500ms, 1000ms, 2000ms.
+   * Wraps any Bedrock call so transient ThrottlingException / 5xx don't
+   * fail the whole job.
    */
-  private async callClaudeWithBackoff<T>(
+  private async callBedrockWithBackoff<T>(
     call: () => Promise<T>,
     label: string,
   ): Promise<T> {
@@ -503,7 +570,7 @@ Format: [{"body":"...","difficulty":"${args.difficulty}","options":[{"label":"A"
     // hydrates 50 questions + options + subjects; AI calls remain per-question.
     const BATCH = 50;
     const ids = params.questionIds;
-    for (let start = 0; start < ids.length; start += BATCH) {
+    outer: for (let start = 0; start < ids.length; start += BATCH) {
       const slice = ids.slice(start, start + BATCH);
       const batch = await this.questionsRepo.find({
         where: slice.map((id) => ({ id })),
@@ -524,81 +591,101 @@ Format: [{"body":"...","difficulty":"${args.difficulty}","options":[{"label":"A"
           continue;
         }
 
-        const prompt = this.buildExplanationPrompt({
-          question: q,
+        const built = buildExplanationPrompt({
+          examType: q.examType,
+          subjectName:
+            q.subject?.name ??
+            (q.examType === ExamType.BECE ? 'BECE subject' : 'WASSCE subject'),
+          formLevel: null,
+          questionBody: q.body,
+          options: q.options.map((o) => ({ label: o.label, body: o.body })),
           correctLabel: correct.label,
-          correctBody: correct.body,
-          options: q.options,
         });
 
+        let call: Awaited<ReturnType<typeof this.ai.callBedrock>> | null = null;
         try {
-          const call = await this.ai.callClaude(prompt, modelId, {
+          call = await this.ai.callBedrock(built.user, modelId, {
+            system: built.system,
             action: AiAction.EXPLANATION,
             jobId: record.id,
             maxTokens: 600,
           });
-          totalCost += call.costUsd;
-          await this.questionsRepo.update(q.id, {
-            explanation: call.content,
-            explanationHtml: sanitizeHtml(call.contentHtml),
-            explanationModel: modelId,
-            explanationGeneratedAt: new Date(),
-          });
-          completed += 1;
         } catch (err) {
           failed += 1;
           this.logger.warn(
-            `explanation ${id} failed: ${(err as Error).message}`,
+            `explanation ${id} transport failed: ${(err as Error).message}`,
           );
+          await this.recordRejectSafely({
+            jobId: record.id,
+            action: 'explanation',
+            modelId,
+            reason: 'bedrock_transport_error',
+            detail: (err as Error).message,
+          });
+          await this.jobsRepo.update(record.id, {
+            completedItems: completed,
+            failedItems: failed,
+            actualCostUsd: totalCost.toFixed(4),
+          });
+          continue;
         }
+        totalCost += call.costUsd;
+
+        // Validator gate — students never see a malformed explanation.
+        const validation = validateExplanation(call.content, q.body);
+        if (!validation.ok) {
+          failed += 1;
+          this.logger.warn(
+            `explanation ${id} rejected: ${validation.reason} — ${validation.detail}`,
+          );
+          await this.recordRejectSafely({
+            jobId: record.id,
+            action: 'explanation',
+            modelId,
+            reason: validation.reason,
+            detail: validation.detail,
+            rawOutput: call.content,
+          });
+          await this.jobsRepo.update(record.id, {
+            completedItems: completed,
+            failedItems: failed,
+            actualCostUsd: totalCost.toFixed(4),
+          });
+          continue;
+        }
+
+        await this.questionsRepo.update(q.id, {
+          explanation: validation.content,
+          explanationHtml: sanitizeHtml(call.contentHtml),
+          explanationModel: modelId,
+          explanationGeneratedAt: new Date(),
+        });
+        completed += 1;
 
         await this.jobsRepo.update(record.id, {
           completedItems: completed,
           failedItems: failed,
           actualCostUsd: totalCost.toFixed(4),
         });
+
+        // Runaway-cost circuit breaker — evaluated AFTER the paid, validated
+        // explanation is persisted, so a billed generation is never discarded
+        // (the old placement threw before the save and lost the call). Stops
+        // the job from processing the remaining items.
+        if (this.exceedsJobCostCap(record, totalCost)) {
+          this.logger.error(
+            `[ai-job] aborting explanation ${record.id}: running cost $${totalCost.toFixed(2)} exceeds ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× estimate ($${record.estimatedCostUsd}).`,
+          );
+          await this.recordRejectSafely({
+            jobId: record.id,
+            action: 'explanation',
+            modelId,
+            reason: 'job_cost_cap_exceeded',
+            detail: `Running cost $${totalCost.toFixed(4)} exceeded ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× the estimate ($${record.estimatedCostUsd}); remaining items skipped.`,
+          });
+          break outer;
+        }
       }
     }
-  }
-
-  private buildExplanationPrompt(args: {
-    question: Question;
-    correctLabel: string;
-    correctBody: string;
-    options: Option[];
-  }): string {
-    const schoolLevel = schoolLevelFor(args.question.examType).toUpperCase();
-    const formLevelNote = args.question.year
-      ? `Form 3 ${schoolLevel}`
-      : `Form 3 ${schoolLevel}`;
-    const subjectName =
-      args.question.subject?.name ??
-      (args.question.examType === ExamType.BECE
-        ? 'BECE subject'
-        : 'WASSCE subject');
-    const optionsBlock = args.options
-      .slice()
-      .sort((a, b) => a.label.localeCompare(b.label))
-      .map((o) => `${o.label}. ${o.body}`)
-      .join('\n');
-
-    return `You are a patient, encouraging tutor helping a Ghanaian
-${schoolLevel} student (${formLevelNote}) prepare for their ${args.question.examType.toUpperCase()} examination.
-
-Question (${subjectName}):
-${args.question.body}
-
-Options:
-${optionsBlock}
-
-Correct answer: ${args.correctLabel}. ${args.correctBody}
-
-Write a clear explanation (maximum 150 words) that:
-1. States why the correct answer is right, simply and directly.
-2. Explains why the wrong options are incorrect.
-3. Uses language appropriate for ${formLevelNote} level.
-
-Write in plain paragraphs. No bullet points. No headers.
-Do not mention 'WAEC' or 'exam'. Address the student directly.`;
   }
 }

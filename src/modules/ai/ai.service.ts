@@ -1,8 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import Anthropic from '@anthropic-ai/sdk';
-import OpenAI from 'openai';
 import { Repository } from 'typeorm';
 import { AiUsageLog } from './entities/ai-usage-log.entity';
 import { PromptTemplate } from './entities/prompt-template.entity';
@@ -12,12 +15,19 @@ import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { costUsd, todayUtcDateKey } from './ai-cost.util';
 import { AiBudgetExceededException } from './ai.exceptions';
 import { sanitizeHtml } from '../../common/utils/sanitize.util';
+import { AI_GENERATION_CLIENT } from './clients/ai-generation.factory';
+import type { AiGenerationClient } from './clients/ai-generation-client.interface';
 
 /**
- * v2: AI primitives — Claude + OpenAI clients, prompt-template loader, cost
- * tracking, daily-budget guard. Consumed by the admin-triggered bulk
+ * v2: AI primitives — Bedrock-hosted Claude client, prompt-template loader,
+ * cost tracking, daily-budget guard. Consumed by the admin-triggered bulk
  * generation workers (admin-ai-gen). The v1 on-demand per-question flow is
- * gone: students no longer trigger AI calls.
+ * gone: students never trigger AI calls in the hot path.
+ *
+ * Provider: AWS Bedrock (regional, IAM-based auth) — replaces the direct
+ * Anthropic + OpenAI SDKs that earlier versions used. The body schema is
+ * the same Messages API the Anthropic SDK exposed; only model IDs change
+ * (`anthropic.claude-...-v1:0`) and auth comes from the Bedrock SDK chain.
  */
 
 export interface AiCallResult {
@@ -33,31 +43,22 @@ export interface AiCallResult {
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  private claude: Anthropic | null = null;
-  private openai: OpenAI | null = null;
 
   constructor(
     private readonly config: ConfigService,
     private readonly redis: RedisService,
+    // Resolved by AiGenerationFactory: BedrockClient by default,
+    // OllamaClient when AI_PROVIDER=self_hosted. Services that must
+    // stay on Bedrock regardless (weakness narratives, post-exam
+    // breakdowns) inject BedrockClient directly instead of going
+    // through the AiService generic path.
+    @Inject(AI_GENERATION_CLIENT)
+    private readonly ai: AiGenerationClient,
     @InjectRepository(AiUsageLog)
     private readonly usageRepo: Repository<AiUsageLog>,
     @InjectRepository(PromptTemplate)
     private readonly promptsRepo: Repository<PromptTemplate>,
   ) {}
-
-  private getClaude(): Anthropic {
-    if (this.claude) return this.claude;
-    const apiKey = this.config.get<string>('ai.anthropicApiKey') as string;
-    this.claude = new Anthropic({ apiKey });
-    return this.claude;
-  }
-
-  private getOpenAI(): OpenAI {
-    if (this.openai) return this.openai;
-    const apiKey = this.config.get<string>('ai.openaiApiKey') as string;
-    this.openai = new OpenAI({ apiKey });
-    return this.openai;
-  }
 
   /**
    * Daily-budget guard. Throws AiBudgetExceededException if either the per-user
@@ -85,6 +86,26 @@ export class AiService {
     }
   }
 
+  /**
+   * Refuse admin-triggered batches over the configured item cap.
+   * Called by the admin AI generation controllers BEFORE the job is
+   * enqueued — cheap 400 response, no LLM cost, no queue entry.
+   *
+   * Applies to both providers. On Bedrock the daily-budget guard
+   * (`checkBudget` / `AI_MAX_JOB_COST_USD`) already keeps runaway
+   * batches in check via $; on Ollama those are $0 and useless, so
+   * a row-count ceiling is the only backstop against a mistyped
+   * `count` writing tens of thousands of rows into prod.
+   */
+  assertBatchWithinCap(itemCount: number): void {
+    const cap = this.config.get<number>('ai.maxItemsPerBatch') ?? 200;
+    if (itemCount > cap) {
+      throw new BadRequestException(
+        `Batch of ${itemCount} items exceeds AI_MAX_ITEMS_PER_BATCH (${cap}). Split the request or raise the cap.`,
+      );
+    }
+  }
+
   async getActivePrompt(name: string): Promise<PromptTemplate> {
     const template = await this.promptsRepo.findOne({
       where: { name, isActive: true },
@@ -97,8 +118,20 @@ export class AiService {
     return template;
   }
 
-  /** Call Claude with `prompt`, track cost + usage, return normalised result. */
-  async callClaude(
+  /**
+   * Send a generation prompt through whichever LLM provider the
+   * factory picked at boot (Bedrock by default, Ollama when
+   * `AI_PROVIDER=self_hosted`). Records usage + tracks daily-budget.
+   *
+   * The method name is historic (v1 was Bedrock-only). The client
+   * underneath is provider-agnostic — see AiGenerationClient. The
+   * `model` param is passed through to Bedrock verbatim and IGNORED
+   * by Ollama (Ollama uses `OLLAMA_MODEL` env). The usage log records
+   * the ACTUAL model that ran via `effectiveModel` (`ollama:<name>`
+   * for the local provider), so the admin AI monitor never has a
+   * "which model billed?" ambiguity.
+   */
+  async callBedrock(
     prompt: string,
     model: string,
     opts: {
@@ -106,30 +139,43 @@ export class AiService {
       action?: AiAction;
       userId?: string;
       jobId?: string;
+      system?: string;
     } = {},
   ): Promise<AiCallResult> {
     const start = Date.now();
-    const res = await this.getClaude().messages.create({
-      model,
-      max_tokens: opts.maxTokens ?? 600,
-      messages: [{ role: 'user', content: prompt }],
+    const res = await this.ai.invoke({
+      modelId: model,
+      system: opts.system,
+      userPrompt: prompt,
+      maxTokens: opts.maxTokens ?? 600,
     });
     const latencyMs = Date.now() - start;
 
-    const content = res.content
-      .map((c) => (c.type === 'text' ? c.text : ''))
-      .join('\n')
-      .trim();
+    const content = res.text;
+    const inputTokens = res.inputTokens;
+    const outputTokens = res.outputTokens;
+    // For local (`ollama:*`) runs cost is definitionally $0 — no
+    // Bedrock invoice for them. costUsd() returns 0 for anything
+    // prefixed `ollama:` (see ai-cost.util); the daily-budget guard
+    // therefore ignores local calls, which is correct: they don't
+    // burn AWS spend. Bedrock calls bill normally.
+    const cost = costUsd(res.effectiveModel, inputTokens, outputTokens);
 
-    const inputTokens = res.usage?.input_tokens ?? 0;
-    const outputTokens = res.usage?.output_tokens ?? 0;
-    const cost = costUsd(model, inputTokens, outputTokens);
-
+    // Derive provider from the effective-model tag. The factory
+    // stamps `ollama:<name>` for local runs; everything else is
+    // Bedrock. Storing this explicitly on the row (rather than
+    // reparsing on every dashboard query) keeps the admin AI monitor
+    // fast and lets a future rename of the tag convention not break
+    // historical joins.
+    const provider = res.effectiveModel.startsWith('ollama:')
+      ? 'ollama'
+      : 'bedrock';
     await this.logUsage({
       userId: opts.userId,
       jobId: opts.jobId,
       action: opts.action ?? AiAction.EXPLANATION,
-      model,
+      provider,
+      model: res.effectiveModel,
       inputTokens,
       outputTokens,
       costUsd: cost,
@@ -140,55 +186,7 @@ export class AiService {
     return {
       content,
       contentHtml: sanitizeHtml(this.markdownToHtml(content)),
-      model,
-      inputTokens,
-      outputTokens,
-      costUsd: cost,
-      latencyMs,
-    };
-  }
-
-  /** Call OpenAI (failover) with identical instrumentation. */
-  async callOpenAI(
-    prompt: string,
-    model: string,
-    opts: {
-      maxTokens?: number;
-      action?: AiAction;
-      userId?: string;
-      jobId?: string;
-    } = {},
-  ): Promise<AiCallResult> {
-    const start = Date.now();
-    const res = await this.getOpenAI().chat.completions.create({
-      model,
-      max_tokens: opts.maxTokens ?? 600,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    const latencyMs = Date.now() - start;
-
-    const content = res.choices[0]?.message?.content?.trim() ?? '';
-    const inputTokens = res.usage?.prompt_tokens ?? 0;
-    const outputTokens = res.usage?.completion_tokens ?? 0;
-    const cost = costUsd(model, inputTokens, outputTokens);
-
-    await this.logUsage({
-      userId: opts.userId,
-      jobId: opts.jobId,
-      action: opts.action ?? AiAction.EXPLANATION,
-      model,
-      inputTokens,
-      outputTokens,
-      costUsd: cost,
-      latencyMs,
-      failoverUsed: true,
-    });
-    await this.addCostToDailyBudget(cost);
-
-    return {
-      content,
-      contentHtml: sanitizeHtml(this.markdownToHtml(content)),
-      model,
+      model: res.effectiveModel,
       inputTokens,
       outputTokens,
       costUsd: cost,
@@ -210,6 +208,12 @@ export class AiService {
     questionId?: string;
     jobId?: string;
     action: AiAction;
+    /**
+     * `bedrock` (default) or `ollama`. Derived by the caller from
+     * the effective model tag returned by the client, so this
+     * column always agrees with `model` on the same row.
+     */
+    provider?: string;
     model: string;
     inputTokens?: number;
     outputTokens?: number;
@@ -224,6 +228,7 @@ export class AiService {
         userId: args.userId ?? null,
         questionId: args.questionId ?? null,
         action: args.action,
+        provider: args.provider ?? 'bedrock',
         model: args.model,
         inputTokens: args.inputTokens ?? null,
         outputTokens: args.outputTokens ?? null,

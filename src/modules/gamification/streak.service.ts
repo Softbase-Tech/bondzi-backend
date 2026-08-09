@@ -61,11 +61,37 @@ export class StreakService {
 
     const newLongest = Math.max(user.longestStreak, nextStreak);
 
-    await this.usersRepo.update(userId, {
-      streakDays: nextStreak,
-      longestStreak: newLongest,
-      lastStudyDate: today,
-    });
+    // CRITICAL: conditional UPDATE bound on `last_study_date != today`
+    // (or null). Two concurrent exam-completes for the same user (e.g.
+    // mobile retry, dual-device race) would both read `last === yesterday`,
+    // both compute nextStreak = N+1, and both write — final value is
+    // correct but the streak_day XP fires twice. Only the request whose
+    // UPDATE actually flipped a row may award XP; the loser sees
+    // affected=0 and exits silently.
+    const result = await this.usersRepo
+      .createQueryBuilder()
+      .update(User)
+      .set({
+        streakDays: nextStreak,
+        longestStreak: newLongest,
+        lastStudyDate: today,
+      })
+      .where('id = :id', { id: userId })
+      .andWhere('(last_study_date is null or last_study_date <> :today)', {
+        today,
+      })
+      .execute();
+
+    if ((result.affected ?? 0) === 0) {
+      // A concurrent request already wrote today's streak; bail and
+      // return the (now stale) snapshot — caller will pick up the
+      // authoritative value on next read.
+      return {
+        streakDays: user.streakDays,
+        longestStreak: user.longestStreak,
+        changed: false,
+      };
+    }
 
     await this.gamification.awardXp(userId, 'streak_day').catch((err) => {
       this.logger.warn(`streak_day XP award failed: ${(err as Error).message}`);

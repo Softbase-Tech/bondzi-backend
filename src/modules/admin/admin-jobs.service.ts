@@ -1,10 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import {
-  QUEUE_AI_GENERATION,
-  QUEUE_NOTIFICATIONS,
-} from '../ai/ai.queues';
+import { QUEUE_AI_GENERATION, QUEUE_NOTIFICATIONS } from '../ai/ai.queues';
 
 export interface QueueSummary {
   name: string;
@@ -79,7 +76,9 @@ export class AdminJobsService {
       failedReason: j.failedReason,
       attemptsMade: j.attemptsMade,
       timestamp: j.timestamp,
-      data: j.data,
+      // BullMQ Job<D> is parameterised; in this generic queue map we don't
+      // narrow D, so widen to unknown rather than leak `any` to the caller.
+      data: j.data as unknown,
     }));
   }
 }

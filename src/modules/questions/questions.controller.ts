@@ -23,13 +23,19 @@ import {
   CurrentUser,
   AuthenticatedUser,
 } from '../../common/decorators/current-user.decorator';
-import { UserRole } from '../../common/types/enums';
+import {
+  AccountType,
+  ExamType,
+  UserRole,
+  questionPoolFor,
+} from '../../common/types/enums';
 import { QuestionsService } from './questions.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { QuestionQueryDto } from './dto/question-query.dto';
 import { AdaptiveQueryDto, PastPaperQueryDto } from './dto/past-paper.dto';
 import {
   BulkImportDto,
+  BulkImportExplanationsDto,
   CreateQuestionDto,
   UpdateQuestionDto,
 } from './dto/create-question.dto';
@@ -55,12 +61,29 @@ export class QuestionsController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     const isAdmin = this.isAdmin(user);
+    if (query.subjectId && !isAdmin) {
+      await this.subscriptions.assertCanStudySubject(
+        user.id,
+        user.examType,
+        query.subjectId,
+      );
+    }
     const hasActiveSubscription =
-      isAdmin || (await this.subscriptions.hasActiveSubscription(user.id));
+      isAdmin ||
+      (await this.subscriptions.hasEntitlement(
+        user.id,
+        user.examType,
+        AccountType.PLUS,
+      ));
     return this.questions.list(query, {
       isAdmin,
       hasActiveSubscription,
-      defaultExamType: user.examType,
+      // NOVDEC shares the WASSCE question pool — remap so a NOVDEC user
+      // sees the same questions as a WASSCE user. user.examType remains
+      // `novdec` for leaderboards / entitlements.
+      defaultExamType: user.examType
+        ? questionPoolFor(user.examType)
+        : undefined,
     });
   }
 
@@ -75,8 +98,14 @@ export class QuestionsController {
     @CurrentUser() user: AuthenticatedUser,
     @Query('limit') limit?: string,
   ) {
-    const hasActiveSubscription =
-      await this.subscriptions.hasActiveSubscription(user.id);
+    // Per-level entitlement — Plus or Pro on the user's CURRENT exam type
+    // unlocks elective questions + AI explanations. The serializer reads
+    // this and includes/excludes the locked fields accordingly.
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      user.id,
+      user.examType,
+      AccountType.PLUS,
+    );
     return this.questions.search(
       q,
       { hasActiveSubscription },
@@ -97,9 +126,21 @@ export class QuestionsController {
     @Query() query: PastPaperQueryDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const hasActiveSubscription =
-      await this.subscriptions.hasActiveSubscription(user.id);
-    const examType = user.examType ?? 'wassce';
+    await this.subscriptions.assertCanStudySubject(
+      user.id,
+      user.examType,
+      query.subjectId,
+    );
+    // Per-level entitlement — Plus or Pro on the user's CURRENT exam type
+    // unlocks elective questions + AI explanations. The serializer reads
+    // this and includes/excludes the locked fields accordingly.
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      user.id,
+      user.examType,
+      AccountType.PLUS,
+    );
+    // NOVDEC → WASSCE pool remap (see questionPoolFor docstring).
+    const examType = questionPoolFor(user.examType ?? ExamType.WASSCE);
     return this.questions.getPastPaper(query, {
       hasActiveSubscription,
       examType,
@@ -114,8 +155,19 @@ export class QuestionsController {
     @Query() query: AdaptiveQueryDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    const hasActiveSubscription =
-      await this.subscriptions.hasActiveSubscription(user.id);
+    await this.subscriptions.assertCanStudySubject(
+      user.id,
+      user.examType,
+      query.subjectId,
+    );
+    // Per-level entitlement — Plus or Pro on the user's CURRENT exam type
+    // unlocks elective questions + AI explanations. The serializer reads
+    // this and includes/excludes the locked fields accordingly.
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      user.id,
+      user.examType,
+      AccountType.PLUS,
+    );
     return this.questions.getAdaptive(user.id, query, {
       hasActiveSubscription,
     });
@@ -128,7 +180,12 @@ export class QuestionsController {
   ) {
     const isAdmin = this.isAdmin(user);
     const hasActiveSubscription =
-      isAdmin || (await this.subscriptions.hasActiveSubscription(user.id));
+      isAdmin ||
+      (await this.subscriptions.hasEntitlement(
+        user.id,
+        user.examType,
+        AccountType.PLUS,
+      ));
     return this.questions.getById(id, { isAdmin, hasActiveSubscription });
   }
 
@@ -157,6 +214,14 @@ export class QuestionsController {
   @ApiExcludeEndpoint()
   bulkImport(@Body() dto: BulkImportDto) {
     return this.questions.bulkImport(dto);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPERADMIN)
+  @Post('bulk-import-explanations')
+  @ApiExcludeEndpoint()
+  bulkImportExplanations(@Body() dto: BulkImportExplanationsDto) {
+    return this.questions.bulkImportExplanations(dto);
   }
 
   @Post(':id/flag')

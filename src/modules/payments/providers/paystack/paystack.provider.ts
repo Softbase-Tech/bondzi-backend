@@ -4,7 +4,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import axios, { AxiosInstance } from 'axios';
 import { BillingInterval } from '../../../../common/types/enums';
 import {
@@ -16,6 +16,8 @@ import {
   NormalizedWebhookEventType,
   PaymentProvider,
   ProviderPlan,
+  RefundResult,
+  RefundTransactionInput,
   VerifiedTransaction,
 } from '../payment-provider.interface';
 
@@ -143,6 +145,62 @@ export class PaystackProvider implements PaymentProvider {
     });
   }
 
+  /**
+   * Issue a Paystack refund for a settled transaction. Paystack's
+   * `/refund` endpoint accepts the transaction reference and an
+   * optional amount/currency/customer_note. The response carries a
+   * status: 'pending' on first call, then transitions through
+   * 'processed' via the refund.processed webhook.
+   *
+   * Idempotency: Paystack returns 200 with the existing refund row
+   * when called twice for the same reference — so callers can safely
+   * retry. We translate any non-2xx into RefundResult{status:'failed'}
+   * rather than throwing, so the alarm path can decide whether to
+   * leave the attempt PAID (visible in the duplicate-Plus admin
+   * filter) or proceed to mark REFUNDED.
+   */
+  async refundTransaction(
+    input: RefundTransactionInput,
+  ): Promise<RefundResult> {
+    type PaystackRefundResponse = {
+      status?: boolean;
+      message?: string;
+      data?: {
+        id?: number | string;
+        status?: string;
+      };
+    };
+    try {
+      const body: Record<string, unknown> = {
+        transaction: input.reference,
+      };
+      if (input.amountMinor !== undefined) body.amount = input.amountMinor;
+      if (input.currency) body.currency = input.currency;
+      if (input.reason) body.customer_note = input.reason.slice(0, 200);
+      const response = await this.http.post<PaystackRefundResponse>(
+        '/refund',
+        body,
+      );
+      const data = response.data?.data;
+      const statusRaw = (data?.status ?? '').toString().toLowerCase();
+      // Paystack ships statuses 'pending' | 'processing' | 'processed'
+      // | 'failed'. We collapse the first two into our 'pending'.
+      let status: RefundResult['status'] = 'pending';
+      if (statusRaw === 'processed') status = 'processed';
+      else if (statusRaw === 'failed') status = 'failed';
+      return {
+        status,
+        providerRefundId: data?.id != null ? String(data.id) : null,
+        raw: response.data,
+      };
+    } catch (err) {
+      this.logger.error(
+        `[paystack] refundTransaction ref=${input.reference} failed: ${(err as Error).message}`,
+      );
+      return { status: 'failed', providerRefundId: null };
+    }
+  }
+
   verifyWebhookSignature(
     rawBody: Buffer | string,
     headers: Record<string, string | string[] | undefined>,
@@ -180,17 +238,55 @@ export class PaystackProvider implements PaymentProvider {
     const subscription = (data.subscription ?? {}) as Record<string, unknown>;
     const plan = (data.plan ?? {}) as Record<string, unknown>;
 
-    const eventId =
+    // CRITICAL: dedup is keyed by (provider, eventId). The previous
+    // fallback `data.reference` could collide because a single
+    // transaction emits MULTIPLE distinct webhooks under the same
+    // reference (charge.success, then subscription.create, then
+    // invoice.payment_failed on retry). They'd be persisted as
+    // "duplicate" of each other and only the first would process.
+    //
+    // The fixed shape:
+    //   1. Prefer the provider's own id (payload.id or data.id) when
+    //      present — Paystack populates this for nearly every event.
+    //   2. When absent, qualify with eventName so two events for the
+    //      same reference don't collide.
+    //   3. As a last-resort tiebreaker, hash the raw body so two
+    //      semantically-distinct events with the same envelope still
+    //      differ in id. Use sha256 truncated to 16 hex chars (64 bits)
+    //      — collision-resistant for the volume we'd ever see and
+    //      cheap to compute.
+    //   4. NO `Date.now()` fallback — that made retries of the same
+    //      event uniquely-id'd and broke dedup outright.
+    const explicitId =
       (payload.id as string | number | undefined) ??
-      (data.id as string | number | undefined) ??
-      (data.reference as string | undefined) ??
-      `${eventName}-${Date.now()}`;
+      (data.id as string | number | undefined);
+    const reference = data.reference as string | undefined;
+    const bodyHash = createHash('sha256')
+      .update(bodyStr)
+      .digest('hex')
+      .slice(0, 16);
+    const eventId =
+      explicitId !== undefined
+        ? String(explicitId)
+        : reference
+          ? `${eventName}:${reference}:${bodyHash}`
+          : `${eventName}:${bodyHash}`;
+
+    // Provider-claimed event timestamp. Used by WebhookHandlerService
+    // to drop replays older than the freshness window. Falls back
+    // through paid_at / created_at / now; Paystack always sets one
+    // of these on real events.
+    const claimedAtRaw =
+      (data.paid_at as string | undefined) ??
+      (data.created_at as string | undefined) ??
+      (data.transaction_date as string | undefined);
+    const claimedAt = claimedAtRaw ? new Date(claimedAtRaw) : undefined;
 
     return {
-      eventId: String(eventId),
+      eventId,
       type: PAYSTACK_EVENT_TO_NORMALIZED[eventName] ?? 'unknown',
       userId: (metadata.userId as string | undefined) ?? undefined,
-      reference: (data.reference as string | undefined) ?? undefined,
+      reference,
       providerPlanCode:
         (data.plan_code as string | undefined) ??
         (plan.plan_code as string | undefined) ??
@@ -204,6 +300,7 @@ export class PaystackProvider implements PaymentProvider {
       nextPaymentDate: data.next_payment_date
         ? new Date(data.next_payment_date as string)
         : undefined,
+      claimedAt,
       raw: payload,
     };
   }

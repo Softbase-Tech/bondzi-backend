@@ -47,6 +47,61 @@ export class CreateOptionDto {
   sortOrder?: number;
 }
 
+/**
+ * One worked-example block attached to a question's explanation.
+ * Mirrors the runtime shape in `../types/worked-example.ts`. Stored as
+ * a JSONB array on `questions.explanation_examples`.
+ */
+export class WorkedExampleDto {
+  @ApiPropertyOptional({
+    description:
+      'Optional human-readable label shown above the example, e.g. "Example 1" or "Alternative method".',
+    maxLength: 80,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  caption?: string;
+
+  @ApiProperty({
+    description: 'The example scenario / question. Markdown source.',
+  })
+  @IsString()
+  @MaxLength(4000)
+  prompt!: string;
+
+  @ApiProperty({
+    description: 'The worked-out answer. Markdown source.',
+  })
+  @IsString()
+  @MaxLength(8000)
+  solution!: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Optional ordered bullets when the solution has discrete steps. Each entry is a markdown line.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(2000, { each: true })
+  steps?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'Optional diagram / figure URL for this example. Same CDN shape as question imageUrl.',
+  })
+  @IsOptional()
+  @IsString()
+  // We don't require strict URL validation because admins sometimes
+  // paste relative paths or data URLs during import; the storage
+  // layer rejects invalid URLs when the mobile renders. Use IsString
+  // + MaxLength to bound payload size.
+  @MaxLength(2048)
+  imageUrl?: string;
+}
+
 export class CreateQuestionDto {
   @ApiProperty({ format: 'uuid' })
   @IsUUID()
@@ -56,6 +111,26 @@ export class CreateQuestionDto {
   @IsOptional()
   @IsUUID()
   topicId?: string;
+
+  /**
+   * Alternative to `topicId` — the topic's TITLE. Convenient for
+   * hand-authored bulk imports where the author knows the topic name
+   * (e.g. "Scientific Units and Measurements") but doesn't want to
+   * look up the UUID for every row. The bulk-import service resolves
+   * this against `topics.title` scoped to the row's `subjectId` and
+   * fails the whole batch fast if any (subject, topic) pair doesn't
+   * match a row. Ignored when `topicId` is also supplied — an
+   * explicit UUID always wins.
+   */
+  @ApiPropertyOptional({
+    description:
+      'Topic title (case-sensitive, scoped to subjectId). Resolved to topicId server-side; ignored if topicId is also set.',
+    maxLength: 200,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  topic?: string;
 
   @ApiPropertyOptional({
     format: 'uuid',
@@ -122,6 +197,35 @@ export class CreateQuestionDto {
   @ValidateNested({ each: true })
   @Type(() => CreateOptionDto)
   options!: CreateOptionDto[];
+
+  /**
+   * Optional inline explanation paragraph (markdown). When set during
+   * bulk import the service writes it to `explanation` and stamps
+   * `explanation_model='manual'` + `explanation_generated_at=now()`
+   * so the admin dashboard can later distinguish manual from
+   * AI-generated rows. Backward compatible: omit and the question
+   * is created with no explanation, exactly as before.
+   */
+  @ApiPropertyOptional({
+    description:
+      'Optional explanation paragraph (markdown). Manual imports stamp explanation_model="manual".',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(8000)
+  explanation?: string;
+
+  /**
+   * Optional worked examples that supplement the explanation. Stored
+   * as a JSONB array on `questions.explanation_examples`. REPLACES
+   * any existing examples on a re-import (idempotent semantics).
+   */
+  @ApiPropertyOptional({ type: [WorkedExampleDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WorkedExampleDto)
+  explanationExamples?: WorkedExampleDto[];
 }
 
 /**
@@ -218,6 +322,31 @@ export class UpdateQuestionDto {
   @ValidateNested({ each: true })
   @Type(() => CreateOptionDto)
   options?: CreateOptionDto[];
+
+  /**
+   * Optional explanation paragraph (markdown). Setting on update
+   * overwrites the existing value AND stamps
+   * `explanation_model='manual'` + `explanation_generated_at=now()`.
+   */
+  @ApiPropertyOptional({
+    description:
+      'Optional explanation paragraph (markdown). Manual edit stamps explanation_model="manual".',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(8000)
+  explanation?: string;
+
+  /**
+   * Optional worked examples — pass an empty array to clear, omit
+   * to leave the existing examples untouched. REPLACES on a value.
+   */
+  @ApiPropertyOptional({ type: [WorkedExampleDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WorkedExampleDto)
+  explanationExamples?: WorkedExampleDto[];
 }
 
 export class BulkImportDto {
@@ -227,4 +356,44 @@ export class BulkImportDto {
   @ValidateNested({ each: true })
   @Type(() => CreateQuestionDto)
   questions!: CreateQuestionDto[];
+}
+
+/**
+ * Per-row shape for the bulk explanations import. Targets an existing
+ * question by id (admin uses the question detail page to find these)
+ * and overwrites its explanation + examples. Idempotent: re-running
+ * with the same payload yields the same row state.
+ */
+export class BulkExplanationImportRowDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  questionId!: string;
+
+  @ApiProperty({
+    description:
+      'The explanation paragraph for this question. Markdown source. REPLACES any existing explanation.',
+  })
+  @IsString()
+  @MaxLength(8000)
+  explanation!: string;
+
+  @ApiPropertyOptional({
+    type: [WorkedExampleDto],
+    description:
+      'Optional worked examples. REPLACES any existing examples on this question — pass an empty array to clear.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WorkedExampleDto)
+  explanationExamples?: WorkedExampleDto[];
+}
+
+export class BulkImportExplanationsDto {
+  @ApiProperty({ type: [BulkExplanationImportRowDto] })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => BulkExplanationImportRowDto)
+  explanations!: BulkExplanationImportRowDto[];
 }

@@ -1,0 +1,117 @@
+name: Deploy to Lightsail
+
+on:
+  push:
+    branches: [deploy]
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Lowercase repository name
+        id: repo
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.name }}:latest
+            ghcr.io/${{ steps.repo.outputs.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to Lightsail
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ubuntu
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            set -e
+            cd /opt/bondzi
+
+            # Login to GHCR so the docker pull below succeeds.
+            echo "${{ secrets.GHCR_TOKEN }}" \
+              | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Pull the fresh api + worker images.
+            docker compose pull api worker
+
+            # Apply any new migrations in a one-shot container before
+            # we hot-swap the api. If migration:run exits non-zero the
+            # whole deploy aborts here — no half-migrated state.
+            docker compose run --rm api npm run migration:run
+
+            # Rolling api swap. --no-deps so postgres/redis aren't touched.
+            docker compose up -d --no-deps api
+
+            # Wait up to 60s for the new api to become healthy.
+            # NestJS with ~100 routes + Firebase + DB pool + Redis needs
+            # more than 5s on a 2GB box. 30 retries × 2s = 60s ceiling.
+            # 127.0.0.1 (not localhost) avoids an IPv6 fallback round-trip.
+            echo "Waiting for API health check..."
+            for i in {1..30}; do
+              if curl -fsS http://127.0.0.1:3000/health 2>/dev/null | grep -q '"status":"ok"'; then
+                echo "API healthy after $((i*2))s"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "Health check failed after 60s — recent logs:"
+                docker logs bondzi-api --tail=80
+                exit 1
+              fi
+              sleep 2
+            done
+
+            # Worker swap after api proves healthy — preserves the
+            # invariant that a healthy api is always running.
+            docker compose up -d --no-deps worker
+
+            # Reclaim disk; keep yesterday's images for quick rollback.
+            docker image prune -f --filter "until=24h"
+
+      - name: Notify on success
+        if: success() && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-Type: application/json' \
+            -d "{\"text\":\":white_check_mark: Bondzi deploy succeeded: ${{ github.sha }}\"}" \
+            $SLACK_WEBHOOK_URL || true
+
+      - name: Notify on failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-Type: application/json' \
+            -d "{\"text\":\":x: Bondzi deploy FAILED: ${{ github.sha }}\"}" \
+            $SLACK_WEBHOOK_URL || true

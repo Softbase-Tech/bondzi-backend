@@ -1,8 +1,11 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AdConfig } from './entities/ad-config.entity';
@@ -10,6 +13,7 @@ import { RedisService } from '../../common/redis/redis.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { GamificationService } from '../gamification/gamification.service';
 import { UpdateAdConfigDto } from './dto/update-ad-config.dto';
+import { AccountType, ExamType } from '../../common/types/enums';
 
 /**
  * v2 Phase-2 ads. Free-tier students only: SubscriptionsService is consulted
@@ -21,12 +25,15 @@ import { UpdateAdConfigDto } from './dto/update-ad-config.dto';
  */
 @Injectable()
 export class AdsService {
+  private readonly logger = new Logger(AdsService.name);
+
   constructor(
     @InjectRepository(AdConfig)
     private readonly configRepo: Repository<AdConfig>,
     private readonly redis: RedisService,
     private readonly subscriptions: SubscriptionsService,
     private readonly gamification: GamificationService,
+    private readonly config: ConfigService,
   ) {}
 
   /** Admin config. Single-row table — first row is the live config. */
@@ -55,7 +62,10 @@ export class AdsService {
    * returns `adsEnabled=false` for subscribed users so the client never even
    * initialises the AdMob SDK for them.
    */
-  async getClientConfig(userId: string): Promise<{
+  async getClientConfig(
+    userId: string,
+    examType: ExamType | null | undefined,
+  ): Promise<{
     adsEnabled: boolean;
     adNetwork: string;
     admobAppId: string | null;
@@ -67,7 +77,15 @@ export class AdsService {
     rewardedRemainingToday: number;
   }> {
     const config = await this.getAdminConfig();
-    const subscribed = await this.subscriptions.hasActiveSubscription(userId);
+    // Ads-off is a Plus/Pro perk for the user's CURRENT level. A student
+    // holding Plus on SHS still sees ads if they switch their profile to
+    // NOVDEC (Free on NOVDEC) — otherwise Free NOVDEC content would be
+    // ads-free for anyone who once paid for any other level.
+    const subscribed = await this.subscriptions.hasEntitlement(
+      userId,
+      examType,
+      AccountType.PLUS,
+    );
     if (subscribed) {
       return {
         adsEnabled: false,
@@ -97,14 +115,44 @@ export class AdsService {
 
   /**
    * Student watched a rewarded ad. Gate with subscription + frequency cap,
-   * then award the configured XP via GamificationService. Client must hit
-   * this AFTER the AdMob SSV callback, not on ad impression.
+   * then award the configured XP via GamificationService.
+   *
+   * CRITICAL: this endpoint accepts the CLIENT's word that an ad was
+   * watched. Without AdMob Server-Side Verification (SSV) — an HTTPS
+   * callback from AdMob's servers carrying a signed payload that the
+   * backend verifies against AdMob's published public keys — a curl
+   * loop can mint XP up to the daily `frequencyCap` and redeem it for
+   * Pro days. The endpoint is therefore gated behind the
+   * `ADS_REWARDED_XP_ENABLED` env flag (defaults to false). Flip it on
+   * ONLY after the AdMob SSV callback path is implemented.
    */
-  async awardRewarded(userId: string): Promise<{
+  async awardRewarded(
+    userId: string,
+    examType: ExamType | null | undefined,
+  ): Promise<{
     xpAwarded: number;
     rewardedRemainingToday: number;
   }> {
-    const subscribed = await this.subscriptions.hasActiveSubscription(userId);
+    const enabled = this.config.get<boolean>('app.adsRewardedXpEnabled');
+    if (!enabled) {
+      this.logger.warn(
+        `[ads] rewarded XP request from user=${userId} rejected — ADS_REWARDED_XP_ENABLED=false`,
+      );
+      throw new ServiceUnavailableException({
+        code: 'REWARDED_XP_DISABLED',
+        message:
+          'Rewarded XP is temporarily unavailable while ad verification is being upgraded.',
+      });
+    }
+    // Rewarded ads are a Free-only acquisition mechanism for THIS level —
+    // a Plus/Pro holder on the user's current level can't loop through
+    // rewarded videos to mint extra XP (their ad-free experience is the
+    // payoff for their purchase).
+    const subscribed = await this.subscriptions.hasEntitlement(
+      userId,
+      examType,
+      AccountType.PLUS,
+    );
     if (subscribed) {
       throw new ForbiddenException('Ads are disabled for subscribed users.');
     }

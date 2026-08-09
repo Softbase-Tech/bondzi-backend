@@ -49,4 +49,58 @@ export class DeviceSession {
     default: () => 'now()',
   })
   lastSeenAt: Date;
+
+  /**
+   * Refresh-token rotation forensics (#98). Each successful rotate()
+   * bumps rotation_count and stamps last_rotated_at + last_rotation_ip.
+   * Defaults are 0/null on a fresh issuePair so a brand-new session
+   * doesn't claim a rotation.
+   *
+   * Why: a healthy session refreshes on a predictable cadence (every
+   * ~15min while the app is open) from a stable IP. An attacker who
+   * steals a refresh token will rotate from a different IP — and the
+   * RIGHTFUL owner's next rotation will also rotate, racing back and
+   * forth. Persisting the rotation history makes "is this device-swap
+   * or token theft?" answerable from audit forensics instead of "we
+   * have no idea."
+   */
+  @Column({ name: 'rotation_count', type: 'int', default: 0 })
+  rotationCount: number;
+
+  @Column({ name: 'last_rotated_at', type: 'timestamptz', nullable: true })
+  lastRotatedAt: Date | null;
+
+  @Column({ name: 'last_rotation_ip', type: 'text', nullable: true })
+  lastRotationIp: string | null;
+
+  /**
+   * Refresh-token rotation grace.
+   *
+   * On every rotate(), the OUTGOING (about-to-be-replaced)
+   * refresh-token JTI is stashed here and `previous_jti_expires_at` is
+   * set REFRESH_TOKEN_GRACE_MS in the future. If the CURRENT jti check
+   * fails on the next refresh, we fall back to the previous jti — as
+   * long as we're still inside the grace window — and issue a fresh
+   * pair as if the current one had been used.
+   *
+   * Why: the mobile client can lose the newly-minted pair without ever
+   * persisting it (app force-killed mid-response, TCP reset after the
+   * server rotated but before the body reached the phone, cellular
+   * flap that drops the response, etc.). Without grace, that client is
+   * one race away from DEVICE_KICKED with no recourse but "sign in
+   * again" — and the user experiences it as "the app kicks me out for
+   * no reason." A short grace fixes the honest cases without meaningful
+   * cost to the single-device guarantee: an attacker still gets only
+   * REFRESH_TOKEN_GRACE_MS to use a stolen refresh-token before the
+   * rightful owner's next rotate expires the grace window.
+   */
+  @Column({ name: 'previous_refresh_jti', type: 'text', nullable: true })
+  previousRefreshJti: string | null;
+
+  @Column({
+    name: 'previous_jti_expires_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  previousJtiExpiresAt: Date | null;
 }

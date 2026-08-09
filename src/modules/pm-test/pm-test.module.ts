@@ -13,6 +13,7 @@ import { AdminPmTestController } from './admin-pm-test.controller';
 import { PmTestService } from './pm-test.service';
 import { AdminPmTestService } from './admin-pm-test.service';
 import { QUEUE_AI_GENERATION } from '../ai/ai.queues';
+import { AiModule } from '../ai/ai.module';
 
 @Module({
   imports: [
@@ -26,9 +27,14 @@ import { QUEUE_AI_GENERATION } from '../ai/ai.queues';
       AiGenerationJob,
     ]),
     BullModule.registerQueue({ name: QUEUE_AI_GENERATION }),
+    // AdminPmTestService uses AiService.assertBatchWithinCap to
+    // enforce AI_MAX_ITEMS_PER_BATCH before enqueueing.
+    AiModule,
   ],
   controllers: [PmTestController, AdminPmTestController],
   providers: [PmTestService, AdminPmTestService],
-  exports: [PmTestService, TypeOrmModule],
+  // AdminPmTestService is exported so the unified ai-generation façade
+  // controller (lives in admin-ai-gen.module) can delegate to it.
+  exports: [PmTestService, AdminPmTestService, TypeOrmModule],
 })
 export class PmTestModule {}

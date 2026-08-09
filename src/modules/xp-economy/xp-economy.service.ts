@@ -12,7 +12,12 @@ import { XpTransaction } from './entities/xp-transaction.entity';
 import { XpRedemption } from './entities/xp-redemption.entity';
 import { User } from '../users/entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
-import { SubscriptionStatus } from '../../common/types/enums';
+import { SubscriptionPlanEntity } from '../subscriptions/plans/entities/subscription-plan.entity';
+import {
+  AccountType,
+  PaymentKind,
+  SubscriptionStatus,
+} from '../../common/types/enums';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { GamificationService } from '../gamification/gamification.service';
@@ -113,6 +118,7 @@ export class XpEconomyService {
       const usersRepo = em.getRepository(User);
       const redemptionsRepo = em.getRepository(XpRedemption);
       const subsRepo = em.getRepository(Subscription);
+      const plansRepo = em.getRepository(SubscriptionPlanEntity);
       const txRepo = em.getRepository(XpTransaction);
 
       const updateRes = await usersRepo
@@ -128,6 +134,28 @@ export class XpEconomyService {
         throw new BadRequestException('Insufficient spendable XP');
       }
 
+      // Resolve the user's current level + the corresponding default Pro
+      // plan, used below to anchor any fresh XP_CREDITED row to the
+      // (account=pro, level=user.examType) slot. Without this anchor the
+      // per-level entitlement query (which joins through plan_id) would
+      // never see XP-credited rows — they'd appear Free on every level.
+      const redeemer = await usersRepo.findOne({
+        where: { id: userId },
+        select: ['id', 'examType', 'countryCode'],
+      });
+      const userLevel = redeemer?.examType ?? null;
+      const planForCredit = userLevel
+        ? await plansRepo.findOne({
+            where: {
+              account: AccountType.PRO,
+              level: userLevel,
+              isActive: true,
+              isDefault: true,
+              paymentKind: PaymentKind.RECURRING,
+            },
+          })
+        : null;
+
       const redemption = redemptionsRepo.create({
         userId,
         tierKey,
@@ -139,22 +167,69 @@ export class XpEconomyService {
       const creditMs = tier.creditDays * 24 * 60 * 60 * 1000;
       const now = new Date();
 
-      // XP-credited subscription: plan_id / billing_interval / provider all
-      // stay NULL — status=XP_CREDITED is the sole signal this was granted
-      // via redemption rather than a paid plan. We always INSERT a new row;
-      // each redemption keeps its own audit-worthy record pointing at its
-      // xp_redemption_id.
-      const fresh = subsRepo.create({
-        userId,
-        planId: null,
-        billingInterval: null,
-        provider: null,
-        status: SubscriptionStatus.XP_CREDITED,
-        startsAt: now,
-        expiresAt: new Date(now.getTime() + creditMs),
-        xpRedemptionId: redemption.id,
-      });
-      const subscription = await subsRepo.save(fresh);
+      // CRITICAL: do NOT create a stacked row when an active subscription
+      // already exists. The previous shape silently inserted an
+      // XP_CREDITED row on top of a paid ACTIVE one, which let a user
+      // pay via Paystack, redeem XP, then chargeback and still hold
+      // premium via the XP_CREDITED row. We now EXTEND whichever active
+      // sub the user already has by `creditDays`, so a chargeback that
+      // flips the paid row to REFUNDED also removes the extension.
+      //
+      // Selection: take the latest active row (paid ACTIVE, TRIAL, or
+      // existing XP_CREDITED). Fall back to creating a fresh
+      // XP_CREDITED row only when no active sub exists at all.
+      const existingActive = await subsRepo
+        .createQueryBuilder('s')
+        .where('s.user_id = :uid', { uid: userId })
+        .andWhere('s.status IN (:...statuses)', {
+          statuses: [
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.TRIAL,
+            SubscriptionStatus.XP_CREDITED,
+          ],
+        })
+        .andWhere('(s.expires_at IS NULL OR s.expires_at > NOW())')
+        .orderBy('s.expires_at', 'DESC')
+        .getOne();
+
+      let subscription: Subscription;
+      if (existingActive) {
+        // Anchor the extension on the LATER of (now, current expires_at)
+        // so a sub already expiring next year gets +N days from that
+        // future date, not from today. Status stays as-is — a paid
+        // ACTIVE row stays ACTIVE; an XP_CREDITED row picks up the new
+        // redemption pointer for audit lineage.
+        const base = existingActive.expiresAt
+          ? Math.max(existingActive.expiresAt.getTime(), now.getTime())
+          : now.getTime();
+        existingActive.expiresAt = new Date(base + creditMs);
+        if (existingActive.status === SubscriptionStatus.XP_CREDITED) {
+          existingActive.xpRedemptionId = redemption.id;
+        }
+        subscription = await subsRepo.save(existingActive);
+      } else {
+        // Anchor the fresh XP_CREDITED row to the Pro plan for the user's
+        // CURRENT level. The per-level entitlement resolver joins through
+        // `plan_id` to filter by level — without this anchor the row
+        // would be invisible to `entitlementFor`, leaving the user Free
+        // on every level despite holding XP credit. `planId` may be null
+        // when no Pro plan exists for the user's level (admin hasn't
+        // seeded it yet); in that case the credit row still lives in the
+        // table for audit but won't grant per-level Pro until a plan
+        // exists. The `xpRedemptionId` pointer keeps the lineage clear.
+        const fresh = subsRepo.create({
+          userId,
+          planId: planForCredit?.id ?? null,
+          billingInterval: null,
+          provider: null,
+          status: SubscriptionStatus.XP_CREDITED,
+          startsAt: now,
+          expiresAt: new Date(now.getTime() + creditMs),
+          xpRedemptionId: redemption.id,
+          countryCode: planForCredit?.countryCode ?? 'GH',
+        });
+        subscription = await subsRepo.save(fresh);
+      }
 
       await txRepo.insert({
         userId,

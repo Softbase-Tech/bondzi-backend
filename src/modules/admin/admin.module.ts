@@ -14,16 +14,15 @@ import { XpTransaction } from '../xp-economy/entities/xp-transaction.entity';
 import { XpRedemption } from '../xp-economy/entities/xp-redemption.entity';
 import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import { Winner } from '../leaderboard/entities/winner.entity';
+import { Notification } from '../notifications/entities/notification.entity';
 import { AdminService } from './admin.service';
 import { AdminJobsService } from './admin-jobs.service';
 import { AdminNotificationsService } from './admin-notifications.service';
+import { NotificationRetentionJob } from './notification-retention.job';
 import { AdminController } from './admin.controller';
 import { PaymentsModule } from '../payments/payments.module';
 import { NotificationsModule } from '../notifications/notifications.module';
-import {
-  QUEUE_AI_GENERATION,
-  QUEUE_NOTIFICATIONS,
-} from '../ai/ai.queues';
+import { QUEUE_AI_GENERATION, QUEUE_NOTIFICATIONS } from '../ai/ai.queues';
 
 @Module({
   imports: [
@@ -41,6 +40,7 @@ import {
       XpRedemption,
       ReferralEvent,
       Winner,
+      Notification,
     ]),
     BullModule.registerQueue(
       { name: QUEUE_AI_GENERATION },
@@ -50,7 +50,12 @@ import {
     NotificationsModule,
   ],
   controllers: [AdminController],
-  providers: [AdminService, AdminJobsService, AdminNotificationsService],
+  providers: [
+    AdminService,
+    AdminJobsService,
+    AdminNotificationsService,
+    NotificationRetentionJob,
+  ],
   exports: [AdminService],
 })
 export class AdminModule {}

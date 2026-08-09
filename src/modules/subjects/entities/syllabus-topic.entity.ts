@@ -11,7 +11,7 @@ import { ExamType } from '../../../common/types/enums';
 import { Subject } from './subject.entity';
 
 /**
- * v2 curriculum-aligned topics used by PassMaster Test AI generation. Distinct
+ * v2 curriculum-aligned topics used by Bondzi Test AI generation. Distinct
  * from the past-paper `topics` table which links to real exam questions.
  */
 @Entity({ name: 'syllabus_topics' })

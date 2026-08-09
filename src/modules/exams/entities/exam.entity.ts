@@ -7,6 +7,7 @@ import {
   ManyToOne,
   OneToMany,
   PrimaryGeneratedColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import {
   ExamMode,
@@ -87,8 +88,30 @@ export class Exam {
   @Column({ name: 'completed_at', type: 'timestamptz', nullable: true })
   completedAt: Date | null;
 
+  /**
+   * Post-exam AI breakdown — dormant until a tier row in
+   * `tier_services` flips `post_exam_ai_breakdown` to enabled=true.
+   * Migration 2010 added the columns; the endpoint lives in
+   * ExamsController.getBreakdown().
+   */
+  @Column({ name: 'ai_breakdown', type: 'text', nullable: true })
+  aiBreakdown: string | null;
+
+  @Column({
+    name: 'ai_breakdown_generated_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  aiBreakdownGeneratedAt: Date | null;
+
+  @Column({ name: 'ai_breakdown_model', type: 'text', nullable: true })
+  aiBreakdownModel: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt: Date;
 
   @OneToMany(() => ExamAnswer, (a) => a.exam)
   answers: ExamAnswer[];

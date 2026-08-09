@@ -1,10 +1,11 @@
 /**
- * AI model cost table (USD per 1M tokens). Update when Anthropic/OpenAI change
- * pricing — this file is the single source of truth referenced by cost guards
- * and the admin dashboard.
+ * AI model cost table (USD per 1M tokens). Single source of truth referenced
+ * by the daily-budget guard, per-job hard caps, and the admin cost dashboard.
  *
- * Costs are conservative — we prefer to over-estimate and under-bill ourselves
- * than under-estimate and blow the daily budget.
+ * AWS Bedrock pricing (Anthropic models) verified against the AWS Bedrock
+ * pricing page 2026-07-26: Haiku 4.5 $1.00/$5.00, Sonnet 4.5 $3.00/$15.00 per
+ * 1M input/output tokens. Confirm before launch — these change, and EU regions
+ * can carry a small uplift over the listed cross-region price.
  */
 export interface ModelPricing {
   inputPerM: number;
@@ -12,23 +13,53 @@ export interface ModelPricing {
 }
 
 const PRICING: Record<string, ModelPricing> = {
-  // Anthropic Claude — 2025 pricing as of v1.0 of the spec.
-  'claude-sonnet-4-6': { inputPerM: 3.0, outputPerM: 15.0 },
-  'claude-haiku-4-5': { inputPerM: 0.25, outputPerM: 1.25 },
-  'claude-haiku-4-5-20251001': { inputPerM: 0.25, outputPerM: 1.25 },
-  'claude-opus-4-6': { inputPerM: 15.0, outputPerM: 75.0 },
-  // OpenAI failover.
-  'gpt-4o': { inputPerM: 2.5, outputPerM: 10.0 },
-  'gpt-4o-mini': { inputPerM: 0.15, outputPerM: 0.6 },
-  'gpt-4.1': { inputPerM: 2.0, outputPerM: 8.0 },
+  // Bedrock model IDs (anthropic.<name>-v1:0 form). What AwsSdk InvokeModel
+  // expects and what AiService receives back from BedrockClient.
+  'anthropic.claude-haiku-4-5-20251001-v1:0': {
+    inputPerM: 1.0,
+    outputPerM: 5.0,
+  },
+  'anthropic.claude-sonnet-4-5-20250929-v1:0': {
+    inputPerM: 3.0,
+    outputPerM: 15.0,
+  },
 };
+
+/**
+ * Highest-known input + output per-million across the table. Used as
+ * the default when an unknown model ID comes through — over-estimate
+ * cost so the daily budget guard never under-counts what we owe AWS.
+ * Recomputed at module load (when PRICING is frozen) so new entries
+ * automatically participate.
+ */
+const FALLBACK_PRICING: ModelPricing = Object.values(PRICING).reduce(
+  (max, p) => ({
+    inputPerM: Math.max(max.inputPerM, p.inputPerM),
+    outputPerM: Math.max(max.outputPerM, p.outputPerM),
+  }),
+  { inputPerM: 0, outputPerM: 0 },
+);
 
 export function costUsd(
   model: string,
   inputTokens: number,
   outputTokens: number,
 ): number {
-  const price = PRICING[model] ?? { inputPerM: 2, outputPerM: 8 };
+  // Local / self-hosted generations (Ollama) bill $0 — the pricing
+  // table is Bedrock-only. Without this short-circuit, `ollama:<name>`
+  // would fall through to FALLBACK_PRICING and inflate the daily
+  // budget counter against imaginary AWS spend.
+  if (model.startsWith('ollama:')) return 0;
+  // Cross-region inference profiles prefix the Bedrock model ID with a
+  // geo (`eu.anthropic.claude-...`, `us.anthropic.claude-...`). Strip it
+  // so pricing resolves identically whether we're handed a raw model ID
+  // or an inference-profile ID.
+  const normalized = model.replace(/^(us|eu|apac|us-gov)\./, '');
+  // Unknown model -> bill against the most expensive known model. A
+  // hardcoded "Sonnet rate" silently bills any future Opus / Claude 5
+  // job at Sonnet rates and underflows the daily budget. Computing
+  // max dynamically removes that footgun.
+  const price = PRICING[normalized] ?? PRICING[model] ?? FALLBACK_PRICING;
   return (
     (inputTokens * price.inputPerM + outputTokens * price.outputPerM) /
     1_000_000

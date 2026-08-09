@@ -6,7 +6,10 @@ import { Winner } from './entities/winner.entity';
 import { User } from '../users/entities/user.entity';
 import { ExamAnswer } from '../exams/entities/exam-answer.entity';
 import { Notification } from '../notifications/entities/notification.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import { GamificationService } from '../gamification/gamification.service';
+import { MailService } from '../mail/mail.service';
+import { MailEvent } from '../mail/mail.types';
 import {
   ExamType,
   LeaderboardPeriodType,
@@ -69,6 +72,8 @@ export class WinnerSelectionService {
     private readonly notificationsRepo: Repository<Notification>,
     private readonly gamification: GamificationService,
     private readonly dataSource: DataSource,
+    private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
   ) {}
 
   eventKeyFor(periodType: LeaderboardPeriodType, rank: number): string {
@@ -90,7 +95,15 @@ export class WinnerSelectionService {
     examType: ExamType;
     periodType: LeaderboardPeriodType;
     periodStart: string;
+    /**
+     * Admin-supplied user ids to drop from the pool BEFORE eligibility
+     * checks run. Lets a reviewer manually exclude obvious bad actors
+     * (sock-puppets, content abusers) without re-tuning the anti-cheat
+     * gate. Excluded users are NOT counted in `skippedForAntiCheat`.
+     */
+    excludeUserIds?: string[];
   }): Promise<WinnerSelectionResult> {
+    const excluded = new Set(params.excludeUserIds ?? []);
     // Idempotency: refuse to re-run for a period that already has winners.
     const existing = await this.winnersRepo.count({
       where: {
@@ -127,6 +140,10 @@ export class WinnerSelectionService {
     while (rank < PAYOUT_RANK_LIMIT && pi < pool.length) {
       const entry = pool[pi];
       pi += 1;
+      // Admin manual exclusions skip the slot AND don't count toward
+      // the anti-cheat skip counter — they're a deliberate human call,
+      // not a system signal.
+      if (excluded.has(entry.user.id)) continue;
       const eligible = await this.isEligible(entry.user);
       if (!eligible) {
         skipped += 1;
@@ -161,19 +178,57 @@ export class WinnerSelectionService {
           xpIssuedAt: new Date(),
         });
 
-        await this.notificationsRepo.insert({
-          userId: entry.userId,
-          channel: NotificationChannel.IN_APP,
-          title: 'Leaderboard winner!',
-          body: `Congratulations! You ranked #${rank} this ${params.periodType === LeaderboardPeriodType.MONTHLY ? 'month' : 'week'} and earned ${xp.xpAmount} XP.`,
-          data: {
-            type: 'winner',
-            rank,
-            periodType: params.periodType,
-            periodStart: params.periodStart,
-            xpEarned: xp.xpAmount,
-          },
-        });
+        const periodLabel =
+          params.periodType === LeaderboardPeriodType.MONTHLY
+            ? 'month'
+            : 'week';
+
+        // PUSH (was IN_APP). Goes through NotificationsService.send
+        // which writes the row AND queues the Firebase dispatch —
+        // the in-app inbox AND the device notification both fire.
+        await this.notifications
+          .send({
+            userId: entry.userId,
+            channel: NotificationChannel.PUSH,
+            title: 'Leaderboard winner!',
+            body: `You ranked #${rank} this ${periodLabel} and earned ${xp.xpAmount} XP.`,
+            data: {
+              type: 'winner',
+              rank: String(rank),
+              periodType: params.periodType,
+              periodStart: params.periodStart,
+              xpEarned: String(xp.xpAmount),
+            },
+          })
+          .catch((err) =>
+            this.logger.warn(
+              `[winner] push dispatch failed user=${entry.userId} rank=${rank}: ${(err as Error).message}`,
+            ),
+          );
+
+        // Email — best-effort, swallowed on failure so the winner
+        // record still persists (push + in-app inbox already
+        // surface the win).
+        if (entry.user.email) {
+          await this.mail
+            .send(
+              MailEvent.WINNER_ANNOUNCEMENT,
+              entry.user.email,
+              {
+                recipientName: entry.user.fullName.split(' ')[0],
+                period: periodLabel,
+                rank,
+                xpAwarded: xp.xpAmount,
+                level: params.examType.toUpperCase(),
+              },
+              { userId: entry.userId },
+            )
+            .catch((err) =>
+              this.logger.warn(
+                `[winner] email dispatch failed user=${entry.userId} rank=${rank}: ${(err as Error).message}`,
+              ),
+            );
+        }
 
         winners.push({
           userId: entry.userId,
@@ -204,9 +259,9 @@ export class WinnerSelectionService {
     };
   }
 
-  listPast(params: {
-    examType: ExamType;
-    periodType: LeaderboardPeriodType;
+  async listPast(params: {
+    examType?: ExamType;
+    periodType?: LeaderboardPeriodType;
     periodStart?: string;
   }) {
     // Use property names (`w.periodStart`, `w.examType`) rather than raw
@@ -214,45 +269,235 @@ export class WinnerSelectionService {
     // subquery that resolves `orderBy` columns through entity metadata; with
     // snake_case strings the lookup returns `undefined` and TypeORM throws
     // `Cannot read properties of undefined (reading 'databaseName')`.
+    //
+    // All three filters are optional now so the admin "all winners" view
+    // (no filter selected) returns the most recent across both exam types
+    // and both period types. The previous required-filter shape meant the
+    // admin had to scan twice (BECE then WASSCE) to see the whole picture.
     const qb = this.winnersRepo
       .createQueryBuilder('w')
       .innerJoinAndSelect('w.user', 'u')
-      .where('w.examType = :et', { et: params.examType })
-      .andWhere('w.periodType = :pt', { pt: params.periodType })
       .orderBy('w.periodStart', 'DESC')
       .addOrderBy('w.rank', 'ASC');
+    if (params.examType) {
+      qb.andWhere('w.examType = :et', { et: params.examType });
+    }
+    if (params.periodType) {
+      qb.andWhere('w.periodType = :pt', { pt: params.periodType });
+    }
     if (params.periodStart) {
       qb.andWhere('w.periodStart = :ps', { ps: params.periodStart });
     }
-    return qb.take(200).getMany();
+    const rows = await qb.take(200).getMany();
+    // Flatten the joined user so the admin table can render `w.userName`
+    // and `w.username` directly without spelunking through `w.user`. Mobile
+    // already uses `w.user.username`/`w.user.fullName` so this is purely
+    // additive — both shapes coexist on the wire.
+    //
+    // `selectedAt` is sourced from `createdAt` because confirmation
+    // creates the winner row — they're the same event. `selectedBy`
+    // is null today: we don't yet record which admin clicked Confirm
+    // (no audit column on the table), so the admin table renders the
+    // timestamp without an attribution.
+    return rows.map((w) => ({
+      ...w,
+      userName: w.user?.fullName ?? '',
+      username: w.user?.username ?? null,
+      selectedAt: w.createdAt ? w.createdAt.toISOString() : null,
+      selectedBy: null,
+    }));
+  }
+
+  /**
+   * Returns the candidate pool the admin can vet before confirming a
+   * selection. Same shape `selectWinners` would consider (top
+   * PAYOUT_RANK_LIMIT * 3 by weekly_xp), each row annotated with the
+   * eligibility signals so the UI can render `Verified ✓ / anti-cheat`
+   * indicators per row.
+   */
+  /**
+   * Every (exam_type, period_type, period_start) that has at least
+   * one `leaderboard_entries` row but ZERO `winners` rows — the
+   * "you forgot to pick winners for last week (or the week before
+   * that)" list.
+   *
+   * The admin dashboard previously surfaced only `now - 7d`, so
+   * once a week rolled over without a manual selection the period
+   * fell off the radar. This query is the authoritative source of
+   * truth for what's still open.
+   *
+   * Returns rows sorted by period_start DESC (most recent first),
+   * capped at `limit` so a long-untouched system can't unbox a
+   * huge JSON blob on the admin home.
+   */
+  async listPendingPeriods(
+    opts: {
+      limit?: number;
+      examType?: ExamType;
+      periodType?: LeaderboardPeriodType;
+    } = {},
+  ): Promise<
+    Array<{
+      examType: ExamType;
+      periodType: LeaderboardPeriodType;
+      periodStart: string;
+      candidateCount: number;
+    }>
+  > {
+    const limit = Math.min(200, Math.max(1, opts.limit ?? 50));
+    const qb = this.entriesRepo
+      .createQueryBuilder('lb')
+      // LEFT JOIN winners on the same period-tuple. Rows in the
+      // group with `w.id` NULL are the unselected periods.
+      .leftJoin(
+        Winner,
+        'w',
+        'w.exam_type = lb.exam_type AND ' +
+          'w.period_type = lb.period_type AND ' +
+          'w.period_start = lb.period_start',
+      )
+      .select('lb.exam_type', 'examType')
+      .addSelect('lb.period_type', 'periodType')
+      .addSelect('lb.period_start', 'periodStart')
+      .addSelect('COUNT(DISTINCT lb.user_id)', 'candidateCount')
+      .where("lb.scope = 'national'")
+      .groupBy('lb.exam_type, lb.period_type, lb.period_start')
+      .having('COUNT(w.id) = 0')
+      .orderBy('lb.period_start', 'DESC')
+      .addOrderBy('lb.exam_type', 'ASC')
+      .limit(limit);
+    if (opts.examType) qb.andWhere('lb.exam_type = :et', { et: opts.examType });
+    if (opts.periodType) {
+      qb.andWhere('lb.period_type = :pt', { pt: opts.periodType });
+    }
+    const rows = await qb.getRawMany<{
+      examType: string;
+      periodType: string;
+      periodStart: string | Date;
+      candidateCount: string;
+    }>();
+    return rows.map((r) => ({
+      examType: r.examType as ExamType,
+      periodType: r.periodType as LeaderboardPeriodType,
+      // `period_start` is a DATE column — node-pg surfaces it as a
+      // Date in some configs and a string in others. Normalise to
+      // `YYYY-MM-DD` so the wire shape matches everywhere.
+      periodStart:
+        typeof r.periodStart === 'string'
+          ? r.periodStart.slice(0, 10)
+          : r.periodStart.toISOString().slice(0, 10),
+      candidateCount: parseInt(r.candidateCount, 10) || 0,
+    }));
+  }
+
+  async listCandidates(params: {
+    examType: ExamType;
+    periodType: LeaderboardPeriodType;
+    periodStart: string;
+  }) {
+    const pool = await this.entriesRepo
+      .createQueryBuilder('lb')
+      .innerJoinAndSelect('lb.user', 'u')
+      .where('lb.exam_type = :et', { et: params.examType })
+      .andWhere('lb.period_type = :pt', { pt: params.periodType })
+      .andWhere('lb.period_start = :ps', { ps: params.periodStart })
+      .andWhere("lb.scope = 'national'")
+      .orderBy('lb.weekly_xp', 'DESC')
+      .limit(PAYOUT_RANK_LIMIT * 3)
+      .getMany();
+
+    // Reuse isEligible for the boolean verdict, plus surface the raw
+    // signals the admin needs to make a judgement call.
+    const enriched = await Promise.all(
+      pool.map(async (entry, index) => {
+        const user = entry.user;
+        const ageDays = Math.floor(
+          (Date.now() - user.createdAt.getTime()) / (24 * 60 * 60 * 1000),
+        );
+        const answers = await this.answersRepo.count({
+          where: { exam: { userId: user.id } },
+          relations: { exam: true },
+        });
+        const verified = Boolean(user.email) || Boolean(user.phone);
+        const banned = !user.isActive || Boolean(user.deletedAt);
+        const antiCheatPass =
+          !banned &&
+          ageDays >= MIN_ACCOUNT_AGE_DAYS &&
+          answers >= MIN_ANSWERS &&
+          verified;
+        let antiCheatReason: string | null = null;
+        if (banned) antiCheatReason = 'banned';
+        else if (ageDays < MIN_ACCOUNT_AGE_DAYS)
+          antiCheatReason = `account ${ageDays}d old (need ${MIN_ACCOUNT_AGE_DAYS})`;
+        else if (answers < MIN_ANSWERS)
+          antiCheatReason = `${answers} answers (need ${MIN_ANSWERS})`;
+        else if (!verified) antiCheatReason = 'no verified email or phone';
+        return {
+          userId: user.id,
+          fullName: user.fullName,
+          // Username is the public display name. Surfacing it alongside
+          // `fullName` lets admin reviewers see exactly what the
+          // leaderboard / winners-announcement post will show without
+          // them having to cross-reference the user detail page.
+          username: user.username ?? null,
+          avatarUrl: user.avatarUrl ?? null,
+          rank: index + 1,
+          weeklyXp: entry.weeklyXp,
+          accountAgeDays: ageDays,
+          questionsAnswered: answers,
+          verified,
+          antiCheatPass,
+          antiCheatReason,
+        };
+      }),
+    );
+    return enriched;
   }
 
   async allTimeHallOfFame(examType: ExamType) {
+    // CRITICAL: Postgres folds unquoted identifiers to lowercase. The
+    // previous shape used camelCase aliases (`as totalXp`) and referred
+    // to them unquoted in the ORDER BY (`addOrderBy('totalXp', 'DESC')`).
+    // Postgres saw `order by totalxp` and the alias `totalxp` (also
+    // lowercased) — but those resolved differently across TypeORM
+    // versions, producing `column "totalxp" does not exist` on some
+    // builds. Snake-case aliases dodge the folding ambiguity entirely:
+    // both the SELECT and ORDER BY refer to the same lowercase name.
     const rows = await this.winnersRepo
       .createQueryBuilder('w')
       .innerJoin('w.user', 'u')
-      .select('w.user_id', 'userId')
-      .addSelect('u.full_name', 'fullName')
+      .select('w.user_id', 'user_id')
+      .addSelect('u.full_name', 'full_name')
+      .addSelect('u.username', 'username')
       .addSelect('COUNT(w.id)', 'wins')
-      .addSelect('SUM(w.xp_earned)', 'totalXp')
+      .addSelect('SUM(w.xp_earned)', 'total_xp')
       .where('w.exam_type = :et', { et: examType })
       .andWhere('w.xp_issued = true')
       .groupBy('w.user_id')
       .addGroupBy('u.full_name')
+      .addGroupBy('u.username')
       .orderBy('wins', 'DESC')
-      .addOrderBy('totalXp', 'DESC')
+      .addOrderBy('total_xp', 'DESC')
       .limit(20)
       .getRawMany<{
-        userId: string;
-        fullName: string;
+        user_id: string;
+        full_name: string;
+        username: string | null;
         wins: string;
-        totalXp: string;
+        total_xp: string;
       }>();
+    // Admin `HallOfFameRow` shape: examType (= filter), totalWins,
+    // totalXpFromPrizes. The previous shape used `wins` / `totalXp`
+    // which the admin table read as undefined, leaving those columns
+    // empty. Echo the requested examType on each row so the admin
+    // filter chip + the column align.
     return rows.map((r) => ({
-      userId: r.userId,
-      fullName: r.fullName,
-      wins: parseInt(r.wins, 10) || 0,
-      totalXp: parseInt(r.totalXp, 10) || 0,
+      userId: r.user_id,
+      fullName: r.full_name,
+      username: r.username ?? null,
+      examType,
+      totalWins: parseInt(r.wins, 10) || 0,
+      totalXpFromPrizes: parseInt(r.total_xp, 10) || 0,
     }));
   }
 

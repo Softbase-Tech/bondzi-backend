@@ -11,7 +11,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { ExamMode, Difficulty } from '../../../common/types/enums';
+import { ExamMode } from '../../../common/types/enums';
 
 export enum ExamDifficultyFilter {
   EASY = 'easy',
@@ -27,11 +27,25 @@ export class ExamSubjectFilterDto {
   @IsUUID('4', { each: true })
   subjectIds?: string[];
 
-  @ApiPropertyOptional({ type: [String] })
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Past-paper topic ids (from the `topics` table). Ignored / rejected for pm_test mode — use syllabusTopicIds instead.',
+  })
   @IsOptional()
   @IsArray()
   @IsUUID('4', { each: true })
   topicIds?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Syllabus-topic ids (from the `syllabus_topics` catalogue). Only valid when mode="pm_test" — the AI-generated question pool is the only one currently tagged with syllabus_topic_id.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  syllabusTopicIds?: string[];
 
   @ApiPropertyOptional({ type: [Number] })
   @IsOptional()
@@ -86,7 +100,7 @@ export class CreateExamDto {
 
   @ApiPropertyOptional({
     description:
-      'Practice mode only. When true, the server biases selection toward topics the user has a low accuracy on (<50% rolling), falling back to the provided filter if there aren\'t enough weak-topic questions.',
+      "Practice mode only. When true, the server biases selection toward topics the user has a low accuracy on (<50% rolling), falling back to the provided filter if there aren't enough weak-topic questions.",
   })
   @IsOptional()
   @IsBoolean()

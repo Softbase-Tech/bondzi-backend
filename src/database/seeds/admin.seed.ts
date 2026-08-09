@@ -18,8 +18,10 @@ import { hashPassword } from '../../common/utils/password.util';
  * code so the admin never collides with a student's generated one.
  */
 export async function seedAdmin(ds: DataSource): Promise<void> {
-  const email = process.env.SEED_ADMIN_EMAIL ?? 'admin@passmaster.com.gh';
-  const password = process.env.SEED_ADMIN_PASSWORD ?? 'change_me_strong_8+';
+  const email = process.env.SEED_ADMIN_EMAIL ?? 'ekow@bondzi.online';
+  const password =
+    process.env.SEED_ADMIN_PASSWORD ??
+    'a65dbe5d13663f4a421c94d8f846b1bfafdefb6dcc6da3d1';
   const name = process.env.SEED_ADMIN_NAME ?? 'Platform Admin';
   const referralCode = process.env.SEED_ADMIN_REFERRAL_CODE ?? 'PM-ADMIN';
 

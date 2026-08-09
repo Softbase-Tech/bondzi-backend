@@ -10,6 +10,13 @@ const LB_CACHE_TTL_SECONDS = 5 * 60;
 
 export interface LeaderboardRow {
   userId: string;
+  /**
+   * Public handle (when the user has set one — migration 1940). Mobile
+   * prefers this for display; `fullName` is the fallback for accounts
+   * that haven't back-filled yet.
+   */
+  username: string | null;
+  /** Legal name on file. Used as a fallback display name. */
   fullName: string;
   score: number;
   rank: number;
@@ -46,6 +53,14 @@ export class LeaderboardService {
     const cached = await this.redis.getJson<LeaderboardRow[]>(cacheKey);
     if (cached) return cached;
 
+    // CRITICAL ordering: `.where()` REPLACES the existing WHERE clause
+    // in TypeORM, while `.andWhere()` appends. The previous version
+    // called `.andWhere(...)` first to set up the user-side filters
+    // (deleted_at IS NULL, is_active = true) and THEN `.where('lb.exam_type ...')` —
+    // which silently dropped the user-side filters and let banned /
+    // soft-deleted accounts ghost the public board. Start with `.where()`
+    // to seed the clause, then append every other condition with
+    // `.andWhere()`.
     const rows = await this.entriesRepo
       .createQueryBuilder('lb')
       .innerJoin('lb.user', 'u')
@@ -53,7 +68,14 @@ export class LeaderboardService {
       .andWhere('lb.period_type = :pt', { pt: periodType })
       .andWhere('lb.period_start = :ps', { ps: periodStart })
       .andWhere('lb.scope = :scope', { scope })
+      .andWhere('u.deleted_at is null')
+      .andWhere('u.is_active = true')
+      // Skip rows where the joined user has no display name — a NULL
+      // `full_name` would crash the mobile's render (initials() calls
+      // `.trim()` on the string). It also has no useful display value.
+      .andWhere('u.full_name is not null')
       .select('lb.user_id', 'userId')
+      .addSelect('u.username', 'username')
       .addSelect('u.full_name', 'fullName')
       .addSelect('lb.weekly_xp', 'score')
       .addSelect('lb.rank', 'rank')
@@ -90,26 +112,84 @@ export class LeaderboardService {
     const periodType = opts.periodType ?? LeaderboardPeriodType.WEEKLY;
     const scope = opts.scope ?? 'national';
 
-    const ranked = await this.entriesRepo
-      .createQueryBuilder('lb')
-      .select('lb.user_id', 'userId')
-      .addSelect('lb.weekly_xp', 'weeklyXp')
-      .addSelect(
-        'RANK() OVER (ORDER BY lb.weekly_xp DESC, lb.created_at ASC)',
-        'rank',
-      )
-      .where('lb.exam_type = :et', { et: opts.examType })
-      .andWhere('lb.period_type = :pt', { pt: periodType })
-      .andWhere('lb.period_start = :ps', { ps: periodStart })
-      .andWhere('lb.scope = :scope', { scope })
-      .getRawMany<{ userId: string; weeklyXp: string; rank: string }>();
+    // Previously fetched the FULL ranked board into memory (50k+ rows at
+    // scale) just to find one user. Wrap the RANK() window in a CTE and
+    // SELECT only the target user's row — Postgres still computes the
+    // window once on the inner scan, but pushes only 1 row + total
+    // back across the wire.
+    // CRITICAL: exclude soft-deleted users from the ranking — otherwise
+    // a banned account that earned XP earlier this week still occupies
+    // a rank slot and shifts every legit user down.
+    interface RankRow {
+      user_id: string;
+      weekly_xp: string;
+      rank: string;
+      total: string;
+    }
+    const rows: RankRow[] = await this.entriesRepo.manager.query(
+      `
+        with ranked as (
+          select
+            lb.user_id,
+            lb.weekly_xp,
+            rank() over (
+              order by lb.weekly_xp desc, lb.created_at asc
+            ) as rank,
+            count(*) over () as total
+          from leaderboard_entries lb
+          inner join users u on u.id = lb.user_id
+          where lb.exam_type = $1
+            and lb.period_type = $2
+            and lb.period_start = $3
+            and lb.scope = $4
+            and u.deleted_at is null
+            and u.is_active = true
+        )
+        select user_id, weekly_xp, rank, total
+        from ranked
+        where user_id = $5
+        limit 1;
+      `,
+      [opts.examType, periodType, periodStart, scope, userId],
+    );
 
-    const mine = ranked.find((r) => r.userId === userId);
+    if (!rows || rows.length === 0) {
+      // User isn't on the board this period. Still need the total — one
+      // cheap COUNT (much cheaper than the previous "load everything"
+      // path even when the user is missing).
+      const totalRow: { total: number }[] =
+        await this.entriesRepo.manager.query(
+          `
+          select count(*)::int as total
+          from leaderboard_entries lb
+          inner join users u on u.id = lb.user_id
+          where lb.exam_type = $1
+            and lb.period_type = $2
+            and lb.period_start = $3
+            and lb.scope = $4
+            and u.deleted_at is null
+            and u.is_active = true;
+        `,
+          [opts.examType, periodType, periodStart, scope],
+        );
+      return {
+        userId,
+        rank: null,
+        weeklyXp: 0,
+        total: totalRow[0]?.total ?? 0,
+        periodStart,
+        periodType,
+        scope,
+        examType: opts.examType,
+      };
+    }
+
+    const me = rows[0];
     return {
       userId,
-      rank: mine ? parseInt(mine.rank, 10) : null,
-      weeklyXp: mine ? parseInt(mine.weeklyXp, 10) : 0,
-      total: ranked.length,
+      rank: parseInt(me.rank, 10),
+      weeklyXp: parseInt(me.weekly_xp, 10),
+      total: parseInt(me.total, 10),
       periodStart,
       periodType,
       scope,

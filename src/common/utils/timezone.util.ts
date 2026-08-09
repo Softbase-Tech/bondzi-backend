@@ -1,5 +1,5 @@
 /**
- * All period boundaries for PassMaster Ghana are Africa/Accra wall clock.
+ * All period boundaries for BONDZI Ghana are Africa/Accra wall clock.
  * Ghana observes GMT (UTC+00:00) year-round with no DST, so at this moment
  * UTC date math is numerically equivalent — but using these helpers keeps the
  * intent explicit and makes the code correct if the target timezone ever
@@ -9,7 +9,7 @@
  * directly into a `date` column.
  */
 
-export const PASSMASTER_TIMEZONE = 'Africa/Accra';
+export const BONDZI_TIMEZONE = 'Africa/Accra';
 
 function accraYmd(d: Date = new Date()): {
   year: number;
@@ -18,7 +18,7 @@ function accraYmd(d: Date = new Date()): {
   weekdayMondayFirst: number; // 0=Mon .. 6=Sun
 } {
   const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: PASSMASTER_TIMEZONE,
+    timeZone: BONDZI_TIMEZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',

@@ -8,9 +8,11 @@ import { Notification } from '../notifications/entities/notification.entity';
 import { LeaderboardController } from './leaderboard.controller';
 import { WinnersController } from './winners.controller';
 import { AdminLeaderboardController } from './admin-leaderboard.controller';
+import { AdminWinnersController } from './admin-winners.controller';
 import { LeaderboardService } from './leaderboard.service';
 import { WinnerSelectionService } from './winner-selection.service';
 import { GamificationModule } from '../gamification/gamification.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -22,11 +24,15 @@ import { GamificationModule } from '../gamification/gamification.module';
       Notification,
     ]),
     GamificationModule,
+    // Winners now get push + email — NotificationsService comes
+    // from here, MailService is @Global so no import needed.
+    NotificationsModule,
   ],
   controllers: [
     LeaderboardController,
     WinnersController,
     AdminLeaderboardController,
+    AdminWinnersController,
   ],
   providers: [LeaderboardService, WinnerSelectionService],
   exports: [LeaderboardService, WinnerSelectionService, TypeOrmModule],

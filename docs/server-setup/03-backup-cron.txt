@@ -1,0 +1,7 @@
+# Phase 5.2 — add this line to the ubuntu user's crontab:
+#   crontab -e
+# Then paste the line below (without the leading '#').
+#
+# 02:30 UTC = 02:30 Accra. Avoids the 02:00 Lightsail snapshot window.
+
+30 2 * * * cd /opt/bondzi && ./backup.sh >> logs/backup.log 2>&1

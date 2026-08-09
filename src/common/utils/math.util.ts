@@ -22,22 +22,22 @@ import MarkdownIt from 'markdown-it';
 import katex from 'katex';
 // MathJax components — JS imports are CJS but the package ships its own
 // types under `mathjax-full/js/...`. Import paths are stable across 3.x.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+
 const { mathjax } =
   require('mathjax-full/js/mathjax.js') as typeof import('mathjax-full/js/mathjax');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+
 const { TeX } =
   require('mathjax-full/js/input/tex.js') as typeof import('mathjax-full/js/input/tex');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+
 const { SVG } =
   require('mathjax-full/js/output/svg.js') as typeof import('mathjax-full/js/output/svg');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+
 const { liteAdaptor } =
   require('mathjax-full/js/adaptors/liteAdaptor.js') as typeof import('mathjax-full/js/adaptors/liteAdaptor');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+
 const { RegisterHTMLHandler } =
   require('mathjax-full/js/handlers/html.js') as typeof import('mathjax-full/js/handlers/html');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+
 const { AllPackages } =
   require('mathjax-full/js/input/tex/AllPackages.js') as typeof import('mathjax-full/js/input/tex/AllPackages');
 
@@ -76,12 +76,17 @@ export function renderMathToSvg(latex: string, displayMode = false): string {
   if (hit !== undefined) return hit;
   let out: string;
   try {
-    const node = mjxDoc.convert(latex, { display: displayMode });
+    // mathjax-full's TS types are loose — `convert` returns `any` and
+    // `outerHTML` expects an internal `LiteElement`. We treat the node as
+    // opaque (cast via never) since the only contract we care about is the
+    // outerHTML string we extract right after.
+    const html = adaptor.outerHTML(
+      mjxDoc.convert(latex, { display: displayMode }) as never,
+    );
     // outerHTML wraps in <mjx-container>; the <svg> child is what we need.
-    const html = adaptor.outerHTML(node);
     const match = html.match(/<svg[\s\S]*<\/svg>/);
     out = match ? match[0] : '';
-  } catch (err) {
+  } catch {
     out = renderErrorPlaceholderSvg(latex);
   }
   svgCache.set(key, out);

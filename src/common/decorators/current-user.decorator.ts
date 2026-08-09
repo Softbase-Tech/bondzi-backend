@@ -11,11 +11,24 @@ export interface AuthenticatedUser {
   /**
    * Cached subscription status at token-issue time (spec §2.2). Possible
    * values mirror `subscriptions_status_enum` plus `'free'` for no sub.
-   * Stale-tolerable: if a webhook / XP redemption flips status mid-session,
-   * the refresh-token rotation will pick the new value up.
+   *
+   * IMPORTANT: this is a UI hint only — NEVER use it for authorization.
+   * SubscriptionGuard reads the fresh value from Redis (TTL controlled
+   * by SUBSCRIPTION_STATUS_CACHE_TTL, default 60s). The JWT claim is
+   * baked in at issue time and can be up to 15 minutes stale; using it
+   * for an authz decision would let a cancelled / refunded user keep
+   * premium access until their token expires. Clients may use this
+   * value to show a premium badge or skip an extra /me round-trip.
    */
   subscriptionStatus?: string;
   jti?: string;
+  /**
+   * Standard JWT expiry (unix seconds). Required when blacklisting
+   * the current token (e.g. examType rotation revokes the
+   * pre-rotation jti so its remaining TTL can't be replayed). Optional
+   * because not every caller cares.
+   */
+  exp?: number;
 }
 
 type RequestWithUser = Request & { user?: AuthenticatedUser };

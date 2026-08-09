@@ -9,6 +9,7 @@ import { AiUsageLog } from '../ai/entities/ai-usage-log.entity';
 import { QuestionFlag } from '../questions/entities/question-flag.entity';
 import { Question } from '../questions/entities/question.entity';
 import { AuditLog } from './entities/audit-log.entity';
+import { redactPii } from '../../common/utils/redact-pii.util';
 import {
   ExamStatus,
   ExamType,
@@ -79,6 +80,7 @@ export class AdminService {
       referralDaily14d,
       activeUsersBece,
       activeUsersWassce,
+      activeUsersNovdec,
       questionsBece,
       questionsWassce,
       questionsBeceExplained,
@@ -89,6 +91,7 @@ export class AdminService {
       pmTestLastGen,
       winnersPendingBece,
       winnersPendingWassce,
+      winnersPendingNovdec,
     ] = await Promise.all([
       this.usersRepo.count({ where: { isActive: true } }),
       this.subsRepo.count({ where: { status: SubscriptionStatus.ACTIVE } }),
@@ -152,6 +155,9 @@ export class AdminService {
       this.usersRepo.count({
         where: { isActive: true, examType: ExamType.WASSCE },
       }),
+      this.usersRepo.count({
+        where: { isActive: true, examType: ExamType.NOVDEC },
+      }),
       this.questionsRepo.count({
         where: { examType: ExamType.BECE, status: QuestionStatus.ACTIVE },
       }),
@@ -185,6 +191,7 @@ export class AdminService {
         .getRawOne<{ last: Date | null }>(),
       this.lastWeekNeedsWinners(ExamType.BECE, weekStart),
       this.lastWeekNeedsWinners(ExamType.WASSCE, weekStart),
+      this.lastWeekNeedsWinners(ExamType.NOVDEC, weekStart),
     ]);
 
     const referralTotals = referralQualifications ?? {
@@ -227,6 +234,11 @@ export class AdminService {
 
       activeUsersBece,
       activeUsersWassce,
+      // NOVDEC users are a distinct level for billing / leaderboards even
+      // though they share the WASSCE question pool. We don't surface a
+      // separate `questionsNovdec` tile because the catalogue numbers
+      // would just duplicate `questionsWassce`.
+      activeUsersNovdec,
       questionsBece,
       questionsWassce,
       questionsBeceExplained,
@@ -241,8 +253,9 @@ export class AdminService {
 
       winnersPendingWeeklyBece: winnersPendingBece,
       winnersPendingWeeklyWassce: winnersPendingWassce,
+      winnersPendingWeeklyNovdec: winnersPendingNovdec,
       winnersPeriodEndedAt:
-        winnersPendingBece || winnersPendingWassce
+        winnersPendingBece || winnersPendingWassce || winnersPendingNovdec
           ? weekStart.toISOString()
           : null,
     };
@@ -282,14 +295,31 @@ export class AdminService {
     return { items: enriched, total, nextCursor: null };
   }
 
-  async listUsers(p: PaginationDto): Promise<PaginatedResult<User>> {
+  async listUsers(
+    p: PaginationDto & { search?: string },
+  ): Promise<PaginatedResult<User>> {
     const page = p.page ?? 1;
     const limit = p.limit ?? 20;
-    const [items, total] = await this.usersRepo.findAndCount({
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    // Optional search: matches against full_name / email / phone /
+    // username with case-insensitive LIKE. Powers the admin "send push
+    // to a specific user" picker — the operator types a name, the UI
+    // shows the top N matches. Empty / undefined search falls through
+    // to the unfiltered list so existing callers (the users index page)
+    // don't change behaviour.
+    const search = p.search?.trim();
+    const qb = this.usersRepo
+      .createQueryBuilder('u')
+      .orderBy('u.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+    if (search) {
+      const needle = `%${search.toLowerCase()}%`;
+      qb.andWhere(
+        '(lower(u.full_name) like :q OR lower(u.email) like :q OR lower(u.username) like :q OR u.phone like :q)',
+        { q: needle },
+      );
+    }
+    const [items, total] = await qb.getManyAndCount();
     return { items, total, nextCursor: null };
   }
 
@@ -327,6 +357,266 @@ export class AdminService {
         .getRawOne<{ calls: string; cost: string }>(),
     ]);
     return { user, subscriptions, examsCount, aiUsage };
+  }
+
+  /**
+   * Paginated exam history for one user, ordered newest-first. The
+   * shape is denormalised on the wire so the admin table can render
+   * everything without a follow-up answers query: each row carries the
+   * subject name list (joined from the first answer's question →
+   * subject) and the on-table aggregate columns (`totalQuestions`,
+   * `percentScore`, `xpEarned`, durations).
+   *
+   * `minutesSpent` is computed from `completed_at - started_at` when
+   * the exam finished, otherwise null (in-progress exams have no
+   * meaningful "time spent" until the user submits — pause/resume
+   * confuses the started-at delta).
+   */
+  async listUserExams(
+    userId: string,
+    page = 1,
+    limit = 20,
+  ): Promise<
+    PaginatedResult<{
+      id: string;
+      examType: string;
+      mode: string;
+      questionPool: string;
+      status: string;
+      score: number | null;
+      totalQuestions: number | null;
+      percentScore: string | null;
+      xpEarned: number;
+      durationSeconds: number | null;
+      startedAt: string;
+      completedAt: string | null;
+      minutesSpent: number | null;
+      answeredCount: number;
+      correctCount: number;
+      accuracy: number;
+    }>
+  > {
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const [items, total] = await this.examsRepo.findAndCount({
+      where: { userId },
+      order: { startedAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    if (items.length === 0) {
+      return { items: [], total, nextCursor: null };
+    }
+
+    // Per-exam answer aggregate — one query, grouped, instead of N+1.
+    const examIds = items.map((e) => e.id);
+    const aggregates = await this.answersRepo
+      .createQueryBuilder('a')
+      .select('a.exam_id', 'examId')
+      .addSelect('COUNT(*)', 'answered')
+      .addSelect(
+        'SUM(CASE WHEN a.is_correct = true THEN 1 ELSE 0 END)',
+        'correct',
+      )
+      .where('a.exam_id IN (:...ids)', { ids: examIds })
+      .groupBy('a.exam_id')
+      .getRawMany<{ examId: string; answered: string; correct: string }>();
+    const aggByExam = new Map<string, { answered: number; correct: number }>();
+    for (const r of aggregates) {
+      aggByExam.set(r.examId, {
+        answered: parseInt(r.answered, 10) || 0,
+        correct: parseInt(r.correct, 10) || 0,
+      });
+    }
+
+    const rows = items.map((e) => {
+      const agg = aggByExam.get(e.id) ?? { answered: 0, correct: 0 };
+      // Wall-clock minutes between started_at and completed_at. We
+      // intentionally do NOT sum per-answer `time_spent_ms` here —
+      // that's "active question time" and ignores idle gaps; the
+      // wall-clock duration is what the admin cares about ("how
+      // long did this session take?"). Per-answer time appears on
+      // the detail endpoint.
+      const minutesSpent = e.completedAt
+        ? Math.max(
+            0,
+            Math.round(
+              (e.completedAt.getTime() - e.startedAt.getTime()) / 60_000,
+            ),
+          )
+        : null;
+      return {
+        id: e.id,
+        examType: e.examType,
+        mode: e.mode,
+        questionPool: e.questionPool,
+        status: e.status,
+        score: e.score,
+        totalQuestions: e.totalQuestions,
+        percentScore: e.percentScore,
+        xpEarned: e.xpEarned,
+        durationSeconds: e.durationSeconds,
+        startedAt: e.startedAt.toISOString(),
+        completedAt: e.completedAt ? e.completedAt.toISOString() : null,
+        minutesSpent,
+        answeredCount: agg.answered,
+        correctCount: agg.correct,
+        accuracy:
+          agg.answered > 0
+            ? Number(((agg.correct / agg.answered) * 100).toFixed(1))
+            : 0,
+      };
+    });
+
+    return { items: rows, total, nextCursor: null };
+  }
+
+  /**
+   * One exam in full — header summary identical to the list row, plus
+   * a per-question answer table. Past-paper answers are joined to the
+   * questions catalogue for the stem; PM-Test answers leave the stem
+   * null today (admin would have to look the question up in the
+   * Practice Made questions module to see it).
+   */
+  async getUserExam(
+    userId: string,
+    examId: string,
+  ): Promise<{
+    exam: {
+      id: string;
+      examType: string;
+      mode: string;
+      questionPool: string;
+      status: string;
+      score: number | null;
+      totalQuestions: number | null;
+      percentScore: string | null;
+      xpEarned: number;
+      durationSeconds: number | null;
+      startedAt: string;
+      completedAt: string | null;
+      minutesSpent: number | null;
+      activeStudyMinutes: number;
+      answeredCount: number;
+      correctCount: number;
+      accuracy: number;
+    };
+    answers: Array<{
+      id: string;
+      questionId: string;
+      questionPool: string;
+      stem: string | null;
+      subjectName: string | null;
+      year: number | null;
+      selectedOptionId: string | null;
+      selectedOptionLabel: string | null;
+      correctOptionLabel: string | null;
+      typedAnswer: string | null;
+      isCorrect: boolean | null;
+      timeSpentMs: number | null;
+      explanationViewed: boolean;
+      answeredAt: string;
+    }>;
+  }> {
+    const exam = await this.examsRepo.findOne({
+      where: { id: examId, userId },
+    });
+    if (!exam) throw new NotFoundException('Exam not found for this user');
+
+    // Pull answers with the joined question + selected option. We
+    // include the options array off the question so the "correct
+    // option label" column can be filled without a third query.
+    const answers = await this.answersRepo
+      .createQueryBuilder('a')
+      .leftJoinAndSelect('a.question', 'q')
+      .leftJoinAndSelect('q.subject', 's')
+      .leftJoinAndSelect('a.selectedOption', 'so')
+      .where('a.exam_id = :eid', { eid: examId })
+      .orderBy('a.answered_at', 'ASC')
+      .getMany();
+
+    // "Correct option label" lookup — we don't have a direct relation
+    // exposed on the answer, so for each row we pull the question's
+    // options and pick the one marked correct. Cheaper as one batched
+    // query than N follow-ups.
+    const optionRows: Array<{
+      question_id: string;
+      id: string;
+      label: string;
+      is_correct: boolean;
+    }> = await this.examsRepo.manager.query(
+      `select o.id, o.label, o.is_correct, o.question_id
+         from options o
+        where o.question_id = ANY($1::uuid[])`,
+      [answers.map((a) => a.questionId)],
+    );
+    const correctLabelByQ = new Map<string, string>();
+    for (const r of optionRows) {
+      if (r.is_correct) correctLabelByQ.set(r.question_id, r.label);
+    }
+
+    const answered = answers.length;
+    const correct = answers.filter((a) => a.isCorrect === true).length;
+    const minutesSpent = exam.completedAt
+      ? Math.max(
+          0,
+          Math.round(
+            (exam.completedAt.getTime() - exam.startedAt.getTime()) / 60_000,
+          ),
+        )
+      : null;
+    // Active-study minutes = sum of per-answer `time_spent_ms`. Differs
+    // from wall-clock minutes (above) by the idle / pause gaps. Useful
+    // for spotting suspiciously low engagement (e.g. 50 questions in 2
+    // active minutes → likely auto-skipped).
+    const activeStudyMs = answers.reduce(
+      (sum, a) => sum + (a.timeSpentMs ?? 0),
+      0,
+    );
+
+    return {
+      exam: {
+        id: exam.id,
+        examType: exam.examType,
+        mode: exam.mode,
+        questionPool: exam.questionPool,
+        status: exam.status,
+        score: exam.score,
+        totalQuestions: exam.totalQuestions,
+        percentScore: exam.percentScore,
+        xpEarned: exam.xpEarned,
+        durationSeconds: exam.durationSeconds,
+        startedAt: exam.startedAt.toISOString(),
+        completedAt: exam.completedAt ? exam.completedAt.toISOString() : null,
+        minutesSpent,
+        activeStudyMinutes: Math.round(activeStudyMs / 60_000),
+        answeredCount: answered,
+        correctCount: correct,
+        accuracy:
+          answered > 0 ? Number(((correct / answered) * 100).toFixed(1)) : 0,
+      },
+      answers: answers.map((a) => ({
+        id: a.id,
+        questionId: a.questionId,
+        questionPool: a.questionPool,
+        // PM-Test questions live in a separate table and aren't
+        // joined here — null stem is honest, the admin Practice
+        // Made section is the right place to inspect those.
+        stem: a.question?.body ?? null,
+        subjectName: a.question?.subject?.name ?? null,
+        year: a.question?.year ?? null,
+        selectedOptionId: a.selectedOptionId,
+        selectedOptionLabel: a.selectedOption?.label ?? null,
+        correctOptionLabel: correctLabelByQ.get(a.questionId) ?? null,
+        typedAnswer: a.typedAnswer,
+        isCorrect: a.isCorrect,
+        timeSpentMs: a.timeSpentMs,
+        explanationViewed: a.explanationViewed,
+        answeredAt: a.answeredAt.toISOString(),
+      })),
+    };
   }
 
   async banUser(adminId: string, userId: string, ip?: string): Promise<User> {
@@ -434,13 +724,22 @@ export class AdminService {
     newValue: Record<string, unknown> | null,
     ip?: string,
   ) {
+    // Scrub PII from the delta before persisting. Audit rows are kept
+    // for years; passing through raw email / phone / password_hash
+    // would create a long-lived PII trove indistinguishable from the
+    // users table itself. We keep entity ids and non-PII fields, so
+    // forensics still tell the "who-did-what" story.
     const row = this.auditRepo.create({
       adminId,
       action,
       entityType,
       entityId,
-      oldValue,
-      newValue,
+      oldValue: oldValue
+        ? (redactPii(oldValue) as Record<string, unknown>)
+        : null,
+      newValue: newValue
+        ? (redactPii(newValue) as Record<string, unknown>)
+        : null,
       ipAddress: ip ?? null,
     });
     await this.auditRepo.save(row);

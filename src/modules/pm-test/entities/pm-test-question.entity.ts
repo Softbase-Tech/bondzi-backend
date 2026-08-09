@@ -19,7 +19,7 @@ import { SyllabusTopic } from '../../subjects/entities/syllabus-topic.entity';
 import { PmTestOption } from './pm-test-option.entity';
 
 /**
- * v2 AI-generated PassMaster Test questions. Structurally similar to past-paper
+ * v2 AI-generated Bondzi Test questions. Structurally similar to past-paper
  * questions but linked to syllabus_topics (not past-paper topics) and scoped by
  * form_level. Enters the pool with status=pending_review and is promoted to
  * status=active only after admin review.

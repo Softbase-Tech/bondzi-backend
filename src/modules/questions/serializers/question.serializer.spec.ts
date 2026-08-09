@@ -76,7 +76,9 @@ describe('toStudentQuestion', () => {
   it('never leaks isCorrect to the student response', () => {
     const student = toStudentQuestion(makeQuestion());
     for (const opt of student.options) {
-      expect(Object.prototype.hasOwnProperty.call(opt, 'isCorrect')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(opt, 'isCorrect')).toBe(
+        false,
+      );
     }
     expect(JSON.stringify(student)).not.toContain('isCorrect');
   });
@@ -197,7 +199,9 @@ describe('toStudentPmTestQuestion', () => {
   it('never leaks isCorrect for PM Test options', () => {
     const s = toStudentPmTestQuestion(makePmQ());
     for (const opt of s.options) {
-      expect(Object.prototype.hasOwnProperty.call(opt, 'isCorrect')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(opt, 'isCorrect')).toBe(
+        false,
+      );
     }
     expect(JSON.stringify(s)).not.toContain('isCorrect');
   });

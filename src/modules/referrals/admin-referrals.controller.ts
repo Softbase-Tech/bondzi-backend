@@ -1,11 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Patch,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Patch, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -26,7 +19,9 @@ export class AdminReferralsController {
   constructor(private readonly referrals: ReferralsService) {}
 
   @Get('metrics')
-  @ApiOperation({ summary: 'Top-level referral funnel metrics + 30-day chart.' })
+  @ApiOperation({
+    summary: 'Top-level referral funnel metrics + 30-day chart.',
+  })
   metrics() {
     return this.referrals.adminMetrics();
   }

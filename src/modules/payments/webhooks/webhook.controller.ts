@@ -26,9 +26,14 @@ interface RawBodyRequest extends Request {
  * verification + event parsing to it, and hands the normalized event to the
  * shared handler.
  *
- * Always returns 200 on authentic events — a non-200 triggers provider retries
- * and double-processing. Idempotency is enforced by (provider, event_id) in
- * payment_events.
+ * 200 vs 5xx contract: we return 200 when the event was successfully
+ * dispatched OR when it's a genuine duplicate (already-processed). We
+ * return 5xx (let the handler throw) when processing FAILED — so the
+ * provider retries according to its policy. Idempotency at the
+ * `(provider, event_id)` unique constraint means a retry can't
+ * double-process; combined with the handler's "retry unprocessed row"
+ * branch, this closes the silent revenue-loss path where a transient
+ * DB hiccup left `processed=false` and Paystack never retried.
  */
 @ApiTags('payments-webhooks')
 @Controller('payments/webhooks')

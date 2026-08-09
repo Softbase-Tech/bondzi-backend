@@ -1,6 +1,11 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../../common/decorators/public.decorator';
+import {
+  AccountType,
+  ExamType,
+  PaymentKind,
+} from '../../../common/types/enums';
 import { PlansService } from './plans.service';
 import { SubscriptionPlanEntity } from './entities/subscription-plan.entity';
 
@@ -8,6 +13,10 @@ interface PublicPlanView {
   id: string;
   name: string;
   description: string | null;
+  account: AccountType;
+  level: ExamType;
+  paymentKind: PaymentKind;
+  vatRatePct: number;
   countryCode: string;
   currency: string;
   isDefault: boolean;
@@ -54,22 +63,26 @@ export class PlansPublicController {
       id: plan.id,
       name: plan.name,
       description: plan.description,
+      account: plan.account,
+      level: plan.level,
+      paymentKind: plan.paymentKind,
+      vatRatePct: Number(plan.vatRatePct ?? 0),
       countryCode: plan.countryCode,
       currency: plan.currency,
       isDefault: plan.isDefault,
       pricing: {
         monthly: {
-          price: Number(plan.monthlyPrice),
+          price: plan.monthlyPrice,
           durationDays: plan.monthlyDurationDays,
           available: plan.providerPlanMonthly !== null,
         },
         sixMonth: {
-          price: Number(plan.sixMonthPrice),
+          price: plan.sixMonthPrice,
           durationDays: plan.sixMonthDurationDays,
           available: plan.providerPlanSixMonth !== null,
         },
         annual: {
-          price: Number(plan.annualPrice),
+          price: plan.annualPrice,
           durationDays: plan.annualDurationDays,
           available: plan.providerPlanAnnual !== null,
         },

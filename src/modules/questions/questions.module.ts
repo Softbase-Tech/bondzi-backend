@@ -7,10 +7,12 @@ import { QuestionFlag } from './entities/question-flag.entity';
 import { QuestionStimulus } from './entities/question-stimulus.entity';
 import { SrsCard } from '../srs/entities/srs-card.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
+import { Topic } from '../subjects/entities/topic.entity';
 import { QuestionsController } from './questions.controller';
 import { QuestionsService } from './questions.service';
 import { StimuliAdminController } from './stimuli-admin.controller';
 import { StimuliService } from './stimuli.service';
+import { ExplanationsController } from './explanations.controller';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
@@ -23,10 +25,15 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
       SrsCard,
       UserSubjectProgress,
       AuditLog,
+      Topic,
     ]),
     SubscriptionsModule,
   ],
-  controllers: [QuestionsController, StimuliAdminController],
+  controllers: [
+    QuestionsController,
+    StimuliAdminController,
+    ExplanationsController,
+  ],
   providers: [QuestionsService, StimuliService],
   exports: [QuestionsService, StimuliService, TypeOrmModule],
 })

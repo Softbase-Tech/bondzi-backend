@@ -11,6 +11,7 @@ import {
   CreateSubjectDto,
   CreateTopicDto,
   UpdateSubjectDto,
+  UpdateTopicDto,
 } from './dto/create-subject.dto';
 
 const SUBJECTS_CACHE_TTL_SECONDS = 3600;
@@ -31,17 +32,27 @@ export class SubjectsService {
     private readonly redis: RedisService,
   ) {}
 
-  async listActive(examType?: ExamType): Promise<SubjectWithCounts[]> {
+  async listActive(
+    examType?: ExamType,
+    opts: { includeInactive?: boolean } = {},
+  ): Promise<SubjectWithCounts[]> {
+    // includeInactive bypasses Redis — admins editing visibility need
+    // immediate feedback, and the cached payload is the public
+    // active-only view we don't want to pollute.
     const cacheKey = examType
       ? `${CacheKeys.subjectsAll()}:${examType}`
       : CacheKeys.subjectsAll();
-    const cached = await this.redis.getJson<SubjectWithCounts[]>(cacheKey);
-    if (cached) return cached;
+    if (!opts.includeInactive) {
+      const cached = await this.redis.getJson<SubjectWithCounts[]>(cacheKey);
+      if (cached) return cached;
+    }
 
     const qb = this.subjectsRepo
       .createQueryBuilder('s')
-      .loadRelationCountAndMap('s.topicCount', 's.topics')
-      .where('s.isActive = true');
+      .loadRelationCountAndMap('s.topicCount', 's.topics');
+    if (!opts.includeInactive) {
+      qb.where('s.isActive = true');
+    }
     if (examType) {
       qb.andWhere('s.examType = :examType', { examType });
     }
@@ -68,7 +79,9 @@ export class SubjectsService {
       questionCount: countBySubject.get(s.id) ?? 0,
     })) as SubjectWithCounts[];
 
-    await this.redis.setJson(cacheKey, enriched, SUBJECTS_CACHE_TTL_SECONDS);
+    if (!opts.includeInactive) {
+      await this.redis.setJson(cacheKey, enriched, SUBJECTS_CACHE_TTL_SECONDS);
+    }
     return enriched;
   }
 
@@ -133,6 +146,37 @@ export class SubjectsService {
     await this.topicsRepo.save(topic);
     await this.invalidateCache();
     return topic;
+  }
+
+  async updateTopic(topicId: string, dto: UpdateTopicDto): Promise<Topic> {
+    const topic = await this.topicsRepo.findOne({ where: { id: topicId } });
+    if (!topic) throw new NotFoundException('Topic not found');
+    Object.assign(topic, dto);
+    await this.topicsRepo.save(topic);
+    await this.invalidateCache();
+    return topic;
+  }
+
+  /**
+   * Soft-delete a subject (sets `deleted_at`). The row stays in the
+   * DB so existing questions tagged with this subject continue to
+   * resolve; the public listing filters it out via the
+   * @DeleteDateColumn convention. To fully remove a subject the
+   * admin must first re-tag or delete every question that
+   * references it.
+   */
+  async softDelete(id: string): Promise<void> {
+    const s = await this.subjectsRepo.findOne({ where: { id } });
+    if (!s) throw new NotFoundException('Subject not found');
+    await this.subjectsRepo.softRemove(s);
+    await this.invalidateCache();
+  }
+
+  async softDeleteTopic(topicId: string): Promise<void> {
+    const t = await this.topicsRepo.findOne({ where: { id: topicId } });
+    if (!t) throw new NotFoundException('Topic not found');
+    await this.topicsRepo.softRemove(t);
+    await this.invalidateCache();
   }
 
   async invalidateCache(): Promise<void> {

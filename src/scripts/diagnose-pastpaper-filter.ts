@@ -16,6 +16,7 @@ import 'dotenv/config';
 import 'reflect-metadata';
 import dataSource from '../../ormconfig';
 import { Question } from '../modules/questions/entities/question.entity';
+import { ExamType, QuestionStatus } from '../common/types/enums';
 
 interface Args {
   subjectId: string;
@@ -85,9 +86,16 @@ async function main() {
   //    the gap is. Rows that would pass each predicate are flagged.
   const buckets = new Map<string, number>();
   for (const q of loose) {
+    // args.examType is a raw CLI string (bece|wassce). Both enums use the
+    // string values directly, so cast through ExamType for a typed compare.
+    const wantedExamType = args.examType as ExamType;
     const flags = [
-      q.examType === args.examType ? `exam=${q.examType}` : `exam!=${q.examType}`,
-      q.status === 'active' ? `status=active` : `status=${q.status}`,
+      q.examType === wantedExamType
+        ? `exam=${q.examType}`
+        : `exam!=${q.examType}`,
+      q.status === QuestionStatus.ACTIVE
+        ? `status=active`
+        : `status=${q.status}`,
       q.year === args.year ? `year=${q.year}` : `year=${q.year ?? 'NULL'}`,
       q.wassecPaper === args.paper
         ? `paper=${q.wassecPaper}`

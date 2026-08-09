@@ -12,6 +12,7 @@ import {
 import {
   AuthProvider,
   ExamType,
+  Gender,
   SchoolLevel,
   UserRole,
 } from '../../../common/types/enums';
@@ -29,6 +30,21 @@ export class User {
 
   @Column({ name: 'full_name', type: 'text' })
   fullName: string;
+
+  // Public handle used on leaderboards / Hall of Fame / referrals.
+  // Nullable for accounts predating migration 1940 — the mobile client
+  // forces a back-fill modal on first session post-deploy so they're
+  // populated organically. Uniqueness enforced case-insensitively via
+  // a partial unique index on `lower(username)`, not at the column
+  // level — see 1940000000000-AddUsername.ts.
+  @Column({ type: 'text', nullable: true })
+  username: string | null;
+
+  // Powers the 90-day "username can only change once per quarter"
+  // cooldown. NULL means never set; first-time back-fill is free, the
+  // window starts ticking on that first save.
+  @Column({ name: 'username_changed_at', type: 'timestamptz', nullable: true })
+  usernameChangedAt: Date | null;
 
   @Column({ type: 'text', unique: true, nullable: true })
   email: string | null;
@@ -65,14 +81,30 @@ export class User {
   schoolLevel: SchoolLevel;
 
   // form_level: 1-3 for both JHS and SHS. Meaning depends on school_level.
-  @Column({ name: 'form_level', type: 'int' })
-  formLevel: number;
+  // NULL for `remedial` users (NOVDEC re-sit candidates) — they're not in a
+  // school cohort so form-level has no meaning. Subject-filter queries that
+  // join on form_level must coalesce / branch on school_level = 'remedial'.
+  @Column({ name: 'form_level', type: 'int', nullable: true })
+  formLevel: number | null;
 
   @Column({ name: 'school_name', type: 'text', nullable: true })
   schoolName: string | null;
 
   @Column({ type: 'text', nullable: true })
   region: string | null;
+
+  // Collected at registration going forward. Nullable to keep accounts
+  // created before migration 1930 functional — they continue to work
+  // and can fill these via Settings → Account later if we add the UI.
+  @Column({ type: 'enum', enum: Gender, nullable: true })
+  gender: Gender | null;
+
+  // Stored as `date` (no time component, no timezone). Validation at
+  // the DTO layer enforces sensible bounds (≥ 8 years old, in the
+  // past). Always nullable at the DB layer for the same backwards-compat
+  // reason as `gender`.
+  @Column({ name: 'date_of_birth', type: 'date', nullable: true })
+  dateOfBirth: string | null;
 
   @Column({ name: 'avatar_url', type: 'text', nullable: true })
   avatarUrl: string | null;
@@ -127,6 +159,43 @@ export class User {
 
   @Column({ name: 'last_active_at', type: 'timestamptz', nullable: true })
   lastActiveAt: Date | null;
+
+  @Column({ name: 'email_verified_at', type: 'timestamptz', nullable: true })
+  emailVerifiedAt: Date | null;
+
+  @Column({ name: 'email_bounced_at', type: 'timestamptz', nullable: true })
+  emailBouncedAt: Date | null;
+
+  @Column({ name: 'email_unsubscribe_token', type: 'text', nullable: true })
+  emailUnsubscribeToken: string | null;
+
+  @Column({ name: 'email_weekly_digest_enabled', type: 'bool', default: true })
+  emailWeeklyDigestEnabled: boolean;
+
+  @Column({ name: 'email_streak_nudges_enabled', type: 'bool', default: true })
+  emailStreakNudgesEnabled: boolean;
+
+  @Column({ name: 'email_level_up_enabled', type: 'bool', default: true })
+  emailLevelUpEnabled: boolean;
+
+  @Column({ name: 'email_marketing_enabled', type: 'bool', default: true })
+  emailMarketingEnabled: boolean;
+
+  /**
+   * Daily-reminder + weekly-leaderboard push notifications. Users can
+   * mute the routine cadence via /settings/notifications without also
+   * muting streak nudges (below).
+   */
+  @Column({ name: 'push_reminders_enabled', type: 'bool', default: true })
+  pushRemindersEnabled: boolean;
+
+  /**
+   * 17:00 "streak at risk" push. Separate flag from the routine
+   * reminders because streak nudges are urgency-driven — users often
+   * want THIS even when they've muted the daily reminder.
+   */
+  @Column({ name: 'push_streak_nudges_enabled', type: 'bool', default: true })
+  pushStreakNudgesEnabled: boolean;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

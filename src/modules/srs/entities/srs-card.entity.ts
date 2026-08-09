@@ -34,7 +34,15 @@ export class SrsCard {
   @Column({ name: 'question_id', type: 'uuid' })
   questionId: string;
 
-  @ManyToOne(() => Question, { onDelete: 'CASCADE' })
+  // The join is retained for past-paper cards only. CRITICAL: the real FK
+  // is dropped because this column also stores `pm_test_questions(id)`
+  // when `question_pool='pm_test'`. With a hard FK to `questions(id)`
+  // every PM-Test SRS card insert would 500. Integrity is enforced at the
+  // application layer (SrsService.upsertFromAnswer branches on pool).
+  @ManyToOne(() => Question, {
+    onDelete: 'CASCADE',
+    createForeignKeyConstraints: false,
+  })
   @JoinColumn({ name: 'question_id' })
   question: Question;
 
