@@ -812,11 +812,16 @@ export class AuthService {
     userId: string,
     accessJti: string | undefined,
     accessExpUnix: number | undefined,
+    deviceId: string | undefined,
   ): Promise<void> {
     if (accessJti && accessExpUnix) {
       await this.tokens.revokeByAccessJti(accessJti, accessExpUnix);
     }
-    await this.tokens.logoutUser(userId);
+    // Under per-device enforcement `logoutUser(userId, deviceId)`
+    // closes only that device's session. Legacy tokens without a
+    // `did` (undefined) fall through to `logoutAll` semantics inside
+    // `logoutUser`.
+    await this.tokens.logoutUser(userId, deviceId);
   }
 
   async logoutAll(userId: string): Promise<void> {

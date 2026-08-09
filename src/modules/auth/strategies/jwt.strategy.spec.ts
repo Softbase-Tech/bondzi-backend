@@ -8,10 +8,10 @@ import { RedisService } from '../../../common/redis/redis.service';
 import { UserRole } from '../../../common/types/enums';
 
 /**
- * JwtStrategy is the security gate for every authenticated request. The
- * tests below cover the launch-blocking device-binding check that closes
- * the "DEVICE_KICKED access token survives 15 min" hole, plus the
- * revocation path.
+ * JwtStrategy is the security gate for every authenticated request.
+ * Tests cover the per-device binding check (presence of a
+ * per-(user, device) marker or fallback DB row proves this device
+ * is still signed in) plus the JTI revocation path.
  */
 
 describe('JwtStrategy', () => {
@@ -60,15 +60,40 @@ describe('JwtStrategy', () => {
 
   // ------------------------- device binding -------------------------
 
-  it('accepts a token whose `did` matches the cached active deviceId', async () => {
-    redis.getJson.mockResolvedValueOnce('device-A');
+  it('accepts a token when the per-(user, device) cache marker is set', async () => {
+    // Cache key is `active_device:<userId>:<deviceId>` — presence = valid.
+    redis.getJson.mockImplementation(async (key: string) => {
+      if (key === 'active_device:user-1:device-A') return '1';
+      return null;
+    });
     const out = await strategy.validate(basePayload);
     expect(out.id).toBe('user-1');
+    expect(out.did).toBe('device-A');
     expect(sessionsRepo.findOne).not.toHaveBeenCalled();
   });
 
-  it('rejects DEVICE_KICKED when the cached deviceId points elsewhere', async () => {
-    redis.getJson.mockResolvedValueOnce('device-B');
+  it('falls through to the DB when the cache is cold and a matching row exists', async () => {
+    redis.getJson.mockResolvedValueOnce(null);
+    sessionsRepo.findOne.mockResolvedValueOnce({ id: 's1' });
+    const out = await strategy.validate(basePayload);
+    expect(out.id).toBe('user-1');
+    // Lookup MUST filter on both userId and deviceId — a sibling
+    // device's row must not authorise a token for THIS device.
+    expect(sessionsRepo.findOne).toHaveBeenCalledWith({
+      where: { userId: 'user-1', deviceId: 'device-A' },
+      select: { id: true },
+    });
+    // Re-warms the per-device cache for subsequent requests.
+    expect(redis.setJson).toHaveBeenCalledWith(
+      'active_device:user-1:device-A',
+      '1',
+      expect.any(Number),
+    );
+  });
+
+  it('rejects DEVICE_KICKED on cold cache when no device_sessions row exists', async () => {
+    redis.getJson.mockResolvedValueOnce(null);
+    sessionsRepo.findOne.mockResolvedValueOnce(null);
     let caught: unknown;
     try {
       await strategy.validate(basePayload);
@@ -80,27 +105,6 @@ describe('JwtStrategy', () => {
       code: string;
     };
     expect(body.code).toBe('DEVICE_KICKED');
-  });
-
-  it('falls through to the DB when the cache is cold', async () => {
-    redis.getJson.mockResolvedValueOnce(null);
-    sessionsRepo.findOne.mockResolvedValueOnce({
-      id: 's1',
-      deviceId: 'device-A',
-    });
-    const out = await strategy.validate(basePayload);
-    expect(out.id).toBe('user-1');
-    expect(sessionsRepo.findOne).toHaveBeenCalled();
-    // Re-warms the cache for subsequent requests.
-    expect(redis.setJson).toHaveBeenCalled();
-  });
-
-  it('rejects on cold cache when no device_sessions row exists', async () => {
-    redis.getJson.mockResolvedValueOnce(null);
-    sessionsRepo.findOne.mockResolvedValueOnce(null);
-    await expect(strategy.validate(basePayload)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
   });
 
   it('accepts legacy tokens without a `did` claim (forward compatibility)', async () => {
