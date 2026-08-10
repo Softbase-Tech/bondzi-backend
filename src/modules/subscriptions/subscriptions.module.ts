@@ -2,6 +2,7 @@ import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditLog } from '../admin/entities/audit-log.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PartnersModule } from '../partners/partners.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { PromoCodesModule } from '../promo-codes/promo-codes.module';
 import { User } from '../users/entities/user.entity';
@@ -29,6 +30,11 @@ import { EntitlementsAdminService } from './entitlements-admin.service';
     PromoCodesModule,
     // EntitlementsAdminService notifies users on manual grant.
     NotificationsModule,
+    // Partner commission engine — Stream A hooks Plus activation
+    // inside consumePaidAttempt; clawback fires from applyRefund.
+    // PartnersModule doesn't import SubscriptionsModule (only the
+    // Subscription entity via TypeOrmModule.forFeature) so no cycle.
+    PartnersModule,
   ],
   controllers: [
     SubscriptionsController,

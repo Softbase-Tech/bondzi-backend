@@ -19,6 +19,7 @@ import {
   PaymentKind,
   SubscriptionStatus,
 } from '../../common/types/enums';
+import { PartnerCommissionsService } from '../partners/partner-commissions.service';
 import { PaymentProviderRegistry } from '../payments/providers/payment-provider.registry';
 import { User } from '../users/entities/user.entity';
 import { Subscription } from './entities/subscription.entity';
@@ -153,6 +154,7 @@ export class SubscriptionsService {
     private readonly mail: MailService,
     private readonly promoCodes: PromoCodesService,
     private readonly paymentAttempts: PaymentAttemptsService,
+    private readonly partnerCommissions: PartnerCommissionsService,
   ) {}
 
   /**
@@ -1264,6 +1266,21 @@ export class SubscriptionsService {
             promoCodeId: attempt.promoCodeId,
           }),
         );
+
+        // Partner commission (Stream A). Fires only on the fresh-Plus
+        // INSERT branch — never on duplicate-Plus alarm, never on Pro.
+        // The commission service owns its own error handling: a
+        // partner-side failure never rolls back the paid subscription.
+        // The write is idempotent at the unique constraint
+        // (partner_id, type, dedup_key=subscription_id) so a retry
+        // (repair read, webhook replay) is absorbed as a no-op.
+        this.partnerCommissions
+          .creditPlusSubscription(saved.id)
+          .catch((err) =>
+            this.logger.error(
+              `[consumePaidAttempt] partner Stream A threw sub=${saved.id}: ${(err as Error).message}`,
+            ),
+          );
       }
     } else {
       // Pro. Single source of truth for expires_at: prefer the
@@ -1874,6 +1891,20 @@ export class SubscriptionsService {
     sub.status = SubscriptionStatus.REFUNDED;
     await this.subsRepo.save(sub);
     await this.invalidateCache(sub.userId);
+
+    // Partner commission clawback. Non-blocking; the commission
+    // service tolerates "no commission for this sub" (Pro refunds,
+    // unattributed refunds) with a null return. Any failure logs and
+    // moves on — the refund itself must not roll back if the partner
+    // ledger write fails.
+    this.partnerCommissions
+      .clawback(sub.id, `refund.processed ref=${reference}`)
+      .catch((err) =>
+        this.logger.error(
+          `[applyRefund] partner clawback threw sub=${sub.id}: ${(err as Error).message}`,
+        ),
+      );
+
     return sub;
   }
 

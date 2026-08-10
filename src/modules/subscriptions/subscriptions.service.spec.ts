@@ -12,6 +12,7 @@ import { User } from '../users/entities/user.entity';
 import { Subject } from '../subjects/entities/subject.entity';
 import { PlansService } from './plans/plans.service';
 import { PaymentProviderRegistry } from '../payments/providers/payment-provider.registry';
+import { PartnerCommissionsService } from '../partners/partner-commissions.service';
 import { PaymentAttemptsService } from '../payments/payment-attempts.service';
 import { RedisService } from '../../common/redis/redis.service';
 import {
@@ -172,6 +173,13 @@ describe('SubscriptionsService', () => {
         { provide: MailService, useValue: mail },
         { provide: PromoCodesService, useValue: promoCodes },
         { provide: PaymentAttemptsService, useValue: paymentAttempts },
+        {
+          provide: PartnerCommissionsService,
+          useValue: {
+            creditPlusSubscription: jest.fn().mockResolvedValue(null),
+            clawback: jest.fn().mockResolvedValue(null),
+          },
+        },
       ],
     }).compile();
     service = moduleRef.get(SubscriptionsService);

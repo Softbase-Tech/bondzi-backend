@@ -2,6 +2,10 @@ import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
 import { DeviceSession } from '../auth/entities/device-session.entity';
+import { Exam } from '../exams/entities/exam.entity';
+import { ExamAnswer } from '../exams/entities/exam-answer.entity';
+import { Subscription } from '../subscriptions/entities/subscription.entity';
+import { SubscriptionPlanEntity } from '../subscriptions/plans/entities/subscription-plan.entity';
 import { User } from '../users/entities/user.entity';
 import { PartnerAppeal } from './entities/partner-appeal.entity';
 import { PartnerAttribution } from './entities/partner-attribution.entity';
@@ -14,22 +18,27 @@ import { PartnerTermsVersion } from './entities/partner-terms-version.entity';
 import { Partner } from './entities/partner.entity';
 import { PartnerAttributionsService } from './partner-attributions.service';
 import { PartnerAuthGuard } from './partner-auth.guard';
+import { PartnerCommissionsService } from './partner-commissions.service';
 import { PartnerTermsService } from './partner-terms.service';
 import { PartnersController } from './partners.controller';
 import { PartnersService } from './partners.service';
 
 /**
- * Foundation module for the partner portal. Exposes:
+ * Foundation + commission engine module for the partner portal.
+ * Exposes:
  *
  *   - PartnersService              (partner + code lifecycle)
  *   - PartnerAttributionsService   (register-time attribution + fraud)
+ *   - PartnerCommissionsService    (Streams A/B/C + Plus refund clawback)
  *   - PartnerTermsService          (versioned commission-terms doc)
  *   - PartnerAuthGuard             (route protection)
  *
  * Consumed by AuthModule (register hook → attribution) via
  * `forwardRef` because AuthModule also imports parts of this
- * subgraph. Commissions, payouts, admin surfaces, and appeals are
- * layered on in Phases 2–5.
+ * subgraph. Commissions are triggered from SubscriptionsService
+ * (Plus activation, refund clawback) and ExamsService (post-completion
+ * ticks). Payouts, admin surfaces, and appeals are layered on in
+ * Phases 3–5.
  */
 @Module({
   imports: [
@@ -45,6 +54,16 @@ import { PartnersService } from './partners.service';
       PartnerAppeal,
       DeviceSession,
       User,
+      // Read-only cross-module reads from the commissions engine:
+      // Subscription + SubscriptionPlanEntity (Stream A gating +
+      // active-Plus lookup in Stream C), Exam + ExamAnswer (answer
+      // counts for Streams B and C). Owned by their home modules —
+      // TypeORM allows the same entity to be registered on multiple
+      // module scopes.
+      Subscription,
+      SubscriptionPlanEntity,
+      Exam,
+      ExamAnswer,
     ]),
     forwardRef(() => AuthModule),
   ],
@@ -52,12 +71,14 @@ import { PartnersService } from './partners.service';
   providers: [
     PartnersService,
     PartnerAttributionsService,
+    PartnerCommissionsService,
     PartnerTermsService,
     PartnerAuthGuard,
   ],
   exports: [
     PartnersService,
     PartnerAttributionsService,
+    PartnerCommissionsService,
     PartnerTermsService,
     PartnerAuthGuard,
     TypeOrmModule,
