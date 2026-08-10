@@ -1,0 +1,154 @@
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
+import {
+  AuthenticatedUser,
+  CurrentUser,
+} from '../../common/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CreateReferralCodeDto } from './dto/create-referral-code.dto';
+import { RegisterPartnerDto } from './dto/register-partner.dto';
+import { UpdatePartnerMomoDto } from './dto/update-partner-momo.dto';
+import { Partner } from './entities/partner.entity';
+import { PartnerReferralCode } from './entities/partner-referral-code.entity';
+import { PartnerAuthGuard } from './partner-auth.guard';
+import { CurrentPartner } from './partner-current.decorator';
+import { PartnerTermsService } from './partner-terms.service';
+import { PartnersService } from './partners.service';
+
+/**
+ * Partner-facing controller — routes served on the future
+ * partners.bondzi.online subdomain. All routes require an
+ * authenticated user (JwtAuthGuard); everything except the
+ * register endpoint and the public terms fetch also requires an
+ * approved-or-pending partner row (PartnerAuthGuard).
+ *
+ * Split into logical sections rather than one giant file:
+ *   - register / me / momo   (self-service partner lifecycle)
+ *   - codes                  (list / create / deactivate / reactivate)
+ *   - terms                  (current version, for the agreement UI)
+ */
+@ApiTags('partners')
+@Controller('partner')
+export class PartnersController {
+  constructor(
+    private readonly partners: PartnersService,
+    private readonly terms: PartnerTermsService,
+  ) {}
+
+  // --------------------------------------------------------------------
+  // Register / me
+  // --------------------------------------------------------------------
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Post('register')
+  @ApiOperation({
+    summary: 'Register the signed-in user as a partner. Idempotent per user.',
+  })
+  register(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: RegisterPartnerDto,
+  ) {
+    return this.partners.register(user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Get('me')
+  @ApiOperation({ summary: 'Return the signed-in partner profile.' })
+  me(@CurrentPartner() partner: Partner) {
+    return partner;
+  }
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Patch('me/momo')
+  @ApiOperation({ summary: 'Update the partner MoMo payout details.' })
+  updateMomo(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdatePartnerMomoDto,
+  ) {
+    return this.partners.updateMomo(user.id, dto);
+  }
+
+  // --------------------------------------------------------------------
+  // Codes
+  // --------------------------------------------------------------------
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Get('codes')
+  @ApiOperation({
+    summary: 'List the referral codes owned by the signed-in partner.',
+  })
+  @ApiOkResponse({ type: [PartnerReferralCode] })
+  listCodes(@CurrentPartner() partner: Partner) {
+    return this.partners.listCodes(partner.id);
+  }
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Post('codes')
+  @ApiOperation({ summary: 'Create a new referral code.' })
+  createCode(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateReferralCodeDto,
+  ) {
+    return this.partners.createCode(user.id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Patch('codes/:id/deactivate')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Deactivate a non-default code. Existing attributions still resolve.',
+  })
+  deactivateCode(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.partners.setCodeActive(user.id, id, false);
+  }
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Patch('codes/:id/reactivate')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reactivate a previously-deactivated code.' })
+  reactivateCode(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.partners.setCodeActive(user.id, id, true);
+  }
+
+  // --------------------------------------------------------------------
+  // Terms
+  // --------------------------------------------------------------------
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Get('terms/current')
+  @ApiOperation({ summary: 'The commission-terms version in force today.' })
+  currentTerms() {
+    return this.terms.getCurrent();
+  }
+}

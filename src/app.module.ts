@@ -60,6 +60,7 @@ import { AdsModule } from './modules/ads/ads.module';
 import { MailModule } from './modules/mail/mail.module';
 import { LegalModule } from './modules/legal/legal.module';
 import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
+import { PartnersModule } from './modules/partners/partners.module';
 
 @Module({
   imports: [
@@ -158,6 +159,7 @@ import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
     MailModule,
     LegalModule,
     PromoCodesModule,
+    PartnersModule,
     EntitlementsModule,
   ],
   providers: [

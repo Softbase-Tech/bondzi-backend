@@ -363,3 +363,98 @@ export enum EntitlementService {
   POST_EXAM_AI_BREAKDOWN = 'post_exam_ai_breakdown',
   AI_WEAKNESS_NARRATIVES = 'ai_weakness_narratives',
 }
+
+// ---------------------------------------------------------------------------
+// Partner Portal (partners.bondzi.online) — see /docs/partner-portal-plan.md
+// ---------------------------------------------------------------------------
+
+/**
+ * Partner lifecycle status. Progression:
+ *   pending   — signed up, code is live, earnings accrue but cannot pay out
+ *   active    — admin approved, earnings become payable
+ *   suspended — auto (3+ fraud flags) or manual admin action; earnings frozen
+ *               pending appeal outcome
+ *   banned    — final. Outstanding earnings forfeit, account closed.
+ */
+export enum PartnerStatus {
+  PENDING = 'pending',
+  ACTIVE = 'active',
+  SUSPENDED = 'suspended',
+  BANNED = 'banned',
+}
+
+/** MoMo provider currently supported for payouts. */
+export enum MomoProvider {
+  MTN = 'mtn',
+  AIRTELTIGO = 'airteltigo',
+  TELECEL = 'telecel',
+  OTHER = 'other',
+}
+
+/**
+ * How a user got linked to a partner. See PartnerAttributionsService for
+ * the write sites.
+ */
+export enum PartnerAttributionSource {
+  REGISTER_CODE = 'register_code',
+  BANNER_CLICK_LANDING = 'banner_click_landing',
+  ADMIN_MANUAL = 'admin_manual',
+}
+
+/**
+ * Commission stream. The `type` column doubles as the dedup namespace —
+ * uniqueness on `(partner_id, type, dedup_key)` guarantees no
+ * double-credit for the same underlying event.
+ */
+export enum PartnerCommissionType {
+  PLUS_SUBSCRIPTION = 'plus_subscription',
+  SIGNUP_BATCH = 'signup_batch',
+  ANSWERS_BONUS = 'answers_bonus',
+  /**
+   * Negative-balance offset written when a paid commission is clawed
+   * back after payout. Sits in the ledger until netted by future
+   * positive earnings.
+   */
+  PLUS_SUBSCRIPTION_CLAWBACK = 'plus_subscription_clawback',
+}
+
+/**
+ * Commission lifecycle. A fraud-flagged commission stays in `flagged`
+ * until admin resolves; a suspended partner's approved commissions
+ * stay `approved` (not `pending`) but block from moving to `paid`.
+ */
+export enum PartnerCommissionStatus {
+  PENDING = 'pending',
+  APPROVED = 'approved',
+  FLAGGED = 'flagged',
+  CLAWED_BACK = 'clawed_back',
+  PAID = 'paid',
+}
+
+/**
+ * Payout row status. Failed = MoMo bounced; commissions revert to
+ * `approved` for a fresh payout attempt.
+ */
+export enum PartnerPayoutStatus {
+  PENDING = 'pending',
+  PAID = 'paid',
+  FAILED = 'failed',
+}
+
+export enum PartnerFraudEventType {
+  ATTRIBUTION_FLAG = 'attribution_flag',
+  COMMISSION_FLAG = 'commission_flag',
+  MANUAL = 'manual',
+}
+
+export enum PartnerFraudSeverity {
+  LOW = 'low',
+  MEDIUM = 'medium',
+  HIGH = 'high',
+}
+
+export enum PartnerAppealStatus {
+  OPEN = 'open',
+  UPHELD = 'upheld',
+  DENIED = 'denied',
+}

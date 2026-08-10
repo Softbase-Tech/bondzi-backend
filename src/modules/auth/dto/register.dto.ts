@@ -108,6 +108,22 @@ export class RegisterDto {
   referralCode?: string;
 
   /**
+   * Partner referral code — different pool from `referralCode`. Links
+   * the new user to a partner in the Partner Portal for cash
+   * commission accrual. Case-insensitive, `PM-`/dash stripping happens
+   * server-side. Silently no-ops on unknown / inactive codes so a
+   * malformed code never blocks registration.
+   */
+  @ApiPropertyOptional({
+    description:
+      'Partner referral code (7-char alphanumeric, cash commissions).',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  partnerReferralCode?: string;
+
+  /**
    * Email OTP, required when registering with email. The OTP is issued
    * by POST /auth/email/otp/send and verified server-side here, BEFORE
    * the user row is created — so a brand-new email is proven to belong

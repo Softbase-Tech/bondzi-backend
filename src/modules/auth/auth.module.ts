@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -18,6 +18,7 @@ import { ReferralsModule } from '../referrals/referrals.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { UsersModule } from '../users/users.module';
+import { PartnersModule } from '../partners/partners.module';
 
 @Module({
   imports: [
@@ -40,6 +41,11 @@ import { UsersModule } from '../users/users.module';
     // pre-auth namespace lets the mobile register screen query before
     // a JWT exists.
     UsersModule,
+    // Partners module is imported via forwardRef because
+    // PartnersModule also imports AuthModule (for the JwtAuthGuard
+    // and the User FK on partner_attributions). The forwardRef breaks
+    // the DI cycle at boot time without changing runtime semantics.
+    forwardRef(() => PartnersModule),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],

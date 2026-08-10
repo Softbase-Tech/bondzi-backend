@@ -89,6 +89,7 @@ describe('AuthService', () => {
   let notifications: { send: jest.Mock };
   let mail: { send: jest.Mock };
   let subsService: { invalidateCache: jest.Mock };
+  let partnerAttributions: { attributeFromRegister: jest.Mock };
 
   beforeEach(async () => {
     usersRepo = {
@@ -130,6 +131,9 @@ describe('AuthService', () => {
     subsService = {
       invalidateCache: jest.fn().mockResolvedValue(undefined),
     };
+    partnerAttributions = {
+      attributeFromRegister: jest.fn().mockResolvedValue(null),
+    };
     // The updateExamType path uses dataSource.createQueryBuilder() to
     // wipe stale `user_subjects` rows when the level changes. Stub the
     // chain so the spec's login / OTP paths (which don't exercise
@@ -159,6 +163,12 @@ describe('AuthService', () => {
         { provide: MailService, useValue: mail },
         { provide: DataSource, useValue: dataSource },
         { provide: SubscriptionsService, useValue: subsService },
+        {
+          provide: (
+            await import('../partners/partner-attributions.service')
+          ).PartnerAttributionsService,
+          useValue: partnerAttributions,
+        },
       ],
     }).compile();
 
