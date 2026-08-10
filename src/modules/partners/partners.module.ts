@@ -10,6 +10,7 @@ import { SubscriptionPlanEntity } from '../subscriptions/plans/entities/subscrip
 import { User } from '../users/entities/user.entity';
 import { PartnerAppeal } from './entities/partner-appeal.entity';
 import { PartnerAttribution } from './entities/partner-attribution.entity';
+import { PartnerBanner } from './entities/partner-banner.entity';
 import { PartnerCommission } from './entities/partner-commission.entity';
 import { PartnerFraudEvent } from './entities/partner-fraud-event.entity';
 import { PartnerPayout } from './entities/partner-payout.entity';
@@ -20,6 +21,7 @@ import { Partner } from './entities/partner.entity';
 import { PartnerAppealsService } from './partner-appeals.service';
 import { PartnerAttributionsService } from './partner-attributions.service';
 import { PartnerAuthGuard } from './partner-auth.guard';
+import { PartnerBannersService } from './partner-banners.service';
 import { PartnerCommissionsService } from './partner-commissions.service';
 import { PartnerPayoutsService } from './partner-payouts.service';
 import { PartnerTermsService } from './partner-terms.service';
@@ -60,6 +62,7 @@ import { PartnersService } from './partners.service';
       PartnerPayout,
       PartnerFraudEvent,
       PartnerAppeal,
+      PartnerBanner,
       DeviceSession,
       User,
       // Read-only cross-module reads from the commissions engine:
@@ -84,6 +87,7 @@ import { PartnersService } from './partners.service';
     PartnerPayoutsService,
     PartnersAdminService,
     PartnerAppealsService,
+    PartnerBannersService,
     PartnerTermsService,
     PartnerAuthGuard,
   ],
@@ -94,6 +98,7 @@ import { PartnersService } from './partners.service';
     PartnerPayoutsService,
     PartnersAdminService,
     PartnerAppealsService,
+    PartnerBannersService,
     PartnerTermsService,
     PartnerAuthGuard,
     TypeOrmModule,

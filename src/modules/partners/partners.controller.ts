@@ -32,6 +32,7 @@ import { PartnerReferralCode } from './entities/partner-referral-code.entity';
 import { SubmitAppealDto } from './dto/submit-appeal.dto';
 import { PartnerAppealsService } from './partner-appeals.service';
 import { PartnerAuthGuard } from './partner-auth.guard';
+import { PartnerBannersService } from './partner-banners.service';
 import { CurrentPartner } from './partner-current.decorator';
 import { PartnerPayoutsService } from './partner-payouts.service';
 import { PartnerTermsService } from './partner-terms.service';
@@ -57,6 +58,7 @@ export class PartnersController {
     private readonly terms: PartnerTermsService,
     private readonly payouts: PartnerPayoutsService,
     private readonly appeals: PartnerAppealsService,
+    private readonly banners: PartnerBannersService,
   ) {}
 
   // --------------------------------------------------------------------
@@ -227,6 +229,20 @@ export class PartnersController {
       body: dto.body,
       attachments: dto.attachments,
     });
+  }
+
+  // --------------------------------------------------------------------
+  // Banner gallery (partner-facing read)
+  // --------------------------------------------------------------------
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Get('banners')
+  @ApiOperation({
+    summary: 'List the active banner catalogue — images the partner can share.',
+  })
+  listBanners() {
+    return this.banners.listActive();
   }
 
   // --------------------------------------------------------------------

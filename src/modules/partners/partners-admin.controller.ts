@@ -1,11 +1,13 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Res,
@@ -36,7 +38,9 @@ import { MarkPayoutFailedDto } from './dto/mark-payout-failed.dto';
 import { MarkPayoutPaidDto } from './dto/mark-payout-paid.dto';
 import { ResolveAppealDto } from './dto/resolve-appeal.dto';
 import { SuspendPartnerDto } from './dto/suspend-partner.dto';
+import { CreateBannerDto, UpdateBannerDto } from './dto/upsert-banner.dto';
 import { PartnerAppealsService } from './partner-appeals.service';
+import { PartnerBannersService } from './partner-banners.service';
 import { PartnerPayoutsService } from './partner-payouts.service';
 import { PartnerTermsService } from './partner-terms.service';
 import { PartnersAdminService } from './partners-admin.service';
@@ -58,6 +62,7 @@ export class PartnersAdminController {
     private readonly payouts: PartnerPayoutsService,
     private readonly appeals: PartnerAppealsService,
     private readonly terms: PartnerTermsService,
+    private readonly banners: PartnerBannersService,
   ) {}
 
   // --------------------------------------------------------------------
@@ -209,6 +214,43 @@ export class PartnersAdminController {
       createdBy: user.id,
       ...dto,
     });
+  }
+
+  // --------------------------------------------------------------------
+  // Banner gallery
+  // --------------------------------------------------------------------
+
+  @Get('banners/list')
+  listBanners() {
+    return this.banners.listAll();
+  }
+
+  @Post('banners')
+  createBanner(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateBannerDto,
+  ) {
+    return this.banners.create({
+      createdBy: user.id,
+      ...dto,
+    });
+  }
+
+  @Patch('banners/:id')
+  @HttpCode(HttpStatus.OK)
+  updateBanner(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateBannerDto,
+  ) {
+    return this.banners.update(id, dto);
+  }
+
+  @Delete('banners/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async removeBanner(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<void> {
+    await this.banners.remove(id);
   }
 
   // --------------------------------------------------------------------

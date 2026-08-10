@@ -458,3 +458,15 @@ export enum PartnerAppealStatus {
   UPHELD = 'upheld',
   DENIED = 'denied',
 }
+
+/**
+ * Aspect ratio of a partner banner. Drives layout in the portal
+ * gallery + guides admin on which sizes to prep for each social
+ * surface (square = Instagram feed, story = Instagram/WhatsApp status,
+ * landscape = Twitter/X card).
+ */
+export enum PartnerBannerAspect {
+  SQUARE = 'square',
+  STORY = 'story',
+  LANDSCAPE = 'landscape',
+}
