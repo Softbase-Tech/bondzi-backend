@@ -6,18 +6,13 @@ function ordinalRank(n: number): string {
   return `${n}${RANK_SUFFIX[n] ?? 'th'}`;
 }
 
-const PERIOD_LABEL: Record<string, string> = {
-  weekly: 'this week',
-  monthly: 'this month',
-  yearly: 'this year',
-};
-
 /**
  * Leaderboard winner congratulations. Fires from
- * WinnerSelectionService for weekly / monthly / yearly periods. The
- * email also acts as a "claim your XP" nudge — the XP is already
- * banked server-side, but the copy points the user at the
- * leaderboard tab so they see their position.
+ * WinnerSelectionService for weekly / monthly / yearly periods. Copy
+ * anchors on `payload.periodLabel` — a specific dated label like
+ * "the week of 3–9 Aug 2026" or "August 2026" — not "this week /
+ * this month". Awarding can lag past the current period, so the
+ * relative phrasing was misleading.
  */
 export function buildWinnerAnnouncement(
   payload: WinnerAnnouncementPayload,
@@ -27,16 +22,17 @@ export function buildWinnerAnnouncement(
     ? `Hi ${escapeText(payload.recipientName)},`
     : 'Hi there,';
   const rankLabel = ordinalRank(payload.rank);
-  const periodLabel = PERIOD_LABEL[payload.period] ?? payload.period;
+  const specific = escapeText(payload.periodLabel);
   const body = `
     <p style="margin:0 0 14px;font-size:22px;font-weight:800;color:${brand.navy};">
-      🏆 You finished ${escapeText(rankLabel)} ${escapeText(periodLabel)}!
+      🏆 You finished ${escapeText(rankLabel)} for ${specific}!
     </p>
     <p style="margin:0 0 14px;">${greeting}</p>
     <p style="margin:0 0 14px;">
       The ${escapeText(payload.period)} leaderboard for
-      <strong>${escapeText(payload.level)}</strong> just closed —
-      you placed <strong>${escapeText(rankLabel)}</strong>.
+      <strong>${escapeText(payload.level)}</strong> — for
+      <strong>${specific}</strong> — just closed. You placed
+      <strong>${escapeText(rankLabel)}</strong>.
     </p>
     <div style="
       margin:18px 0;
@@ -55,17 +51,17 @@ export function buildWinnerAnnouncement(
     </p>
   `;
   return {
-    subject: `🏆 ${rankLabel} place ${periodLabel} on Bondzi!`,
+    subject: `🏆 ${rankLabel} place for ${payload.periodLabel} on Bondzi!`,
     html: renderLayout({
       title: 'You won!',
-      preheader: `${rankLabel} place ${periodLabel} — +${payload.xpAwarded.toLocaleString()} XP.`,
+      preheader: `${rankLabel} place for ${payload.periodLabel} — +${payload.xpAwarded.toLocaleString()} XP.`,
       body,
       cta: { label: 'See the leaderboard', url: webUrl },
       webUrl,
     }),
     text:
       `${greeting}\n\n` +
-      `Congrats — you placed ${rankLabel} ${periodLabel} on the ${payload.level} board. ` +
+      `Congrats — you placed ${rankLabel} for ${payload.periodLabel} on the ${payload.level} board. ` +
       `+${payload.xpAwarded} XP awarded to your account.\n\n` +
       `Next ${payload.period}'s board is already open.`,
   };

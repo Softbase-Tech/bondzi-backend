@@ -14,6 +14,7 @@ import { User } from '../users/entities/user.entity';
 import { SrsService } from '../srs/srs.service';
 import { GamificationService } from '../gamification/gamification.service';
 import { StreakService } from '../gamification/streak.service';
+import { PartnerCommissionsService } from '../partners/partner-commissions.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
@@ -174,6 +175,13 @@ describe('ExamsService', () => {
         { provide: AiService, useValue: { callBedrock: jest.fn() } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: DataSource, useValue: noop },
+        {
+          provide: PartnerCommissionsService,
+          useValue: {
+            tickSignupProgress: jest.fn().mockResolvedValue(undefined),
+            tickAnswersBonus: jest.fn().mockResolvedValue(undefined),
+          },
+        },
       ],
     }).compile();
 

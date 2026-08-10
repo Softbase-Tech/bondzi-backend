@@ -67,6 +67,49 @@ export enum MailEvent {
   REFERRAL_QUALIFIED = 'referral_qualified',
   /** Sunday digest: this week's points, questions answered, rank delta. */
   WEEKLY_DIGEST = 'weekly_digest',
+
+  // ----- Partner portal --------------------------------------------------
+  /**
+   * Sent immediately after a partner submits register — snapshots the
+   * agreed commission-terms version so they have a permanent copy of
+   * the contract they signed.
+   */
+  PARTNER_AGREEMENT = 'partner_agreement',
+  /**
+   * Sent when an admin flips a pending partner to `active`. Contains
+   * the partner's default referral code + a link to the partner
+   * portal dashboard.
+   */
+  PARTNER_APPROVED = 'partner_approved',
+  /**
+   * Sent when an admin marks a payout `paid`. Carries the invoice
+   * PDF as an attachment and shows the MoMo reference + amount.
+   */
+  PARTNER_PAYOUT_PAID = 'partner_payout_paid',
+  /**
+   * Sent when a partner is suspended — either auto-suspended after
+   * their fraud-flag counter crossed the threshold defined in the
+   * current terms, or manually suspended by an admin. Explains the
+   * appeals process.
+   */
+  PARTNER_ACCOUNT_SUSPENDED = 'partner_account_suspended',
+  /**
+   * Sent when a partner is banned — final. Outstanding earnings
+   * forfeit, no further payouts.
+   */
+  PARTNER_ACCOUNT_BANNED = 'partner_account_banned',
+  /**
+   * Broadcast to all active partners when admin publishes a new
+   * terms version. Carries the version number + a diff summary so
+   * partners know what changed before opening the full document.
+   */
+  PARTNER_TERMS_UPDATED = 'partner_terms_updated',
+  /**
+   * Sent when admin closes an open appeal — upheld (partner
+   * reinstated) or denied (strike counter bumps toward the ban
+   * threshold).
+   */
+  PARTNER_APPEAL_RESOLVED = 'partner_appeal_resolved',
 }
 
 // ============================================================================
@@ -104,8 +147,16 @@ export interface AccountCreditedPayload extends BasePayload {
 }
 
 export interface WinnerAnnouncementPayload extends BasePayload {
-  /** 'weekly' | 'monthly' | 'yearly' — display label. */
+  /** 'weekly' | 'monthly' | 'yearly' — grammatical bucket used in copy. */
   period: string;
+  /**
+   * Specific, dated label for the period this win is for — e.g.
+   * "the week of 3–9 Aug 2026" or "August 2026". Anchoring on the
+   * actual date matters because awarding lags: a run kicked off on
+   * Monday for last week's winners lands after "this week" has
+   * rolled over.
+   */
+  periodLabel: string;
   /** 1-based rank within the period (1 = first place). */
   rank: number;
   /** XP awarded with this win. */
@@ -221,6 +272,98 @@ export interface WeeklyDigestPayload extends BasePayload {
   unsubscribeUrl?: string;
 }
 
+// ----- Partner portal --------------------------------------------------
+
+export interface PartnerAgreementPayload extends BasePayload {
+  partnerName: string;
+  /** The referral code that ships with the partner's fresh account. */
+  defaultCode: string;
+  /** Version number of the terms document the partner just agreed to. */
+  termsVersion: number;
+  /** Full markdown-rendered terms text — snapshotted at register time. */
+  termsBodyMd: string;
+  /** Plus commission amounts for the three levels (display strings). */
+  plusWassceGhs: string;
+  plusNovdecGhs: string;
+  plusBeceGhs: string;
+  /** GHC amount paid per batch of `signupBatchSize` qualified signups. */
+  signupBatchAmountGhs: string;
+  signupBatchSize: number;
+  signupMinCompletedAnswers: number;
+  /** GHC one-off answers-bonus + its threshold. */
+  answersBonusAmountGhs: string;
+  answersBonusThreshold: number;
+  attributionWindowDays: number;
+}
+
+export interface PartnerApprovedPayload extends BasePayload {
+  partnerName: string;
+  defaultCode: string;
+  /** Absolute URL to the partner portal home. */
+  portalUrl: string;
+}
+
+export interface PartnerPayoutPaidPayload extends BasePayload {
+  partnerName: string;
+  /** GHC amount paid out (already 2dp string, e.g. "80.00"). */
+  amountDisplay: string;
+  currency: string; // 'GHS'
+  /** ISO date of the payout's week_of (usually Monday of pay week). */
+  weekOf: string;
+  invoiceNumber: string;
+  momoProvider: string; // 'MTN' | 'AirtelTigo' | 'Telecel' etc.
+  momoNumber: string;
+  /** MoMo transfer reference the admin filled in when marking paid. */
+  momoReference: string;
+  /** Number of individual commissions rolled into this payout. */
+  commissionCount: number;
+  paidAt: Date;
+}
+
+export interface PartnerAccountSuspendedPayload extends BasePayload {
+  partnerName: string;
+  reason: string;
+  /** Absolute URL to the partner portal's appeals page. */
+  appealsUrl: string;
+  /**
+   * How many appeals the partner has remaining before a ban. Nudges
+   * them to use their strikes wisely.
+   */
+  appealsRemaining: number;
+}
+
+export interface PartnerAccountBannedPayload extends BasePayload {
+  partnerName: string;
+  reason: string;
+}
+
+export interface PartnerTermsUpdatedPayload extends BasePayload {
+  partnerName: string;
+  /** New version number now in force. */
+  newVersion: number;
+  /** Short human-readable summary of what changed (admin authored). */
+  changeSummary: string;
+  effectiveFrom: Date;
+  /** Absolute URL to the terms page inside the partner portal. */
+  termsUrl: string;
+}
+
+export interface PartnerAppealResolvedPayload extends BasePayload {
+  partnerName: string;
+  /** 1-based appeal number, matches partner_appeals.appeal_number. */
+  appealNumber: number;
+  /** 'upheld' → reinstated ; 'denied' → strike, may lead to ban. */
+  decision: 'upheld' | 'denied';
+  resolutionNote: string | null;
+  /**
+   * True when this was the third denied appeal and the partner is
+   * therefore now banned. Copy switches to the ban notice.
+   */
+  triggersBan: boolean;
+  appealsRemaining: number;
+  appealsUrl: string;
+}
+
 /** Map from event → payload type for compile-time checking. */
 export interface MailPayloadByEvent {
   [MailEvent.WELCOME]: WelcomePayload;
@@ -239,6 +382,13 @@ export interface MailPayloadByEvent {
   [MailEvent.LEVEL_UP]: LevelUpPayload;
   [MailEvent.REFERRAL_QUALIFIED]: ReferralQualifiedPayload;
   [MailEvent.WEEKLY_DIGEST]: WeeklyDigestPayload;
+  [MailEvent.PARTNER_AGREEMENT]: PartnerAgreementPayload;
+  [MailEvent.PARTNER_APPROVED]: PartnerApprovedPayload;
+  [MailEvent.PARTNER_PAYOUT_PAID]: PartnerPayoutPaidPayload;
+  [MailEvent.PARTNER_ACCOUNT_SUSPENDED]: PartnerAccountSuspendedPayload;
+  [MailEvent.PARTNER_ACCOUNT_BANNED]: PartnerAccountBannedPayload;
+  [MailEvent.PARTNER_TERMS_UPDATED]: PartnerTermsUpdatedPayload;
+  [MailEvent.PARTNER_APPEAL_RESOLVED]: PartnerAppealResolvedPayload;
 }
 
 /** Returned by every template's `build()` function. */

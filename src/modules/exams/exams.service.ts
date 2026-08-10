@@ -21,6 +21,7 @@ import { User } from '../users/entities/user.entity';
 import { SrsService } from '../srs/srs.service';
 import { GamificationService } from '../gamification/gamification.service';
 import { StreakService } from '../gamification/streak.service';
+import { PartnerCommissionsService } from '../partners/partner-commissions.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
@@ -86,6 +87,7 @@ export class ExamsService {
     private readonly ai: AiService,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
+    private readonly partnerCommissions: PartnerCommissionsService,
   ) {}
 
   /** Create an exam session — server selects questions based on filter + mode. */
@@ -764,6 +766,16 @@ export class ExamsService {
 
     await this.streak.recordStudyDay(userId).catch(() => void 0);
     await this.referrals.checkQualification(userId).catch(() => void 0);
+
+    // Partner commission ticks (Streams B + C). Fire in parallel —
+    // both are idempotent and both swallow their own errors, so an
+    // exam completion never fails because of a partner-side write.
+    // Stream B counts toward the signup batch; Stream C fires the
+    // answers bonus for paid-Plus attributed users.
+    void Promise.all([
+      this.partnerCommissions.tickSignupProgress(userId),
+      this.partnerCommissions.tickAnswersBonus(userId),
+    ]).catch(() => void 0);
 
     await this.updateSubjectProgress(userId, exam, answers);
 

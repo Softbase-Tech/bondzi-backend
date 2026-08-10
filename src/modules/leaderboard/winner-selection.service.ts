@@ -20,6 +20,54 @@ const MIN_ACCOUNT_AGE_DAYS = 3;
 const MIN_ANSWERS = 50;
 const PAYOUT_RANK_LIMIT = 20;
 
+/**
+ * Human-readable label for a period, anchored on the actual start
+ * date rather than "this week / this month". Awarding can lag behind
+ * the period it's for (a Monday winner-run for the previous week
+ * arrives on Tuesday of the current week), and "this month" reads
+ * wrong when it's really the past month.
+ *
+ * Formats:
+ *   weekly, same calendar month:  "the week of 3–9 Aug 2026"
+ *   weekly, spans two months:     "the week of 30 Aug – 5 Sep 2026"
+ *   monthly:                      "August 2026"
+ *
+ * Uses UTC because backend period_start columns are stamped in UTC
+ * (Ghana is UTC+0). Locale is en-GB to force day-month order that
+ * matches Ghanaian date conventions.
+ */
+export function formatPeriodLabel(
+  periodType: LeaderboardPeriodType,
+  periodStart: string,
+): string {
+  const start = new Date(`${periodStart}T00:00:00Z`);
+  if (Number.isNaN(start.getTime())) return '';
+  if (periodType === LeaderboardPeriodType.MONTHLY) {
+    return start.toLocaleDateString('en-GB', {
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+  }
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 6);
+  const year = end.getUTCFullYear();
+  const startDay = start.getUTCDate();
+  const startMonth = start.toLocaleDateString('en-GB', {
+    month: 'short',
+    timeZone: 'UTC',
+  });
+  const endDay = end.getUTCDate();
+  const endMonth = end.toLocaleDateString('en-GB', {
+    month: 'short',
+    timeZone: 'UTC',
+  });
+  if (startMonth === endMonth) {
+    return `the week of ${startDay}–${endDay} ${endMonth} ${year}`;
+  }
+  return `the week of ${startDay} ${startMonth} – ${endDay} ${endMonth} ${year}`;
+}
+
 export interface WinnerSelectionResult {
   period: {
     examType: ExamType;
@@ -178,10 +226,14 @@ export class WinnerSelectionService {
           xpIssuedAt: new Date(),
         });
 
-        const periodLabel =
-          params.periodType === LeaderboardPeriodType.MONTHLY
-            ? 'month'
-            : 'week';
+        // Anchor the copy on the ACTUAL period the award was for —
+        // awarding lags (a Monday-morning run announces the previous
+        // week's winners), so "this week/month" can already be a
+        // different period by the time the notification lands.
+        const specificLabel = formatPeriodLabel(
+          params.periodType,
+          params.periodStart,
+        );
 
         // PUSH (was IN_APP). Goes through NotificationsService.send
         // which writes the row AND queues the Firebase dispatch —
@@ -191,12 +243,13 @@ export class WinnerSelectionService {
             userId: entry.userId,
             channel: NotificationChannel.PUSH,
             title: 'Leaderboard winner!',
-            body: `You ranked #${rank} this ${periodLabel} and earned ${xp.xpAmount} XP.`,
+            body: `You ranked #${rank} for ${specificLabel} and earned ${xp.xpAmount} XP.`,
             data: {
               type: 'winner',
               rank: String(rank),
               periodType: params.periodType,
               periodStart: params.periodStart,
+              periodLabel: specificLabel,
               xpEarned: String(xp.xpAmount),
             },
           })
@@ -216,7 +269,16 @@ export class WinnerSelectionService {
               entry.user.email,
               {
                 recipientName: entry.user.fullName.split(' ')[0],
-                period: periodLabel,
+                // `period` is the grammatical bucket (week / month) —
+                // still used inside the template for phrases like
+                // "next week's board is open".
+                period:
+                  params.periodType === LeaderboardPeriodType.MONTHLY
+                    ? 'month'
+                    : 'week',
+                // `periodLabel` is the specific dated label — what the
+                // user actually reads next to their rank.
+                periodLabel: specificLabel,
                 rank,
                 xpAwarded: xp.xpAmount,
                 level: params.examType.toUpperCase(),

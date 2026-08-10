@@ -25,6 +25,7 @@ import {
 } from '../../common/types/enums';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
+import { generateReferralCode } from '../../common/utils/referral-code.util';
 import { RegisterDto } from './dto/register.dto';
 import {
   canonicalUsername,
@@ -38,26 +39,10 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationChannel } from '../../common/types/enums';
 import { MailService } from '../mail/mail.service';
 import { MailEvent } from '../mail/mail.types';
+import { PartnerAttributionsService } from '../partners/partner-attributions.service';
 
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_TTL_SECONDS = 15 * 60;
-
-/**
- * Referral codes are 7 characters, uppercase alphanumeric, no
- * separators. The layout is intentionally simple to type on a phone
- * keyboard (no dashes, no branded prefix): 4 hex chars from crypto
- * randomness + 3 letters seeded from the user's name (padded with
- * 'GHN' so single-name accounts still get a stable suffix).
- *
- * Example: `A1B2CJO`
- */
-function generateReferralCode(fullName: string): string {
-  const prefix = randomBytes(2).toString('hex').toUpperCase().slice(0, 4);
-  const suffix = (
-    fullName.replace(/[^A-Za-z]/g, '').toUpperCase() + 'GHN'
-  ).slice(0, 3);
-  return `${prefix}${suffix}`;
-}
 
 function schoolLevelFor(examType: ExamType): SchoolLevel {
   return examType === ExamType.BECE ? SchoolLevel.JHS : SchoolLevel.SHS;
@@ -176,6 +161,7 @@ export class AuthService {
     private readonly mail: MailService,
     private readonly dataSource: DataSource,
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly partnerAttributions: PartnerAttributionsService,
   ) {}
 
   /**
@@ -377,6 +363,25 @@ export class AuthService {
       // to award XP — when recordReferralSignup short-circuits on
       // fraud-suspicion, no row exists and this becomes a no-op.
       await this.referrals.issueSignupRewards(user.id);
+    }
+
+    // Partner Portal attribution — separate from the student XP
+    // referral above. Fraud checks + suspicion flags handled
+    // internally; unknown codes and banned partners silently no-op
+    // so a malformed partner code never blocks a legitimate register.
+    if (dto.partnerReferralCode) {
+      await this.partnerAttributions
+        .attributeFromRegister({
+          user,
+          code: dto.partnerReferralCode,
+          deviceId: dto.deviceId,
+        })
+        .catch((err) => {
+          this.logger.warn(
+            `[register] partner attribution failed user=${user.id}: ${(err as Error).message}`,
+          );
+          return null;
+        });
     }
 
     if (!dto.deviceId) {
