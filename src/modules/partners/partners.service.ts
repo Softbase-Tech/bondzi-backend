@@ -3,12 +3,15 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { PartnerStatus } from '../../common/types/enums';
 import { generateReferralCode } from '../../common/utils/referral-code.util';
+import { MailService } from '../mail/mail.service';
+import { MailEvent } from '../mail/mail.types';
 import { User } from '../users/entities/user.entity';
 import { CreateReferralCodeDto } from './dto/create-referral-code.dto';
 import { RegisterPartnerDto } from './dto/register-partner.dto';
@@ -32,6 +35,8 @@ import { PartnerTermsService } from './partner-terms.service';
  */
 @Injectable()
 export class PartnersService {
+  private readonly logger = new Logger(PartnersService.name);
+
   constructor(
     @InjectRepository(Partner)
     private readonly partnersRepo: Repository<Partner>,
@@ -41,6 +46,7 @@ export class PartnersService {
     private readonly usersRepo: Repository<User>,
     private readonly terms: PartnerTermsService,
     private readonly dataSource: DataSource,
+    private readonly mail: MailService,
   ) {}
 
   // --------------------------------------------------------------------
@@ -87,7 +93,7 @@ export class PartnersService {
 
     const termsVersion = await this.terms.getCurrent();
 
-    return this.dataSource.transaction(async (em) => {
+    const savedPartner = await this.dataSource.transaction(async (em) => {
       const partner = em.getRepository(Partner).create({
         userId,
         email: dto.email.trim().toLowerCase(),
@@ -111,10 +117,58 @@ export class PartnersService {
         isDefault: true,
         isActive: true,
       });
-      await em.getRepository(PartnerReferralCode).save(defaultCode);
+      const savedCode = await em
+        .getRepository(PartnerReferralCode)
+        .save(defaultCode);
+
+      // Attach the freshly-allocated code to the returned envelope
+      // via a non-persisted property so the caller (AuthService /
+      // controller) can hand it off to the agreement email without
+      // an extra fetch.
+      (saved as Partner & { defaultCode?: string }).defaultCode =
+        savedCode.code;
 
       return saved;
     });
+
+    // Fire the PARTNER_AGREEMENT email OUTSIDE the transaction.
+    // Failure to send never rolls back a legitimate partner account;
+    // audit + retry live on the mail-audit table.
+    const defaultCode = (savedPartner as Partner & { defaultCode?: string })
+      .defaultCode;
+    if (defaultCode) {
+      void this.mail
+        .send(
+          MailEvent.PARTNER_AGREEMENT,
+          savedPartner.email,
+          {
+            recipientName: savedPartner.fullName,
+            partnerName: savedPartner.fullName,
+            defaultCode,
+            termsVersion: termsVersion.version,
+            termsBodyMd: termsVersion.bodyMd,
+            plusWassceGhs: termsVersion.plusWassce,
+            plusNovdecGhs: termsVersion.plusNovdec,
+            plusBeceGhs: termsVersion.plusBece,
+            signupBatchAmountGhs: termsVersion.signupBatchAmountGhs,
+            signupBatchSize: termsVersion.signupBatchSize,
+            signupMinCompletedAnswers: termsVersion.signupMinCompletedAnswers,
+            answersBonusAmountGhs: termsVersion.answersBonusAmountGhs,
+            answersBonusThreshold: termsVersion.answersBonusThreshold,
+            attributionWindowDays: termsVersion.attributionWindowDays,
+          },
+          {
+            userId: savedPartner.userId ?? undefined,
+            dedupKey: `partner_agreement:${savedPartner.id}`,
+          },
+        )
+        .catch((err) =>
+          this.logger.error(
+            `[partners.register] agreement email failed partner=${savedPartner.id}: ${(err as Error).message}`,
+          ),
+        );
+    }
+    return savedPartner;
   }
 
   // --------------------------------------------------------------------

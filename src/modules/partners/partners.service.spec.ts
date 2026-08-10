@@ -11,6 +11,7 @@ import { MomoProvider, PartnerStatus } from '../../common/types/enums';
 import { User } from '../users/entities/user.entity';
 import { PartnerReferralCode } from './entities/partner-referral-code.entity';
 import { Partner } from './entities/partner.entity';
+import { MailService } from '../mail/mail.service';
 import { PartnerTermsService } from './partner-terms.service';
 import { PartnersService } from './partners.service';
 
@@ -125,6 +126,13 @@ describe('PartnersService', () => {
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: PartnerTermsService, useValue: terms },
         { provide: DataSource, useValue: dataSource },
+        {
+          provide: MailService,
+          useValue: {
+            send: jest.fn().mockResolvedValue(undefined),
+            getWebUrl: jest.fn().mockReturnValue('https://bondzi.app'),
+          },
+        },
       ],
     }).compile();
     service = moduleRef.get(PartnersService);

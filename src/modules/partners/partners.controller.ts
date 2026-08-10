@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -8,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -16,6 +18,7 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import { Response } from 'express';
 import {
   AuthenticatedUser,
   CurrentUser,
@@ -28,6 +31,7 @@ import { Partner } from './entities/partner.entity';
 import { PartnerReferralCode } from './entities/partner-referral-code.entity';
 import { PartnerAuthGuard } from './partner-auth.guard';
 import { CurrentPartner } from './partner-current.decorator';
+import { PartnerPayoutsService } from './partner-payouts.service';
 import { PartnerTermsService } from './partner-terms.service';
 import { PartnersService } from './partners.service';
 
@@ -49,6 +53,7 @@ export class PartnersController {
   constructor(
     private readonly partners: PartnersService,
     private readonly terms: PartnerTermsService,
+    private readonly payouts: PartnerPayoutsService,
   ) {}
 
   // --------------------------------------------------------------------
@@ -138,6 +143,57 @@ export class PartnersController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ) {
     return this.partners.setCodeActive(user.id, id, true);
+  }
+
+  // --------------------------------------------------------------------
+  // Payouts (partner-facing reads)
+  // --------------------------------------------------------------------
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Get('payouts')
+  @ApiOperation({
+    summary: 'List the signed-in partner`s payout history (paid + pending).',
+  })
+  listPayouts(@CurrentPartner() partner: Partner) {
+    return this.payouts.listForPartner(partner.id);
+  }
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Get('payouts/preview')
+  @ApiOperation({
+    summary:
+      'Preview the total that would be paid out RIGHT NOW (approved-and-unpaid).',
+  })
+  previewNextPayout(@CurrentPartner() partner: Partner) {
+    return this.payouts.previewNextPayout(partner.id);
+  }
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Get('payouts/:id/invoice.pdf')
+  @ApiOperation({
+    summary: 'Download the invoice PDF for one of your payouts.',
+  })
+  async downloadInvoice(
+    @CurrentPartner() partner: Partner,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    // Ownership check: the payout must belong to the requesting
+    // partner. Anything else 400s (deliberately opaque — refusing to
+    // 404 keeps the "yes/no this row exists" signal off unauth users).
+    const list = await this.payouts.listForPartner(partner.id);
+    const mine = list.find((p) => p.id === id);
+    if (!mine) {
+      throw new BadRequestException('Invoice not available for this account.');
+    }
+    const { filename, buffer } = await this.payouts.buildInvoicePdf(id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', String(buffer.length));
+    res.end(buffer);
   }
 
   // --------------------------------------------------------------------
