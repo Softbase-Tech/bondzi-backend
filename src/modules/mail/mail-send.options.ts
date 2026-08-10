@@ -25,10 +25,16 @@ export const TRANSACTIONAL_MAIL_EVENTS = new Set<MailEvent>([
   MailEvent.SUBSCRIPTION_PAYMENT_FAILED,
   // Partner portal transactional events. Signup contract + approval
   // + payout receipt are money/account-state events — preference
-  // toggles don't apply.
+  // toggles don't apply. Suspend / ban / terms-updated / appeal-
+  // resolved are also account-state changes the partner cannot opt
+  // out of and still function.
   MailEvent.PARTNER_AGREEMENT,
   MailEvent.PARTNER_APPROVED,
   MailEvent.PARTNER_PAYOUT_PAID,
+  MailEvent.PARTNER_ACCOUNT_SUSPENDED,
+  MailEvent.PARTNER_ACCOUNT_BANNED,
+  MailEvent.PARTNER_TERMS_UPDATED,
+  MailEvent.PARTNER_APPEAL_RESOLVED,
 ]);
 
 export interface MailSendOptions {

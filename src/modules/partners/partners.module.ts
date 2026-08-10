@@ -17,6 +17,7 @@ import { PartnerReferralCode } from './entities/partner-referral-code.entity';
 import { PartnerSignupCredit } from './entities/partner-signup-credit.entity';
 import { PartnerTermsVersion } from './entities/partner-terms-version.entity';
 import { Partner } from './entities/partner.entity';
+import { PartnerAppealsService } from './partner-appeals.service';
 import { PartnerAttributionsService } from './partner-attributions.service';
 import { PartnerAuthGuard } from './partner-auth.guard';
 import { PartnerCommissionsService } from './partner-commissions.service';
@@ -82,6 +83,7 @@ import { PartnersService } from './partners.service';
     PartnerCommissionsService,
     PartnerPayoutsService,
     PartnersAdminService,
+    PartnerAppealsService,
     PartnerTermsService,
     PartnerAuthGuard,
   ],
@@ -91,6 +93,7 @@ import { PartnersService } from './partners.service';
     PartnerCommissionsService,
     PartnerPayoutsService,
     PartnersAdminService,
+    PartnerAppealsService,
     PartnerTermsService,
     PartnerAuthGuard,
     TypeOrmModule,

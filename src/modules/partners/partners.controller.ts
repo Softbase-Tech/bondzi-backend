@@ -29,6 +29,8 @@ import { RegisterPartnerDto } from './dto/register-partner.dto';
 import { UpdatePartnerMomoDto } from './dto/update-partner-momo.dto';
 import { Partner } from './entities/partner.entity';
 import { PartnerReferralCode } from './entities/partner-referral-code.entity';
+import { SubmitAppealDto } from './dto/submit-appeal.dto';
+import { PartnerAppealsService } from './partner-appeals.service';
 import { PartnerAuthGuard } from './partner-auth.guard';
 import { CurrentPartner } from './partner-current.decorator';
 import { PartnerPayoutsService } from './partner-payouts.service';
@@ -54,6 +56,7 @@ export class PartnersController {
     private readonly partners: PartnersService,
     private readonly terms: PartnerTermsService,
     private readonly payouts: PartnerPayoutsService,
+    private readonly appeals: PartnerAppealsService,
   ) {}
 
   // --------------------------------------------------------------------
@@ -194,6 +197,36 @@ export class PartnersController {
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Length', String(buffer.length));
     res.end(buffer);
+  }
+
+  // --------------------------------------------------------------------
+  // Appeals (partner-facing)
+  // --------------------------------------------------------------------
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Get('appeals')
+  @ApiOperation({ summary: 'List the signed-in partner`s appeals.' })
+  listAppeals(@CurrentPartner() partner: Partner) {
+    return this.appeals.listForPartner(partner.id);
+  }
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Post('appeals')
+  @ApiOperation({
+    summary:
+      'Open an appeal. Only allowed when your account is currently suspended.',
+  })
+  submitAppeal(
+    @CurrentPartner() partner: Partner,
+    @Body() dto: SubmitAppealDto,
+  ) {
+    return this.appeals.submitAppeal({
+      partnerId: partner.id,
+      body: dto.body,
+      attachments: dto.attachments,
+    });
   }
 
   // --------------------------------------------------------------------

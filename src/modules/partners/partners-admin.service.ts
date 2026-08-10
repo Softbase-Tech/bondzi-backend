@@ -5,10 +5,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { DataSource, IsNull, Repository } from 'typeorm';
 import {
   PartnerCommissionStatus,
   PartnerCommissionType,
+  PartnerFraudSeverity,
   PartnerPayoutStatus,
   PartnerStatus,
 } from '../../common/types/enums';
@@ -17,6 +18,7 @@ import { MailService } from '../mail/mail.service';
 import { MailEvent } from '../mail/mail.types';
 import { PartnerAttribution } from './entities/partner-attribution.entity';
 import { PartnerCommission } from './entities/partner-commission.entity';
+import { PartnerFraudEvent } from './entities/partner-fraud-event.entity';
 import { PartnerPayout } from './entities/partner-payout.entity';
 import { PartnerReferralCode } from './entities/partner-referral-code.entity';
 import { Partner } from './entities/partner.entity';
@@ -62,7 +64,10 @@ export class PartnersAdminService {
     private readonly commissionsRepo: Repository<PartnerCommission>,
     @InjectRepository(PartnerPayout)
     private readonly payoutsRepo: Repository<PartnerPayout>,
+    @InjectRepository(PartnerFraudEvent)
+    private readonly fraudRepo: Repository<PartnerFraudEvent>,
     private readonly mail: MailService,
+    private readonly dataSource: DataSource,
   ) {}
 
   // --------------------------------------------------------------------
@@ -205,13 +210,148 @@ export class PartnersAdminService {
     if (partner.status === PartnerStatus.BANNED) {
       throw new BadRequestException('Cannot suspend a banned partner.');
     }
+    if (partner.status === PartnerStatus.SUSPENDED) return partner;
     partner.status = PartnerStatus.SUSPENDED;
     partner.suspendedAt = new Date();
     const saved = await this.partnersRepo.save(partner);
     this.logger.log(
       `[partners-admin.suspend] partner=${partner.id} by=${input.adminUserId} reason=${input.reason}`,
     );
+    // Notify. Non-blocking.
+    const portalBase = (this.mail.getWebUrl() ?? '').replace(/\/$/, '');
+    void this.mail
+      .send(
+        MailEvent.PARTNER_ACCOUNT_SUSPENDED,
+        partner.email,
+        {
+          recipientName: partner.fullName,
+          partnerName: partner.fullName,
+          reason: input.reason,
+          appealsUrl: `${portalBase}/partner/appeals`,
+          appealsRemaining: 3,
+        },
+        {
+          userId: partner.userId ?? undefined,
+          dedupKey: `partner_suspended:${partner.id}:${Math.floor(
+            (partner.suspendedAt?.getTime() ?? 0) / 60_000,
+          )}`,
+        },
+      )
+      .catch((err) =>
+        this.logger.error(
+          `[partners-admin.suspend] email failed partner=${partner.id}: ${(err as Error).message}`,
+        ),
+      );
     return saved;
+  }
+
+  /**
+   * Permanently ban a partner. Forfeits every outstanding commission
+   * that hasn't landed in a PAID payout yet (paid money already left
+   * — we don't chase it back). Sends the ban notice email.
+   *
+   * Idempotent on already-banned rows. SUSPENDED and ACTIVE both
+   * flip through here.
+   */
+  async banPartner(input: {
+    partnerId: string;
+    adminUserId: string;
+    reason: string;
+  }): Promise<Partner> {
+    const partner = await this.partnersRepo.findOne({
+      where: { id: input.partnerId },
+    });
+    if (!partner) throw new NotFoundException('Partner not found.');
+    if (partner.status === PartnerStatus.BANNED) return partner;
+
+    await this.dataSource.transaction(async (em) => {
+      partner.status = PartnerStatus.BANNED;
+      partner.bannedAt = new Date();
+      await em.getRepository(Partner).save(partner);
+      // Forfeit outstanding earnings.
+      await em
+        .getRepository(PartnerCommission)
+        .createQueryBuilder()
+        .update()
+        .set({ status: PartnerCommissionStatus.CLAWED_BACK })
+        .where('partner_id = :pid', { pid: partner.id })
+        .andWhere(`status IN ('pending','approved','flagged')`)
+        .execute();
+    });
+
+    this.logger.warn(
+      `[partners-admin.ban] partner=${partner.id} by=${input.adminUserId} reason=${input.reason}`,
+    );
+
+    void this.mail
+      .send(
+        MailEvent.PARTNER_ACCOUNT_BANNED,
+        partner.email,
+        {
+          recipientName: partner.fullName,
+          partnerName: partner.fullName,
+          reason: input.reason,
+        },
+        {
+          userId: partner.userId ?? undefined,
+          dedupKey: `partner_banned:${partner.id}`,
+        },
+      )
+      .catch((err) =>
+        this.logger.error(
+          `[partners-admin.ban] email failed partner=${partner.id}: ${(err as Error).message}`,
+        ),
+      );
+    return partner;
+  }
+
+  // --------------------------------------------------------------------
+  // Fraud events (admin queue)
+  // --------------------------------------------------------------------
+
+  async listFraudEvents(input: {
+    partnerId?: string;
+    severity?: PartnerFraudSeverity;
+    resolved?: boolean;
+    page?: number;
+    limit?: number;
+  }): Promise<PaginatedResult<PartnerFraudEvent>> {
+    const page = input.page ?? 1;
+    const limit = input.limit ?? 50;
+    const qb = this.fraudRepo
+      .createQueryBuilder('e')
+      .orderBy('e.detected_at', 'DESC');
+    if (input.partnerId)
+      qb.andWhere('e.partner_id = :pid', { pid: input.partnerId });
+    if (input.severity) qb.andWhere('e.severity = :sv', { sv: input.severity });
+    if (typeof input.resolved === 'boolean')
+      qb.andWhere('e.resolved = :r', { r: input.resolved });
+    qb.take(limit).skip((page - 1) * limit);
+    const [items, total] = await qb.getManyAndCount();
+    return { items, total, nextCursor: null };
+  }
+
+  /**
+   * Mark a fraud event resolved. Doesn't change the partner's status
+   * or the flag counter — this is purely a triage marker for the ops
+   * queue. Suspend / ban decisions live on `suspendPartner` /
+   * `banPartner` and appeals.
+   */
+  async resolveFraudEvent(input: {
+    fraudEventId: string;
+    adminUserId: string;
+    resolutionNote?: string;
+  }): Promise<PartnerFraudEvent> {
+    const row = await this.fraudRepo.findOne({
+      where: { id: input.fraudEventId },
+    });
+    if (!row) throw new NotFoundException('Fraud event not found.');
+    if (row.resolved) return row;
+    row.resolved = true;
+    row.resolvedAt = new Date();
+    row.resolvedBy = input.adminUserId;
+    row.resolutionNote = input.resolutionNote ?? null;
+    return this.fraudRepo.save(row);
   }
 
   // --------------------------------------------------------------------

@@ -38,6 +38,12 @@ import {
   buildPartnerApproved,
   buildPartnerPayoutPaid,
 } from './templates/partner-portal';
+import {
+  buildPartnerAccountBanned,
+  buildPartnerAccountSuspended,
+  buildPartnerAppealResolved,
+  buildPartnerTermsUpdated,
+} from './templates/partner-lifecycle';
 import { Resend } from 'resend';
 import { MetricsService } from '../../common/observability/metrics.service';
 
@@ -380,6 +386,26 @@ export class MailService implements OnModuleInit {
       case MailEvent.PARTNER_PAYOUT_PAID:
         return buildPartnerPayoutPaid(
           payload as MailPayloadByEvent[MailEvent.PARTNER_PAYOUT_PAID],
+          this.webUrl,
+        );
+      case MailEvent.PARTNER_ACCOUNT_SUSPENDED:
+        return buildPartnerAccountSuspended(
+          payload as MailPayloadByEvent[MailEvent.PARTNER_ACCOUNT_SUSPENDED],
+          this.webUrl,
+        );
+      case MailEvent.PARTNER_ACCOUNT_BANNED:
+        return buildPartnerAccountBanned(
+          payload as MailPayloadByEvent[MailEvent.PARTNER_ACCOUNT_BANNED],
+          this.webUrl,
+        );
+      case MailEvent.PARTNER_TERMS_UPDATED:
+        return buildPartnerTermsUpdated(
+          payload as MailPayloadByEvent[MailEvent.PARTNER_TERMS_UPDATED],
+          this.webUrl,
+        );
+      case MailEvent.PARTNER_APPEAL_RESOLVED:
+        return buildPartnerAppealResolved(
+          payload as MailPayloadByEvent[MailEvent.PARTNER_APPEAL_RESOLVED],
           this.webUrl,
         );
       default: {

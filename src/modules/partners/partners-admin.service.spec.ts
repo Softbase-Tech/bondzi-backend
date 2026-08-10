@@ -1,6 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import {
   PartnerCommissionStatus,
   PartnerStatus,
@@ -8,6 +9,7 @@ import {
 import { MailService } from '../mail/mail.service';
 import { PartnerAttribution } from './entities/partner-attribution.entity';
 import { PartnerCommission } from './entities/partner-commission.entity';
+import { PartnerFraudEvent } from './entities/partner-fraud-event.entity';
 import { PartnerPayout } from './entities/partner-payout.entity';
 import { PartnerReferralCode } from './entities/partner-referral-code.entity';
 import { Partner } from './entities/partner.entity';
@@ -87,7 +89,42 @@ describe('PartnersAdminService', () => {
           useValue: commissionsRepo,
         },
         { provide: getRepositoryToken(PartnerPayout), useValue: payoutsRepo },
+        {
+          provide: getRepositoryToken(PartnerFraudEvent),
+          useValue: {
+            findOne: jest.fn(),
+            save: jest.fn(async (o) => o),
+            createQueryBuilder: jest.fn().mockReturnValue({
+              orderBy: jest.fn().mockReturnThis(),
+              andWhere: jest.fn().mockReturnThis(),
+              take: jest.fn().mockReturnThis(),
+              skip: jest.fn().mockReturnThis(),
+              getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+            }),
+          },
+        },
         { provide: MailService, useValue: mail },
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: jest
+              .fn()
+              .mockImplementation(async (fn: (em: unknown) => unknown) =>
+                fn({
+                  getRepository: () => ({
+                    save: jest.fn(async (o) => o),
+                    createQueryBuilder: jest.fn().mockReturnValue({
+                      update: jest.fn().mockReturnThis(),
+                      set: jest.fn().mockReturnThis(),
+                      where: jest.fn().mockReturnThis(),
+                      andWhere: jest.fn().mockReturnThis(),
+                      execute: jest.fn().mockResolvedValue({ affected: 0 }),
+                    }),
+                  }),
+                }),
+              ),
+          },
+        },
       ],
     }).compile();
     service = moduleRef.get(PartnersAdminService);
@@ -231,6 +268,53 @@ describe('PartnersAdminService', () => {
           decision: 'approve',
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  // ==========================================================================
+  // banPartner
+  // ==========================================================================
+
+  describe('banPartner', () => {
+    it('is idempotent on already-banned partners', async () => {
+      partnersRepo.findOne.mockResolvedValueOnce(
+        activePartner({ status: PartnerStatus.BANNED }),
+      );
+      const out = await service.banPartner({
+        partnerId: 'partner-1',
+        adminUserId: 'admin-1',
+        reason: 'x',
+      });
+      expect(out.status).toBe(PartnerStatus.BANNED);
+      expect(mail.send).not.toHaveBeenCalled();
+    });
+
+    it('flips ACTIVE → BANNED, forfeits outstanding, sends the ban email', async () => {
+      partnersRepo.findOne.mockResolvedValueOnce(activePartner());
+      const out = await service.banPartner({
+        partnerId: 'partner-1',
+        adminUserId: 'admin-1',
+        reason: 'severe fraud pattern',
+      });
+      expect(out.status).toBe(PartnerStatus.BANNED);
+      expect(out.bannedAt).toBeInstanceOf(Date);
+      await new Promise((r) => setImmediate(r));
+      expect(mail.send).toHaveBeenCalled();
+      const [event, to, payload] = mail.send.mock.calls[0];
+      expect(event).toBe('partner_account_banned');
+      expect(to).toBe('k@example.com');
+      expect(payload.reason).toBe('severe fraud pattern');
+    });
+
+    it('throws NotFoundException on missing partner', async () => {
+      partnersRepo.findOne.mockResolvedValueOnce(null);
+      await expect(
+        service.banPartner({
+          partnerId: 'missing',
+          adminUserId: 'a',
+          reason: 'x',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 

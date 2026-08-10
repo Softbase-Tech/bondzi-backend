@@ -86,6 +86,30 @@ export enum MailEvent {
    * PDF as an attachment and shows the MoMo reference + amount.
    */
   PARTNER_PAYOUT_PAID = 'partner_payout_paid',
+  /**
+   * Sent when a partner is suspended — either auto-suspended after
+   * their fraud-flag counter crossed the threshold defined in the
+   * current terms, or manually suspended by an admin. Explains the
+   * appeals process.
+   */
+  PARTNER_ACCOUNT_SUSPENDED = 'partner_account_suspended',
+  /**
+   * Sent when a partner is banned — final. Outstanding earnings
+   * forfeit, no further payouts.
+   */
+  PARTNER_ACCOUNT_BANNED = 'partner_account_banned',
+  /**
+   * Broadcast to all active partners when admin publishes a new
+   * terms version. Carries the version number + a diff summary so
+   * partners know what changed before opening the full document.
+   */
+  PARTNER_TERMS_UPDATED = 'partner_terms_updated',
+  /**
+   * Sent when admin closes an open appeal — upheld (partner
+   * reinstated) or denied (strike counter bumps toward the ban
+   * threshold).
+   */
+  PARTNER_APPEAL_RESOLVED = 'partner_appeal_resolved',
 }
 
 // ============================================================================
@@ -296,6 +320,50 @@ export interface PartnerPayoutPaidPayload extends BasePayload {
   paidAt: Date;
 }
 
+export interface PartnerAccountSuspendedPayload extends BasePayload {
+  partnerName: string;
+  reason: string;
+  /** Absolute URL to the partner portal's appeals page. */
+  appealsUrl: string;
+  /**
+   * How many appeals the partner has remaining before a ban. Nudges
+   * them to use their strikes wisely.
+   */
+  appealsRemaining: number;
+}
+
+export interface PartnerAccountBannedPayload extends BasePayload {
+  partnerName: string;
+  reason: string;
+}
+
+export interface PartnerTermsUpdatedPayload extends BasePayload {
+  partnerName: string;
+  /** New version number now in force. */
+  newVersion: number;
+  /** Short human-readable summary of what changed (admin authored). */
+  changeSummary: string;
+  effectiveFrom: Date;
+  /** Absolute URL to the terms page inside the partner portal. */
+  termsUrl: string;
+}
+
+export interface PartnerAppealResolvedPayload extends BasePayload {
+  partnerName: string;
+  /** 1-based appeal number, matches partner_appeals.appeal_number. */
+  appealNumber: number;
+  /** 'upheld' → reinstated ; 'denied' → strike, may lead to ban. */
+  decision: 'upheld' | 'denied';
+  resolutionNote: string | null;
+  /**
+   * True when this was the third denied appeal and the partner is
+   * therefore now banned. Copy switches to the ban notice.
+   */
+  triggersBan: boolean;
+  appealsRemaining: number;
+  appealsUrl: string;
+}
+
 /** Map from event → payload type for compile-time checking. */
 export interface MailPayloadByEvent {
   [MailEvent.WELCOME]: WelcomePayload;
@@ -317,6 +385,10 @@ export interface MailPayloadByEvent {
   [MailEvent.PARTNER_AGREEMENT]: PartnerAgreementPayload;
   [MailEvent.PARTNER_APPROVED]: PartnerApprovedPayload;
   [MailEvent.PARTNER_PAYOUT_PAID]: PartnerPayoutPaidPayload;
+  [MailEvent.PARTNER_ACCOUNT_SUSPENDED]: PartnerAccountSuspendedPayload;
+  [MailEvent.PARTNER_ACCOUNT_BANNED]: PartnerAccountBannedPayload;
+  [MailEvent.PARTNER_TERMS_UPDATED]: PartnerTermsUpdatedPayload;
+  [MailEvent.PARTNER_APPEAL_RESOLVED]: PartnerAppealResolvedPayload;
 }
 
 /** Returned by every template's `build()` function. */

@@ -6,11 +6,13 @@ import {
   PartnerStatus,
 } from '../../common/types/enums';
 import { DeviceSession } from '../auth/entities/device-session.entity';
+import { MailService } from '../mail/mail.service';
 import { User } from '../users/entities/user.entity';
 import { PartnerAttribution } from './entities/partner-attribution.entity';
 import { PartnerFraudEvent } from './entities/partner-fraud-event.entity';
 import { Partner } from './entities/partner.entity';
 import { PartnerAttributionsService } from './partner-attributions.service';
+import { PartnerTermsService } from './partner-terms.service';
 import { PartnersService } from './partners.service';
 
 describe('PartnerAttributionsService', () => {
@@ -105,6 +107,27 @@ describe('PartnerAttributionsService', () => {
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: getRepositoryToken(DeviceSession), useValue: sessionsRepo },
         { provide: PartnersService, useValue: partnersService },
+        {
+          provide: PartnerTermsService,
+          useValue: {
+            // Return a large threshold so no auto-suspend triggers in
+            // any of these tests — that's a separate concern verified
+            // separately below.
+            getCurrent: jest.fn().mockResolvedValue({
+              id: 'terms-1',
+              version: 1,
+              maxFraudFlagsBeforeBlock: 999,
+              maxAppeals: 3,
+            }),
+          },
+        },
+        {
+          provide: MailService,
+          useValue: {
+            send: jest.fn().mockResolvedValue(undefined),
+            getWebUrl: jest.fn().mockReturnValue('https://bondzi.app'),
+          },
+        },
       ],
     }).compile();
     service = moduleRef.get(PartnerAttributionsService);
@@ -266,5 +289,106 @@ describe('PartnerAttributionsService', () => {
       'fraudFlagCount',
       3,
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Auto-suspend on crossing the fraud-flag threshold
+  // -------------------------------------------------------------------------
+
+  describe('auto-suspend at threshold', () => {
+    let saveSpy: jest.Mock;
+    let mailSend: jest.Mock;
+
+    beforeEach(async () => {
+      // Fresh module with (a) a low threshold (2) and (b) a
+      // post-increment partner row whose count crosses it.
+      saveSpy = jest.fn(async (o) => o);
+      mailSend = jest.fn().mockResolvedValue(undefined);
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          PartnerAttributionsService,
+          {
+            provide: getRepositoryToken(PartnerAttribution),
+            useValue: attrRepo,
+          },
+          {
+            provide: getRepositoryToken(PartnerFraudEvent),
+            useValue: fraudRepo,
+          },
+          {
+            provide: getRepositoryToken(Partner),
+            useValue: {
+              findOne: jest
+                .fn()
+                // First call inside attribute() picks up the partner.
+                .mockResolvedValueOnce(partnerRow)
+                // Second call inside maybeAutoSuspend() — the row has
+                // been bumped by `increment` to 5, well over the
+                // threshold.
+                .mockResolvedValueOnce({
+                  ...partnerRow,
+                  fraudFlagCount: 5,
+                }),
+              increment: jest.fn().mockResolvedValue(undefined),
+              save: saveSpy,
+            },
+          },
+          { provide: getRepositoryToken(User), useValue: usersRepo },
+          {
+            provide: getRepositoryToken(DeviceSession),
+            useValue: sessionsRepo,
+          },
+          {
+            provide: PartnersService,
+            useValue: {
+              findActiveCode: jest.fn().mockResolvedValue(code),
+            },
+          },
+          {
+            provide: PartnerTermsService,
+            useValue: {
+              getCurrent: jest.fn().mockResolvedValue({
+                id: 'terms-1',
+                version: 1,
+                maxFraudFlagsBeforeBlock: 2,
+                maxAppeals: 3,
+              }),
+            },
+          },
+          {
+            provide: MailService,
+            useValue: {
+              send: mailSend,
+              getWebUrl: jest.fn().mockReturnValue('https://bondzi.app'),
+            },
+          },
+        ],
+      }).compile();
+      service = moduleRef.get(PartnerAttributionsService);
+    });
+
+    it('flips the partner to SUSPENDED + fires the suspend email', async () => {
+      // Triggering: use a phone that shares a root with the partner
+      // (medium severity → high+medium counter bump path).
+      sessionsRepo.findOne.mockResolvedValueOnce({ id: 'session-1' });
+      await service.attributeFromRegister({
+        user: referredUser({ phone: '+233209000001' }),
+        code: 'A1B2CJO',
+        deviceId: 'shared-device',
+      });
+      // Post-increment partner save with SUSPENDED status.
+      const suspended = saveSpy.mock.calls[0]?.[0];
+      expect(suspended.status).toBe(PartnerStatus.SUSPENDED);
+      expect(suspended.suspendedAt).toBeInstanceOf(Date);
+      // Email fired.
+      expect(mailSend).toHaveBeenCalledWith(
+        'partner_account_suspended',
+        partnerRow.email,
+        expect.objectContaining({
+          appealsRemaining: 3,
+        }),
+        expect.any(Object),
+      );
+    });
   });
 });

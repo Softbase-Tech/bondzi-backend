@@ -8,10 +8,13 @@ import {
   PartnerStatus,
 } from '../../common/types/enums';
 import { DeviceSession } from '../auth/entities/device-session.entity';
+import { MailService } from '../mail/mail.service';
+import { MailEvent } from '../mail/mail.types';
 import { User } from '../users/entities/user.entity';
 import { PartnerAttribution } from './entities/partner-attribution.entity';
 import { PartnerFraudEvent } from './entities/partner-fraud-event.entity';
 import { Partner } from './entities/partner.entity';
+import { PartnerTermsService } from './partner-terms.service';
 import { PartnersService } from './partners.service';
 
 /**
@@ -68,6 +71,8 @@ export class PartnerAttributionsService {
     @InjectRepository(DeviceSession)
     private readonly sessionsRepo: Repository<DeviceSession>,
     private readonly partnersService: PartnersService,
+    private readonly terms: PartnerTermsService,
+    private readonly mail: MailService,
   ) {}
 
   /**
@@ -268,6 +273,75 @@ export class PartnerAttributionsService {
         { id: partnerId },
         'fraudFlagCount',
         bump,
+      );
+      // Re-fetch after the increment and check the counter against
+      // the current terms' threshold. Cross the threshold → auto-
+      // suspend + email. We check every strike (not just on the
+      // exact-crossing) so a partner whose row was manually reset
+      // won't slip past a subsequent violation.
+      await this.maybeAutoSuspend(partnerId);
+    }
+  }
+
+  /**
+   * Auto-suspend if the fraud_flag_count has crossed the
+   * terms.max_fraud_flags_before_block threshold. Idempotent — a
+   * second call after suspension is a no-op.
+   *
+   * Note: we auto-suspend even PENDING partners. That's deliberate:
+   * a partner farming fraud during pending review shouldn't be
+   * allowed to earn commissions while admin approval catches up.
+   */
+  private async maybeAutoSuspend(partnerId: string): Promise<void> {
+    try {
+      const partner = await this.partnersRepo.findOne({
+        where: { id: partnerId },
+      });
+      if (!partner) return;
+      if (
+        partner.status === PartnerStatus.SUSPENDED ||
+        partner.status === PartnerStatus.BANNED
+      ) {
+        return;
+      }
+      const termsVersion = await this.terms.getCurrent();
+      if (partner.fraudFlagCount < termsVersion.maxFraudFlagsBeforeBlock) {
+        return;
+      }
+      partner.status = PartnerStatus.SUSPENDED;
+      partner.suspendedAt = new Date();
+      await this.partnersRepo.save(partner);
+      this.logger.warn(
+        `[partner-attr] auto-suspended partner=${partner.id} at count=${partner.fraudFlagCount} threshold=${termsVersion.maxFraudFlagsBeforeBlock}`,
+      );
+
+      // Best-effort notification.
+      const portalBase = (this.mail.getWebUrl() ?? '').replace(/\/$/, '');
+      const appealsUrl = `${portalBase}/partner/appeals`;
+      await this.mail
+        .send(
+          MailEvent.PARTNER_ACCOUNT_SUSPENDED,
+          partner.email,
+          {
+            recipientName: partner.fullName,
+            partnerName: partner.fullName,
+            reason: `Fraud-flag counter reached ${partner.fraudFlagCount} (threshold ${termsVersion.maxFraudFlagsBeforeBlock}).`,
+            appealsUrl,
+            appealsRemaining: termsVersion.maxAppeals,
+          },
+          {
+            userId: partner.userId ?? undefined,
+            dedupKey: `partner_auto_suspended:${partner.id}`,
+          },
+        )
+        .catch((err) =>
+          this.logger.error(
+            `[partner-attr] auto-suspend email failed partner=${partner.id}: ${(err as Error).message}`,
+          ),
+        );
+    } catch (err) {
+      this.logger.error(
+        `[partner-attr] maybeAutoSuspend threw partner=${partnerId}: ${(err as Error).message}`,
       );
     }
   }

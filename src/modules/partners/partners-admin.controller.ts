@@ -22,16 +22,23 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import {
+  PartnerAppealStatus,
   PartnerCommissionStatus,
   PartnerCommissionType,
+  PartnerFraudSeverity,
   PartnerPayoutStatus,
   PartnerStatus,
   UserRole,
 } from '../../common/types/enums';
+import { BanPartnerDto } from './dto/ban-partner.dto';
+import { CreateTermsVersionDto } from './dto/create-terms-version.dto';
 import { MarkPayoutFailedDto } from './dto/mark-payout-failed.dto';
 import { MarkPayoutPaidDto } from './dto/mark-payout-paid.dto';
+import { ResolveAppealDto } from './dto/resolve-appeal.dto';
 import { SuspendPartnerDto } from './dto/suspend-partner.dto';
+import { PartnerAppealsService } from './partner-appeals.service';
 import { PartnerPayoutsService } from './partner-payouts.service';
+import { PartnerTermsService } from './partner-terms.service';
 import { PartnersAdminService } from './partners-admin.service';
 
 /**
@@ -49,6 +56,8 @@ export class PartnersAdminController {
   constructor(
     private readonly admin: PartnersAdminService,
     private readonly payouts: PartnerPayoutsService,
+    private readonly appeals: PartnerAppealsService,
+    private readonly terms: PartnerTermsService,
   ) {}
 
   // --------------------------------------------------------------------
@@ -97,6 +106,108 @@ export class PartnersAdminController {
       partnerId: id,
       adminUserId: user.id,
       reason: dto.reason,
+    });
+  }
+
+  @Post(':id/ban')
+  @HttpCode(HttpStatus.OK)
+  banPartner(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: BanPartnerDto,
+  ) {
+    return this.admin.banPartner({
+      partnerId: id,
+      adminUserId: user.id,
+      reason: dto.reason,
+    });
+  }
+
+  // --------------------------------------------------------------------
+  // Fraud events queue
+  // --------------------------------------------------------------------
+
+  @Get('fraud-events/list')
+  listFraudEvents(
+    @Query() p: PaginationDto,
+    @Query('partnerId') partnerId?: string,
+    @Query('severity') severity?: PartnerFraudSeverity,
+    @Query('resolved') resolved?: string,
+  ) {
+    return this.admin.listFraudEvents({
+      partnerId,
+      severity,
+      resolved:
+        resolved === 'true' ? true : resolved === 'false' ? false : undefined,
+      page: p.page ?? 1,
+      limit: p.limit ?? 50,
+    });
+  }
+
+  @Post('fraud-events/:id/resolve')
+  @HttpCode(HttpStatus.OK)
+  resolveFraudEvent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body('resolutionNote') resolutionNote?: string,
+  ) {
+    return this.admin.resolveFraudEvent({
+      fraudEventId: id,
+      adminUserId: user.id,
+      resolutionNote,
+    });
+  }
+
+  // --------------------------------------------------------------------
+  // Appeals (admin resolution)
+  // --------------------------------------------------------------------
+
+  @Get('appeals/list')
+  listAppeals(
+    @Query() p: PaginationDto,
+    @Query('partnerId') partnerId?: string,
+    @Query('status') status?: PartnerAppealStatus,
+  ) {
+    return this.appeals.listAll({
+      partnerId,
+      status,
+      page: p.page ?? 1,
+      limit: p.limit ?? 50,
+    });
+  }
+
+  @Post('appeals/:id/resolve')
+  @HttpCode(HttpStatus.OK)
+  resolveAppeal(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: ResolveAppealDto,
+  ) {
+    return this.appeals.resolveAppeal({
+      appealId: id,
+      adminUserId: user.id,
+      decision: dto.decision,
+      resolutionNote: dto.resolutionNote ?? null,
+    });
+  }
+
+  // --------------------------------------------------------------------
+  // Terms editor
+  // --------------------------------------------------------------------
+
+  @Get('terms/list')
+  listTerms() {
+    return this.terms.listAll();
+  }
+
+  @Post('terms')
+  createTerms(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateTermsVersionDto,
+  ) {
+    return this.terms.createNewVersion({
+      createdBy: user.id,
+      ...dto,
     });
   }
 
