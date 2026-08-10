@@ -104,8 +104,16 @@ export interface AccountCreditedPayload extends BasePayload {
 }
 
 export interface WinnerAnnouncementPayload extends BasePayload {
-  /** 'weekly' | 'monthly' | 'yearly' — display label. */
+  /** 'weekly' | 'monthly' | 'yearly' — grammatical bucket used in copy. */
   period: string;
+  /**
+   * Specific, dated label for the period this win is for — e.g.
+   * "the week of 3–9 Aug 2026" or "August 2026". Anchoring on the
+   * actual date matters because awarding lags: a run kicked off on
+   * Monday for last week's winners lands after "this week" has
+   * rolled over.
+   */
+  periodLabel: string;
   /** 1-based rank within the period (1 = first place). */
   rank: number;
   /** XP awarded with this win. */
