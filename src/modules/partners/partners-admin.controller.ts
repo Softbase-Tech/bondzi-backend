@@ -42,6 +42,7 @@ import { CreateBannerDto, UpdateBannerDto } from './dto/upsert-banner.dto';
 import { PartnerAppealsService } from './partner-appeals.service';
 import { PartnerBannersService } from './partner-banners.service';
 import { PartnerPayoutsService } from './partner-payouts.service';
+import { PartnerReferralsService } from './partner-referrals.service';
 import { PartnerTermsService } from './partner-terms.service';
 import { PartnersAdminService } from './partners-admin.service';
 
@@ -63,6 +64,7 @@ export class PartnersAdminController {
     private readonly appeals: PartnerAppealsService,
     private readonly terms: PartnerTermsService,
     private readonly banners: PartnerBannersService,
+    private readonly referrals: PartnerReferralsService,
   ) {}
 
   // --------------------------------------------------------------------
@@ -125,6 +127,19 @@ export class PartnersAdminController {
       partnerId: id,
       adminUserId: user.id,
       reason: dto.reason,
+    });
+  }
+
+  @Get(':id/referrals')
+  listPartnerReferrals(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Query('codeId') codeId?: string,
+    @Query('sort') sort?: 'recent' | 'engaged' | 'earning',
+  ) {
+    return this.referrals.listForPartner({
+      partnerId: id,
+      codeId,
+      sort,
     });
   }
 
