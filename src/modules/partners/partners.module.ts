@@ -24,6 +24,7 @@ import { PartnerAuthGuard } from './partner-auth.guard';
 import { PartnerBannersService } from './partner-banners.service';
 import { PartnerCommissionsService } from './partner-commissions.service';
 import { PartnerPayoutsService } from './partner-payouts.service';
+import { PartnerReferralsService } from './partner-referrals.service';
 import { PartnerTermsService } from './partner-terms.service';
 import { PartnersAdminController } from './partners-admin.controller';
 import { PartnersAdminService } from './partners-admin.service';
@@ -88,6 +89,7 @@ import { PartnersService } from './partners.service';
     PartnersAdminService,
     PartnerAppealsService,
     PartnerBannersService,
+    PartnerReferralsService,
     PartnerTermsService,
     PartnerAuthGuard,
   ],
@@ -99,6 +101,7 @@ import { PartnersService } from './partners.service';
     PartnersAdminService,
     PartnerAppealsService,
     PartnerBannersService,
+    PartnerReferralsService,
     PartnerTermsService,
     PartnerAuthGuard,
     TypeOrmModule,

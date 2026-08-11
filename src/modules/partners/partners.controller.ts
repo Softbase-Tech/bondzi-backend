@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Res,
   UseGuards,
 } from '@nestjs/common';
@@ -35,6 +36,7 @@ import { PartnerAuthGuard } from './partner-auth.guard';
 import { PartnerBannersService } from './partner-banners.service';
 import { CurrentPartner } from './partner-current.decorator';
 import { PartnerPayoutsService } from './partner-payouts.service';
+import { PartnerReferralsService } from './partner-referrals.service';
 import { PartnerTermsService } from './partner-terms.service';
 import { PartnersService } from './partners.service';
 
@@ -59,6 +61,7 @@ export class PartnersController {
     private readonly payouts: PartnerPayoutsService,
     private readonly appeals: PartnerAppealsService,
     private readonly banners: PartnerBannersService,
+    private readonly referrals: PartnerReferralsService,
   ) {}
 
   // --------------------------------------------------------------------
@@ -148,6 +151,29 @@ export class PartnersController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ) {
     return this.partners.setCodeActive(user.id, id, true);
+  }
+
+  // --------------------------------------------------------------------
+  // Referrals (partner-facing per-user + per-code breakdown)
+  // --------------------------------------------------------------------
+
+  @UseGuards(JwtAuthGuard, PartnerAuthGuard)
+  @ApiBearerAuth()
+  @Get('referrals')
+  @ApiOperation({
+    summary:
+      'List every user attributed to the signed-in partner with per-user engagement + paid-Plus + commission summary. Optional `codeId` filter and `sort` (recent | engaged | earning).',
+  })
+  listReferrals(
+    @CurrentPartner() partner: Partner,
+    @Query('codeId') codeId?: string,
+    @Query('sort') sort?: 'recent' | 'engaged' | 'earning',
+  ) {
+    return this.referrals.listForPartner({
+      partnerId: partner.id,
+      codeId,
+      sort,
+    });
   }
 
   // --------------------------------------------------------------------
