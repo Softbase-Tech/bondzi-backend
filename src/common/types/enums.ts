@@ -470,3 +470,25 @@ export enum PartnerBannerAspect {
   STORY = 'story',
   LANDSCAPE = 'landscape',
 }
+
+/**
+ * Why an account is scheduled for deletion. `inactivity` = no login for
+ * 90 days (detected by the daily sweep); `user_requested` = the account
+ * owner asked to delete via the app/website (90-day grace, cancellable
+ * by logging back in).
+ */
+export enum AccountDeletionReason {
+  INACTIVITY = 'inactivity',
+  USER_REQUESTED = 'user_requested',
+}
+
+/**
+ * Lifecycle of an account_deletions row. `scheduled` → awaiting the
+ * grace window; `cancelled` → the user logged back in before the cutoff;
+ * `completed` → PII anonymised and the user signed out for good.
+ */
+export enum AccountDeletionStatus {
+  SCHEDULED = 'scheduled',
+  CANCELLED = 'cancelled',
+  COMPLETED = 'completed',
+}

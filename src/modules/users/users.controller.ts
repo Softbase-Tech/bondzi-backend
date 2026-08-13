@@ -17,6 +17,7 @@ import {
   AuthenticatedUser,
 } from '../../common/decorators/current-user.decorator';
 import { UsersService } from './users.service';
+import { AccountDeletionsService } from '../account-deletions/account-deletions.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateEmailPreferencesDto } from './dto/update-email-preferences.dto';
 import { UpdatePushPreferencesDto } from './dto/update-push-preferences.dto';
@@ -43,7 +44,10 @@ class SetSubjectsDto {
 @UseGuards(JwtAuthGuard)
 @Controller('users')
 export class UsersController {
-  constructor(private readonly users: UsersService) {}
+  constructor(
+    private readonly users: UsersService,
+    private readonly accountDeletions: AccountDeletionsService,
+  ) {}
 
   @Get('me')
   @ApiOperation({
@@ -109,10 +113,12 @@ export class UsersController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary:
-      'Soft-delete account. PII anonymised by scheduled job after 30 days.',
+      'Request account deletion. Schedules a 90-day grace and signs the ' +
+      'user out; logging back in before then cancels it. After 90 days the ' +
+      'daily sweep anonymises all PII. The user is emailed before and after.',
   })
-  async softDelete(@CurrentUser() user: AuthenticatedUser) {
-    await this.users.softDelete(user.id);
+  async requestDeletion(@CurrentUser() user: AuthenticatedUser) {
+    await this.accountDeletions.scheduleUserRequested(user.id);
   }
 
   @Get('me/progress')

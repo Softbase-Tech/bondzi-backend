@@ -1,12 +1,14 @@
 import { Test } from '@nestjs/testing';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
+import { AccountDeletionsService } from '../account-deletions/account-deletions.service';
 
 /** Pure pass-through controller — confirm every endpoint takes the user id
  *  from `@CurrentUser` (not the body / query) and forwards untouched. */
 describe('UsersController', () => {
   let controller: UsersController;
   let users: jest.Mocked<UsersService>;
+  let accountDeletions: jest.Mocked<AccountDeletionsService>;
 
   beforeEach(async () => {
     users = {
@@ -17,10 +19,16 @@ describe('UsersController', () => {
       getProgress: jest.fn(),
       getStats: jest.fn(),
     } as unknown as jest.Mocked<UsersService>;
+    accountDeletions = {
+      scheduleUserRequested: jest.fn(),
+    } as unknown as jest.Mocked<AccountDeletionsService>;
 
     const moduleRef = await Test.createTestingModule({
       controllers: [UsersController],
-      providers: [{ provide: UsersService, useValue: users }],
+      providers: [
+        { provide: UsersService, useValue: users },
+        { provide: AccountDeletionsService, useValue: accountDeletions },
+      ],
     }).compile();
     controller = moduleRef.get(UsersController);
   });
@@ -51,9 +59,11 @@ describe('UsersController', () => {
     });
   });
 
-  it('DELETE /users/me forwards the user id and awaits', async () => {
-    await controller.softDelete({ id: 'user-1' } as never);
-    expect(users.softDelete).toHaveBeenCalledWith('user-1');
+  it('DELETE /users/me schedules a user-requested deletion', async () => {
+    await controller.requestDeletion({ id: 'user-1' } as never);
+    expect(accountDeletions.scheduleUserRequested).toHaveBeenCalledWith(
+      'user-1',
+    );
   });
 
   it('GET /users/me/progress forwards the user id', () => {

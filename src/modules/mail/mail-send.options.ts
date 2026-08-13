@@ -35,6 +35,12 @@ export const TRANSACTIONAL_MAIL_EVENTS = new Set<MailEvent>([
   MailEvent.PARTNER_ACCOUNT_BANNED,
   MailEvent.PARTNER_TERMS_UPDATED,
   MailEvent.PARTNER_APPEAL_RESOLVED,
+  // Account-deletion notices are critical account-state changes — a user
+  // cannot opt out of being told their account is about to be (or has
+  // been) deleted. The admin digest goes to an internal list.
+  MailEvent.ACCOUNT_DELETION_WARNING,
+  MailEvent.ACCOUNT_DELETED,
+  MailEvent.ADMIN_ACCOUNT_DELETION_DIGEST,
 ]);
 
 export interface MailSendOptions {
