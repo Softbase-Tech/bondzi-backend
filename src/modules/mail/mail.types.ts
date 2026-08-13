@@ -68,6 +68,14 @@ export enum MailEvent {
   /** Sunday digest: this week's points, questions answered, rank delta. */
   WEEKLY_DIGEST = 'weekly_digest',
 
+  // --- Account lifecycle -------------------------------------------------
+  /** Heads-up that the account is scheduled for deletion (T-14 / T-7). */
+  ACCOUNT_DELETION_WARNING = 'account_deletion_warning',
+  /** Confirmation sent after the account is anonymised. */
+  ACCOUNT_DELETED = 'account_deleted',
+  /** Daily internal digest of scheduled + deleted accounts (to admins). */
+  ADMIN_ACCOUNT_DELETION_DIGEST = 'admin_account_deletion_digest',
+
   // ----- Partner portal --------------------------------------------------
   /**
    * Sent immediately after a partner submits register — snapshots the
@@ -364,6 +372,32 @@ export interface PartnerAppealResolvedPayload extends BasePayload {
   appealsUrl: string;
 }
 
+export interface AccountDeletionWarningPayload extends BasePayload {
+  /** Days remaining before deletion (14 or 7). */
+  daysLeft: number;
+  /** Human-readable date the account will be deleted. */
+  deleteOnDate: string;
+  /** Drives the copy: was this triggered by inactivity or a user request. */
+  reason: 'inactivity' | 'user_requested';
+  /** Where to log in to keep the account alive. */
+  loginUrl: string;
+}
+
+export interface AccountDeletedPayload extends BasePayload {
+  /** Human-readable date the account was removed. */
+  deletedOnDate: string;
+}
+
+export interface AdminAccountDeletionDigestPayload extends BasePayload {
+  /** Day the digest covers (YYYY-MM-DD, Accra). */
+  dateKey: string;
+  scheduledCount: number;
+  warnedCount: number;
+  deletedCount: number;
+  /** A few "reason · masked-email" lines for context. Capped upstream. */
+  deletedSamples: string[];
+}
+
 /** Map from event → payload type for compile-time checking. */
 export interface MailPayloadByEvent {
   [MailEvent.WELCOME]: WelcomePayload;
@@ -382,6 +416,9 @@ export interface MailPayloadByEvent {
   [MailEvent.LEVEL_UP]: LevelUpPayload;
   [MailEvent.REFERRAL_QUALIFIED]: ReferralQualifiedPayload;
   [MailEvent.WEEKLY_DIGEST]: WeeklyDigestPayload;
+  [MailEvent.ACCOUNT_DELETION_WARNING]: AccountDeletionWarningPayload;
+  [MailEvent.ACCOUNT_DELETED]: AccountDeletedPayload;
+  [MailEvent.ADMIN_ACCOUNT_DELETION_DIGEST]: AdminAccountDeletionDigestPayload;
   [MailEvent.PARTNER_AGREEMENT]: PartnerAgreementPayload;
   [MailEvent.PARTNER_APPROVED]: PartnerApprovedPayload;
   [MailEvent.PARTNER_PAYOUT_PAID]: PartnerPayoutPaidPayload;

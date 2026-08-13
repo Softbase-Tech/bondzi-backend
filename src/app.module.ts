@@ -59,6 +59,7 @@ import { AdminAiGenModule } from './modules/admin-ai-gen/admin-ai-gen.module';
 import { AdsModule } from './modules/ads/ads.module';
 import { MailModule } from './modules/mail/mail.module';
 import { LegalModule } from './modules/legal/legal.module';
+import { AccountDeletionsModule } from './modules/account-deletions/account-deletions.module';
 import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
 import { PartnersModule } from './modules/partners/partners.module';
 
@@ -158,6 +159,7 @@ import { PartnersModule } from './modules/partners/partners.module';
     AdsModule,
     MailModule,
     LegalModule,
+    AccountDeletionsModule,
     PromoCodesModule,
     PartnersModule,
     EntitlementsModule,

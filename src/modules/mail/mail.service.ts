@@ -21,6 +21,11 @@ import { buildWinnerSelectionReminder } from './templates/winner-selection-remin
 import { buildPaymentSuccess } from './templates/payment-success';
 import { buildRefundConfirmation } from './templates/refund-confirmation';
 import {
+  buildAccountDeleted,
+  buildAccountDeletionWarning,
+  buildAdminAccountDeletionDigest,
+} from './templates/account-deletion';
+import {
   buildSubscriptionCancelled,
   buildSubscriptionExpired,
   buildSubscriptionExpiringSoon,
@@ -371,6 +376,21 @@ export class MailService implements OnModuleInit {
       case MailEvent.WEEKLY_DIGEST:
         return buildWeeklyDigest(
           payload as MailPayloadByEvent[MailEvent.WEEKLY_DIGEST],
+          this.webUrl,
+        );
+      case MailEvent.ACCOUNT_DELETION_WARNING:
+        return buildAccountDeletionWarning(
+          payload as MailPayloadByEvent[MailEvent.ACCOUNT_DELETION_WARNING],
+          this.webUrl,
+        );
+      case MailEvent.ACCOUNT_DELETED:
+        return buildAccountDeleted(
+          payload as MailPayloadByEvent[MailEvent.ACCOUNT_DELETED],
+          this.webUrl,
+        );
+      case MailEvent.ADMIN_ACCOUNT_DELETION_DIGEST:
+        return buildAdminAccountDeletionDigest(
+          payload as MailPayloadByEvent[MailEvent.ADMIN_ACCOUNT_DELETION_DIGEST],
           this.webUrl,
         );
       case MailEvent.PARTNER_AGREEMENT:

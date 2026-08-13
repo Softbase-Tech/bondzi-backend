@@ -9,6 +9,7 @@ import { Exam } from '../exams/entities/exam.entity';
 import { ExamAnswer } from '../exams/entities/exam-answer.entity';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
+import { AccountDeletionsModule } from '../account-deletions/account-deletions.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { UsersService } from './users.service';
       Exam,
       ExamAnswer,
     ]),
+    AccountDeletionsModule,
   ],
   controllers: [UsersController],
   providers: [UsersService],
