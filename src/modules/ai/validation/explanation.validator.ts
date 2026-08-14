@@ -77,11 +77,14 @@ export function validateExplanation(
     };
   }
 
-  // Structure — both required sections, in the right order.
-  // Match `## Solution` and `## Example` at line-start (line-anchored
-  // regex so a mention of "example" inside a paragraph doesn't count).
-  const solutionMatch = /^\s*##\s+Solution\b/im.exec(trimmed);
-  const exampleMatch = /^\s*##\s+Example\b/im.exec(trimmed);
+  // Structure — both required sections, in the right order. Match a
+  // `Solution` / `Example` ATX heading at line-start (line-anchored so a
+  // mention of "example" inside a paragraph doesn't count). The prompt asks
+  // for `## Solution`, but accept ANY heading level (`#`–`######`) — models
+  // routinely emit `### Solution` instead, and rejecting a perfectly good
+  // explanation over one extra `#` is a validator bug, not a bad response.
+  const solutionMatch = /^\s*#{1,6}\s+Solution\b/im.exec(trimmed);
+  const exampleMatch = /^\s*#{1,6}\s+Example\b/im.exec(trimmed);
   if (!solutionMatch) {
     return {
       ok: false,

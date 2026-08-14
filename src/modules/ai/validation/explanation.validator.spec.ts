@@ -75,6 +75,15 @@ describe('validateExplanation', () => {
     expect(result.reason).toBe('missing_example_section');
   });
 
+  it('accepts deeper heading levels (### Solution / ### Example)', () => {
+    const h3 = OK_MARKDOWN.replace('## Solution', '### Solution').replace(
+      '## Example',
+      '### Example',
+    );
+    const result = validateExplanation(h3, STEM);
+    expect(result.ok).toBe(true);
+  });
+
   it('rejects when Example appears before Solution', () => {
     // Swap section order — pad both sections so combined length
     // clears the 400-char floor.
