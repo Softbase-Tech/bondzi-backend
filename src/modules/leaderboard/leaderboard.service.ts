@@ -11,13 +11,18 @@ const LB_CACHE_TTL_SECONDS = 5 * 60;
 export interface LeaderboardRow {
   userId: string;
   /**
-   * Public handle (when the user has set one — migration 1940). Mobile
-   * prefers this for display; `fullName` is the fallback for accounts
-   * that haven't back-filled yet.
+   * Public display name. This is USERNAME-ONLY per the privacy
+   * decision on the redesign: our users are minors and the public
+   * board must never pair a real name with a school/region. If a
+   * user hasn't set a username yet we return an opaque
+   * `student-XXXXXX` fallback derived from the first 6 chars of
+   * their user id — never their legal name.
+   *
+   * `fullName` used to live on this row and was removed as part of
+   * that decision; do NOT re-add it. School and region are and
+   * always will be off the public board.
    */
-  username: string | null;
-  /** Legal name on file. Used as a fallback display name. */
-  fullName: string;
+  handle: string;
   score: number;
   rank: number;
 }
@@ -61,7 +66,7 @@ export class LeaderboardService {
     // soft-deleted accounts ghost the public board. Start with `.where()`
     // to seed the clause, then append every other condition with
     // `.andWhere()`.
-    const rows = await this.entriesRepo
+    const raw = await this.entriesRepo
       .createQueryBuilder('lb')
       .innerJoin('lb.user', 'u')
       .where('lb.exam_type = :et', { et: opts.examType })
@@ -70,18 +75,29 @@ export class LeaderboardService {
       .andWhere('lb.scope = :scope', { scope })
       .andWhere('u.deleted_at is null')
       .andWhere('u.is_active = true')
-      // Skip rows where the joined user has no display name — a NULL
-      // `full_name` would crash the mobile's render (initials() calls
-      // `.trim()` on the string). It also has no useful display value.
-      .andWhere('u.full_name is not null')
       .select('lb.user_id', 'userId')
       .addSelect('u.username', 'username')
-      .addSelect('u.full_name', 'fullName')
       .addSelect('lb.weekly_xp', 'score')
       .addSelect('lb.rank', 'rank')
       .orderBy('lb.weekly_xp', 'DESC')
       .limit(opts.limit ?? 100)
-      .getRawMany<LeaderboardRow>();
+      .getRawMany<{
+        userId: string;
+        username: string | null;
+        score: number;
+        rank: number;
+      }>();
+
+    // Anonymise the display name: username if the user set one, else
+    // an opaque `student-XXXXXX` handle derived from the first 6 chars
+    // of the uuid. Real names never leave this method. This runs after
+    // the SQL so the fallback stays consistent regardless of client.
+    const rows: LeaderboardRow[] = raw.map((r) => ({
+      userId: r.userId,
+      handle: r.username ?? `student-${r.userId.slice(0, 6)}`,
+      score: r.score,
+      rank: r.rank,
+    }));
 
     await this.redis.setJson(cacheKey, rows, LB_CACHE_TTL_SECONDS);
     return rows;
