@@ -168,6 +168,51 @@ export class GamificationService {
     return this.applyXp(userId, eventKey, amount, referenceId ?? null);
   }
 
+  /**
+   * Award XP scaled by a 0..1 multiplier from `xp_rate_config`. Reads
+   * the base rate the same way `awardXp` does (respecting the isActive
+   * flag + the daily cap), then applies `round(rate.xpAmount * multiplier)`
+   * as the actual amount.
+   *
+   * Introduced for the exam-completion bonus. The bonus was a flat +20
+   * for finishing regardless of score, which invited the theoretical
+   * "grind six abandoned mocks" concern raised in the redesign
+   * commentary. It's now proportional to accuracy so a 3/50 finish
+   * earns 1 XP of bonus and a 45/50 finish earns 18. The base rate
+   * stays admin-editable in xp_rate_config so the ceiling still moves
+   * without a deploy — only the shape of the payout changes.
+   */
+  async awardXpMultiplied(
+    userId: string,
+    eventKey: string,
+    multiplier: number,
+    referenceId?: string | null,
+  ): Promise<AwardXpResult> {
+    // Clamp: negatives are a caller bug (can't award negative XP without
+    // a spend); values >1 would blow past the admin-configured ceiling.
+    const m = Math.max(0, Math.min(1, multiplier));
+    const rate = await this.ratesRepo.findOne({
+      where: { eventKey, isActive: true },
+    });
+    if (!rate || rate.xpAmount === 0 || m === 0) {
+      // Empty result path — mirrors what awardXp returns when the event
+      // is disabled or 0-rate, so callers get a consistent shape without
+      // a special-case branch on their side.
+      return this.awardXp(userId, eventKey, referenceId);
+    }
+    if (await this.exceedsDailyEventCap(userId, eventKey)) {
+      this.logger.warn(
+        `[xp] daily cap reached for user=${userId} event=${eventKey} — refusing scaled award`,
+      );
+      return this.awardXp(userId, eventKey, referenceId);
+    }
+    const scaled = Math.round(rate.xpAmount * m);
+    if (scaled <= 0) {
+      return this.awardXp(userId, eventKey, referenceId);
+    }
+    return this.applyXp(userId, eventKey, scaled, referenceId ?? null);
+  }
+
   private async applyXp(
     userId: string,
     eventKey: string,
