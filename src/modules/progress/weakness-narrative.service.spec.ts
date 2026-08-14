@@ -26,6 +26,7 @@ describe('WeaknessNarrativeService', () => {
     findOne: jest.Mock;
     create: jest.Mock;
     save: jest.Mock;
+    delete: jest.Mock;
   };
   let weakness: { forUser: jest.Mock };
   let entitlements: { assertAndConsume: jest.Mock };
@@ -37,6 +38,7 @@ describe('WeaknessNarrativeService', () => {
       findOne: jest.fn(),
       create: jest.fn((r: unknown) => r),
       save: jest.fn(async (r: unknown) => r),
+      delete: jest.fn(async () => ({ affected: 1 })),
     };
     weakness = {
       forUser: jest.fn().mockResolvedValue({
@@ -115,15 +117,55 @@ describe('WeaknessNarrativeService', () => {
     expect(narrativesRepo.save).not.toHaveBeenCalled();
   });
 
-  it('uses the bootstrap prompt when the user has zero weakness signal', async () => {
+  it('returns canned bootstrap prose without hitting Bedrock or the entitlement when the user has zero weakness signal', async () => {
     narrativesRepo.findOne.mockResolvedValueOnce(null);
     weakness.forUser.mockResolvedValueOnce({
       pastPaperWeakTopics: [],
       syllabusWeakTopics: [],
     });
-    await service.forUser('user-1', {});
-    const prompt = ai.callBedrock.mock.calls[0][0] as string;
-    expect(prompt).toMatch(/hasn't answered enough/i);
+    const out = await service.forUser('user-1', {});
+    expect(out.mode).toBe('bootstrap');
+    expect(out.narrative).toMatch(/Welcome/);
+    expect(ai.callBedrock).not.toHaveBeenCalled();
+    expect(entitlements.assertAndConsume).not.toHaveBeenCalled();
+    // Row is persisted with mode=bootstrap so same-day repeats short-circuit
+    // via the cache-hit branch without a second signal check.
+    const saved = narrativesRepo.create.mock.calls[0][0] as {
+      mode: string;
+      model: string;
+    };
+    expect(saved.mode).toBe('bootstrap');
+    expect(saved.model).toBe('canned');
+  });
+
+  it('flags personalised rows with mode=personalised', async () => {
+    narrativesRepo.findOne.mockResolvedValueOnce(null);
+    const out = await service.forUser('user-1', {});
+    expect(out.mode).toBe('personalised');
+    const saved = narrativesRepo.create.mock.calls[0][0] as { mode: string };
+    expect(saved.mode).toBe('personalised');
+  });
+
+  it('propagates mode from the cached row on a cache hit', async () => {
+    narrativesRepo.findOne.mockResolvedValueOnce({
+      narrative: 'bootstrap prose',
+      generatedAt: new Date('2026-01-01T00:00:00Z'),
+      mode: 'bootstrap',
+      model: 'canned',
+    });
+    const out = await service.forUser('user-1', {});
+    expect(out.cached).toBe(true);
+    expect(out.mode).toBe('bootstrap');
+  });
+
+  it('invalidateBootstrapForToday deletes only bootstrap rows for today', async () => {
+    await service.invalidateBootstrapForToday('user-1');
+    expect(narrativesRepo.delete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        mode: 'bootstrap',
+      }),
+    );
   });
 
   it('scopes the cache PK to subjectId when passed', async () => {

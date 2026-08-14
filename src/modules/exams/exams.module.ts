@@ -14,6 +14,7 @@ import { ExamsService } from './exams.service';
 import { SrsModule } from '../srs/srs.module';
 import { GamificationModule } from '../gamification/gamification.module';
 import { PartnersModule } from '../partners/partners.module';
+import { ProgressModule } from '../progress/progress.module';
 import { ReferralsModule } from '../referrals/referrals.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { EntitlementsModule } from '../entitlements/entitlements.module';
@@ -41,6 +42,9 @@ import { AiModule } from '../ai/ai.module';
     // PartnerCommissionsService: Streams B + C fire from
     // ExamsService.complete after an exam session finalises.
     PartnersModule,
+    // WeaknessNarrativeService: bootstrap-row invalidation runs post-
+    // completion so the next Home visit sees fresh signal.
+    ProgressModule,
   ],
   controllers: [ExamsController],
   providers: [ExamsService],
