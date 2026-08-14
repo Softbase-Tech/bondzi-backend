@@ -21,6 +21,7 @@ import { User } from '../users/entities/user.entity';
 import { SrsService } from '../srs/srs.service';
 import { GamificationService } from '../gamification/gamification.service';
 import { StreakService } from '../gamification/streak.service';
+import { WeaknessNarrativeService } from '../progress/weakness-narrative.service';
 import { PartnerCommissionsService } from '../partners/partner-commissions.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
@@ -88,6 +89,7 @@ export class ExamsService {
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
     private readonly partnerCommissions: PartnerCommissionsService,
+    private readonly weaknessNarratives: WeaknessNarrativeService,
   ) {}
 
   /** Create an exam session — server selects questions based on filter + mode. */
@@ -778,6 +780,15 @@ export class ExamsService {
     ]).catch(() => void 0);
 
     await this.updateSubjectProgress(userId, exam, answers);
+
+    // If today's Home narrative was a bootstrap placeholder, drop it —
+    // the user may have just crossed the MIN_SAMPLES threshold and
+    // deserves the personalised prose on their next Home visit.
+    // Personalised rows are untouched so we don't burn quota by
+    // regenerating on every exam finish.
+    void this.weaknessNarratives
+      .invalidateBootstrapForToday(userId)
+      .catch(() => void 0);
 
     // Build the result-page payload (same shape GET /exams/:id/result
     // returns) so the mobile can render the score screen directly

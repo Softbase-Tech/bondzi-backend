@@ -28,6 +28,14 @@ export class WeaknessNarrative {
   @Column({ type: 'text' })
   narrative: string;
 
+  /**
+   * How this row was produced. `bootstrap` rows have canned prose and
+   * did NOT cost a Bedrock call or entitlement point; the Home card
+   * uses this to decide whether to render at all.
+   */
+  @Column({ type: 'text', default: 'personalised' })
+  mode: 'bootstrap' | 'personalised';
+
   @Column({ type: 'text' })
   model: string;
 

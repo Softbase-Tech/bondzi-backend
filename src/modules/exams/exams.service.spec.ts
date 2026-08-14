@@ -15,6 +15,7 @@ import { SrsService } from '../srs/srs.service';
 import { GamificationService } from '../gamification/gamification.service';
 import { StreakService } from '../gamification/streak.service';
 import { PartnerCommissionsService } from '../partners/partner-commissions.service';
+import { WeaknessNarrativeService } from '../progress/weakness-narrative.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
@@ -180,6 +181,14 @@ describe('ExamsService', () => {
           useValue: {
             tickSignupProgress: jest.fn().mockResolvedValue(undefined),
             tickAnswersBonus: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: WeaknessNarrativeService,
+          useValue: {
+            invalidateBootstrapForToday: jest
+              .fn()
+              .mockResolvedValue(undefined),
           },
         },
       ],
