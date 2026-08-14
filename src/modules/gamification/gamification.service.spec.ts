@@ -220,6 +220,112 @@ describe('GamificationService', () => {
     });
   });
 
+  // ---------------------------- awardXpMultiplied ----------------------------
+
+  describe('awardXpMultiplied', () => {
+    it('scales the configured rate by the multiplier and rounds to an int', async () => {
+      // exam_complete = 20 XP, multiplier = 0.9 → 18 XP.
+      ratesRepo.findOne.mockResolvedValueOnce({
+        eventKey: 'exam_complete',
+        xpAmount: 20,
+        isActive: true,
+      });
+      redis.incr.mockResolvedValueOnce(1);
+      txUsersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: ExamType.BECE,
+        levelXp: 0,
+        spendableXp: 0,
+        currentLevel: 1,
+      });
+      const out = await service.awardXpMultiplied(
+        'user-1',
+        'exam_complete',
+        0.9,
+        'exam-abc',
+      );
+      expect(out.awarded).toBe(true);
+      expect(out.xpAmount).toBe(18);
+    });
+
+    it('no-ops when multiplier is 0 (student got 0 correct)', async () => {
+      ratesRepo.findOne.mockResolvedValueOnce({
+        eventKey: 'exam_complete',
+        xpAmount: 20,
+        isActive: true,
+      });
+      // Falls through the "empty result" path — awardXp is called with
+      // the disabled-rate branch which fetches the user to build the
+      // shape reply. No ledger row is written.
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        levelXp: 0,
+        spendableXp: 0,
+        currentLevel: 1,
+      });
+      // Inner awardXp() re-reads the rate; return a null/0 to short-circuit.
+      ratesRepo.findOne.mockResolvedValueOnce(null);
+      const out = await service.awardXpMultiplied(
+        'user-1',
+        'exam_complete',
+        0,
+        'exam-abc',
+      );
+      expect(out.awarded).toBe(false);
+      expect(out.xpAmount).toBe(0);
+      expect(txXpTxRepo.insert).not.toHaveBeenCalled();
+    });
+
+    it('clamps multipliers > 1 to 1 so a caller bug cannot exceed the admin ceiling', async () => {
+      ratesRepo.findOne.mockResolvedValueOnce({
+        eventKey: 'exam_complete',
+        xpAmount: 20,
+        isActive: true,
+      });
+      redis.incr.mockResolvedValueOnce(1);
+      txUsersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        examType: ExamType.BECE,
+        levelXp: 0,
+        spendableXp: 0,
+        currentLevel: 1,
+      });
+      const out = await service.awardXpMultiplied(
+        'user-1',
+        'exam_complete',
+        99,
+        'exam-abc',
+      );
+      // 20 * 1 = 20 (not 20 * 99).
+      expect(out.xpAmount).toBe(20);
+    });
+
+    it('rounds tiny multipliers that would yield <1 XP down to a no-op', async () => {
+      // exam_complete = 20 XP, multiplier = 0.02 → round(0.4) = 0 → no ledger row.
+      ratesRepo.findOne.mockResolvedValueOnce({
+        eventKey: 'exam_complete',
+        xpAmount: 20,
+        isActive: true,
+      });
+      redis.incr.mockResolvedValueOnce(1);
+      usersRepo.findOne.mockResolvedValueOnce({
+        id: 'user-1',
+        levelXp: 0,
+        spendableXp: 0,
+        currentLevel: 1,
+      });
+      ratesRepo.findOne.mockResolvedValueOnce(null);
+      const out = await service.awardXpMultiplied(
+        'user-1',
+        'exam_complete',
+        0.02,
+        'exam-abc',
+      );
+      expect(out.awarded).toBe(false);
+      expect(txXpTxRepo.insert).not.toHaveBeenCalled();
+    });
+  });
+
   // ------------------------------ snapshot ------------------------------
 
   it('snapshot returns safe defaults when the user is missing', async () => {

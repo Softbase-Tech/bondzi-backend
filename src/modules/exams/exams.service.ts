@@ -753,8 +753,21 @@ export class ExamsService {
 
     // v2 XP: completion bonus (+ perfect bonus), streak bump, subject progress.
     // All post-transactional — failures never block marking the exam complete.
+    //
+    // Completion bonus is now scaled by accuracy — a 3/50 finish earns
+    // ~1 XP of bonus, a 45/50 finish earns ~18. Per-correct XP (10 or 15
+    // per right answer) stays the majority of the payout so the delta on
+    // existing balances is small; what changes is that a low-score
+    // completion no longer earns the full flat bonus. Perfect stays
+    // flat — you got everything right, you get the full perfect bonus.
+    const completionMultiplier = total > 0 ? correct / total : 0;
     const completionXp = await this.gamification
-      .awardXp(userId, 'exam_complete', exam.id)
+      .awardXpMultiplied(
+        userId,
+        'exam_complete',
+        completionMultiplier,
+        exam.id,
+      )
       .catch(() => null);
     let perfectXp: Awaited<ReturnType<GamificationService['awardXp']>> | null =
       null;
