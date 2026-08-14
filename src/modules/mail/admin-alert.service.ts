@@ -10,14 +10,21 @@ import { Resend } from 'resend';
 export class AdminAlertService {
   private readonly logger = new Logger(AdminAlertService.name);
   private resend: Resend | null = null;
-  private alertTo = '';
+  /** One or more valid admin inboxes — schema-validated at boot. */
+  private alertTo: string[] = [];
   private from = '';
   private enabled = false;
 
   constructor(private readonly config: ConfigService) {
     this.enabled = this.config.get<boolean>('mail.enabled') ?? false;
     this.from = this.config.get<string>('mail.from') ?? '';
-    this.alertTo = this.config.get<string>('app.adminAlertEmail') ?? '';
+    // ADMIN_ALERT_EMAIL is a single email OR a comma-separated list
+    // (Joi validates each address). Split + trim + drop empties so
+    // trailing commas / extra whitespace don't create dead recipients.
+    this.alertTo = (this.config.get<string>('app.adminAlertEmail') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
     const apiKey = this.config.get<string>('mail.apiKey') ?? '';
     if (this.enabled && apiKey) {
       this.resend = new Resend(apiKey);
@@ -25,7 +32,7 @@ export class AdminAlertService {
   }
 
   async send(subject: string, body: string): Promise<void> {
-    if (!this.alertTo) {
+    if (this.alertTo.length === 0) {
       this.logger.warn(
         `[admin-alert] no ADMIN_ALERT_EMAIL — skipped: ${subject}`,
       );

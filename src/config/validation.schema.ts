@@ -157,7 +157,14 @@ export const envValidationSchema = Joi.object({
   GOOGLE_CLIENT_ID: Joi.string().allow('').default(''),
 
   SENTRY_DSN: Joi.string().allow('').default(''),
-  ADMIN_ALERT_EMAIL: Joi.string().email().default('admin@passmaster.com.gh'),
+  // Accepts one email OR a comma-separated list (e.g.
+  // "ekow@bondzi.online,info@bondzi.online"). Every entry must be a
+  // valid address on its own — Joi runs .email() on each token. The
+  // service reads the string, splits on comma, and passes an array
+  // to Resend so every recipient gets the alert.
+  ADMIN_ALERT_EMAIL: Joi.string()
+    .email({ multiple: true, separator: ',' })
+    .default('info@bondzi.online'),
 
   SEED_ADMIN_EMAIL: Joi.string().email().default('admin@passmaster.com.gh'),
   // The dev default `change_me_strong_8+` passes Joi's `min(8)` and
