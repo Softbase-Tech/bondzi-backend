@@ -8,10 +8,12 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * Existing rows are backfilled to 'personalised' — every row created
  * before this migration already cost a Bedrock call.
  */
-export class WeaknessNarrativeMode2090000000000 implements MigrationInterface {
-  name = 'WeaknessNarrativeMode2090000000000';
+export class WeaknessNarrativeMode_2090000000000
+  implements MigrationInterface
+{
+  name = 'WeaknessNarrativeMode_2090000000000';
 
-  async up(queryRunner: QueryRunner): Promise<void> {
+  public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
       ALTER TABLE weakness_narratives
       ADD COLUMN mode text NOT NULL DEFAULT 'personalised'
@@ -23,7 +25,7 @@ export class WeaknessNarrativeMode2090000000000 implements MigrationInterface {
     `);
   }
 
-  async down(queryRunner: QueryRunner): Promise<void> {
+  public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
       ALTER TABLE weakness_narratives
       DROP CONSTRAINT IF EXISTS weakness_narratives_mode_chk
