@@ -310,6 +310,7 @@ export enum AiAction {
   MODERATION = 'moderation',
   WEAKNESS_NARRATIVE = 'weakness_narrative',
   POST_EXAM_BREAKDOWN = 'post_exam_breakdown',
+  AI_REVIEW = 'ai_review',
 }
 
 // v2: admin-triggered AI job lifecycle.
