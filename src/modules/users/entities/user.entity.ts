@@ -106,6 +106,15 @@ export class User {
   @Column({ name: 'date_of_birth', type: 'date', nullable: true })
   dateOfBirth: string | null;
 
+  // Student-confirmed date of their next exam sitting. Optional — when
+  // NULL the mobile profile card renders the "no exam date set" state
+  // with a "Set exam date" CTA. When set, the card shows a real
+  // countdown instead of the client-side heuristic (May 15 WASSCE,
+  // June 15 BECE, Oct 15 NOVDEC). Stored as `date` (no time, no zone)
+  // for the same reasons as `date_of_birth`.
+  @Column({ name: 'target_exam_date', type: 'date', nullable: true })
+  targetExamDate: string | null;
+
   @Column({ name: 'avatar_url', type: 'text', nullable: true })
   avatarUrl: string | null;
 

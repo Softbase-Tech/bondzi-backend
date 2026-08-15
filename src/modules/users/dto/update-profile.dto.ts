@@ -1,11 +1,13 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsDateString,
   IsInt,
   IsOptional,
   IsString,
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 /**
@@ -44,4 +46,22 @@ export class UpdateProfileDto {
   @IsString()
   @MaxLength(500)
   avatarUrl?: string;
+
+  /**
+   * ISO date `YYYY-MM-DD` of the student's next exam sitting, OR
+   * `null` to clear a previously-set date. Service layer enforces
+   * "in the future, within five years"; a `null` value is accepted
+   * and passed straight through so a user can un-set the countdown
+   * from the profile UI.
+   */
+  @ApiPropertyOptional({
+    description:
+      'ISO date YYYY-MM-DD of the upcoming exam sitting, or null to clear.',
+    example: '2027-05-15',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_o: UpdateProfileDto, v: unknown) => v !== null)
+  @IsDateString({ strict: true })
+  targetExamDate?: string | null;
 }

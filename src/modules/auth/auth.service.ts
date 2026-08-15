@@ -111,6 +111,13 @@ export interface SafeUser {
   gender: Gender | null;
   /** ISO date string `YYYY-MM-DD` — no time, no zone. */
   dateOfBirth: string | null;
+  /**
+   * ISO date `YYYY-MM-DD` of the student's next exam sitting, when
+   * they've set it. NULL when unset — mobile falls back to a client
+   * heuristic OR renders an empty "Set exam date" state depending on
+   * surface. Editable via PATCH /users/me at any time.
+   */
+  targetExamDate: string | null;
   createdAt: Date;
 }
 
@@ -307,6 +314,9 @@ export class AuthService {
     if (dto.dateOfBirth) {
       this.assertPlausibleDateOfBirth(dto.dateOfBirth);
     }
+    if (dto.targetExamDate) {
+      this.assertPlausibleExamDate(dto.targetExamDate);
+    }
 
     // Email OTP verification — proves the signup device controls the
     // email BEFORE the user row is created. Mobile signups always
@@ -350,6 +360,7 @@ export class AuthService {
       emailUnsubscribeToken: randomBytes(24).toString('hex'),
       gender: dto.gender ?? null,
       dateOfBirth: dto.dateOfBirth ?? null,
+      targetExamDate: dto.targetExamDate ?? null,
       // Email OTP proved the user controls the address — set verified
       // immediately so the in-app banner doesn't show and we skip the
       // verify-link email below.
@@ -431,6 +442,38 @@ export class AuthService {
     if (parsed.getTime() < hundredYearsAgo) {
       throw new BadRequestException(
         'dateOfBirth: please check the year you entered',
+      );
+    }
+  }
+
+  /**
+   * Reject exam dates that aren't plausible: must be in the future,
+   * and no more than five years out (WASSCE / BECE candidates plan on
+   * a JHS→SHS→exam timeline of ≤ 3 years; 5 years leaves headroom for
+   * remedial paths and typos). Same belt-and-braces principle as the
+   * DOB check — mobile can catch this client-side, backend enforces
+   * for API callers.
+   *
+   * Kept `public` because both the registration path AND the profile
+   * update path (UsersService) need to run the same rules.
+   */
+  public assertPlausibleExamDate(iso: string): void {
+    const parsed = new Date(`${iso}T00:00:00.000Z`);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException(
+        'targetExamDate must be a valid ISO date',
+      );
+    }
+    const now = Date.now();
+    const fiveYearsFromNow = now + 5 * 365.25 * 24 * 60 * 60 * 1000;
+    if (parsed.getTime() < now) {
+      throw new BadRequestException(
+        'targetExamDate: the exam date must be in the future',
+      );
+    }
+    if (parsed.getTime() > fiveYearsFromNow) {
+      throw new BadRequestException(
+        'targetExamDate: please pick a date within the next five years',
       );
     }
   }
@@ -1156,6 +1199,7 @@ export class AuthService {
       pushStreakNudgesEnabled: user.pushStreakNudgesEnabled,
       gender: user.gender ?? null,
       dateOfBirth: user.dateOfBirth ?? null,
+      targetExamDate: user.targetExamDate ?? null,
       createdAt: user.createdAt,
     };
   }

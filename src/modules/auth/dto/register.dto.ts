@@ -160,6 +160,22 @@ export class RegisterDto {
   @IsDateString({ strict: true })
   dateOfBirth?: string;
 
+  /**
+   * Optional at registration — the mobile onboarding asks "Do you
+   * have an upcoming exam?" and lets the student pick a date. Service
+   * layer enforces that the date is in the future and within a
+   * plausible five-year window; unset here means the profile card
+   * renders the "no exam date set" state and the student can add it
+   * from Settings later.
+   */
+  @ApiPropertyOptional({
+    description: 'ISO date YYYY-MM-DD of the upcoming exam sitting.',
+    example: '2027-05-15',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  targetExamDate?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
