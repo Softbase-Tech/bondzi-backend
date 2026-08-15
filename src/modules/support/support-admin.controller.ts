@@ -26,10 +26,7 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/types/enums';
-import {
-  CloseTicketDto,
-  CreateMessageDto,
-} from './dto/create-ticket.dto';
+import { CloseTicketDto, CreateMessageDto } from './dto/create-ticket.dto';
 import { SupportTicketsService } from './support-tickets.service';
 
 /**

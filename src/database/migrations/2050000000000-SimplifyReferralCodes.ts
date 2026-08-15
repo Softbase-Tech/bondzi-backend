@@ -22,9 +22,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * Backfill affects all existing users. Incoming registrations use
  * the new layout automatically via generateReferralCode.
  */
-export class SimplifyReferralCodes_2050000000000
-  implements MigrationInterface
-{
+export class SimplifyReferralCodes_2050000000000 implements MigrationInterface {
   public async up(qr: QueryRunner): Promise<void> {
     // Users table.
     await qr.query(`

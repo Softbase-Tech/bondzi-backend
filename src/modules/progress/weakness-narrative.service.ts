@@ -215,7 +215,6 @@ export class WeaknessNarrativeService {
       .filter(Boolean)
       .join('\n');
   }
-
 }
 
 /**
@@ -224,8 +223,7 @@ export class WeaknessNarrativeService {
  * pool). Same shape as a personalised narrative so the UI doesn't
  * branch on structure — just on `mode`.
  */
-const BOOTSTRAP_NARRATIVE =
-  `Welcome — you're set up and ready. We haven't seen enough of your practice yet to spot where you're strongest or where you're getting stuck. Pick the subject you feel least confident in and try 10–20 questions there; once we see a few topics in a row, today's insight will call out exactly what to work on.`;
+const BOOTSTRAP_NARRATIVE = `Welcome — you're set up and ready. We haven't seen enough of your practice yet to spot where you're strongest or where you're getting stuck. Pick the subject you feel least confident in and try 10–20 questions there; once we see a few topics in a row, today's insight will call out exactly what to work on.`;
 
 /**
  * Weakness-narrative system-shell — kept inline rather than in the

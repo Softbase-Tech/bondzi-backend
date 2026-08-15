@@ -7,10 +7,7 @@ import { AccountDeletionStatus } from '../../common/types/enums';
  * The daily sweep is query-builder heavy and covered by integration testing.
  */
 describe('AccountDeletionsService.scheduleUserRequested', () => {
-  const makeService = (overrides: {
-    user?: unknown;
-    existing?: unknown;
-  }) => {
+  const makeService = (overrides: { user?: unknown; existing?: unknown }) => {
     const deletionsRepo = {
       findOne: jest.fn().mockResolvedValue(overrides.existing ?? null),
       create: jest.fn((r: unknown) => r),

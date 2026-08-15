@@ -547,7 +547,7 @@ export class QuestionsService {
     // well as tsc.
     const wantedTopicName = (q: CreateQuestionDto): string | null => {
       if (q.topicId) return null;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       const raw: string | undefined = q.topic;
       if (!raw) return null;
       const trimmed = raw.trim();

@@ -1,10 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
-import {
-  BadRequestException,
-  ForbiddenException,
-} from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { SupportTicketsService } from './support-tickets.service';
 import { SupportTicket } from './entities/support-ticket.entity';
 import { SupportTicketMessage } from './entities/support-ticket-message.entity';
@@ -108,7 +105,10 @@ describe('SupportTicketsService', () => {
       providers: [
         SupportTicketsService,
         { provide: getRepositoryToken(SupportTicket), useValue: ticketsRepo },
-        { provide: getRepositoryToken(SupportTicketMessage), useValue: messagesRepo },
+        {
+          provide: getRepositoryToken(SupportTicketMessage),
+          useValue: messagesRepo,
+        },
         { provide: getRepositoryToken(User), useValue: {} },
         { provide: DataSource, useValue: dataSource },
         {

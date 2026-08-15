@@ -43,9 +43,7 @@ export class AccountDeletionJob {
           `[acct-del] scheduled=${s.scheduled} cancelled=${s.cancelled} warned=${s.warned} deleted=${s.deleted}`,
         );
       } catch (err) {
-        this.logger.error(
-          `[acct-del] sweep failed: ${(err as Error).message}`,
-        );
+        this.logger.error(`[acct-del] sweep failed: ${(err as Error).message}`);
       } finally {
         await runner.query('SELECT pg_advisory_unlock($1)', [
           AccountDeletionJob.LOCK_KEY,

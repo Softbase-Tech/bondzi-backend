@@ -95,7 +95,9 @@ export class SupportTickets_2100000000000 implements MigrationInterface {
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`DROP TABLE IF EXISTS "support_ticket_messages"`);
-    await queryRunner.query(`DROP SEQUENCE IF EXISTS "support_tickets_number_seq"`);
+    await queryRunner.query(
+      `DROP SEQUENCE IF EXISTS "support_tickets_number_seq"`,
+    );
     await queryRunner.query(`DROP TABLE IF EXISTS "support_tickets"`);
   }
 }

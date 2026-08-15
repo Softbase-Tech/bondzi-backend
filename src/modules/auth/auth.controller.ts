@@ -227,7 +227,7 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 10 * 60_000 } })
   @ApiOperation({
     summary:
-      'Verify the caller\'s email via the 6-digit OTP code that was sent by /email/verify-request. Replaces the legacy `?token=` link.',
+      "Verify the caller's email via the 6-digit OTP code that was sent by /email/verify-request. Replaces the legacy `?token=` link.",
   })
   verifyEmailCode(
     @CurrentUser() user: AuthenticatedUser,
@@ -247,7 +247,7 @@ export class AuthController {
   @Throttle({ default: { limit: 3, ttl: 10 * 60_000 } })
   @ApiOperation({
     summary:
-      'Send a 6-digit OTP code to the caller\'s email address for verification. The code is entered on the mobile via POST /auth/email/verify.',
+      "Send a 6-digit OTP code to the caller's email address for verification. The code is entered on the mobile via POST /auth/email/verify.",
   })
   requestEmailVerification(@CurrentUser() user: AuthenticatedUser) {
     return this.auth.requestEmailVerification(user.id);

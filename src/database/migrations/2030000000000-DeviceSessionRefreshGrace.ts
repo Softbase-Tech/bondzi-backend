@@ -21,9 +21,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *
  * See the entity docstring on DeviceSession for the security tradeoff.
  */
-export class DeviceSessionRefreshGrace_2030000000000
-  implements MigrationInterface
-{
+export class DeviceSessionRefreshGrace_2030000000000 implements MigrationInterface {
   public async up(qr: QueryRunner): Promise<void> {
     await qr.query(`
       ALTER TABLE device_sessions

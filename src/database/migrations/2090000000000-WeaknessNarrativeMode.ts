@@ -8,9 +8,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * Existing rows are backfilled to 'personalised' — every row created
  * before this migration already cost a Bedrock call.
  */
-export class WeaknessNarrativeMode_2090000000000
-  implements MigrationInterface
-{
+export class WeaknessNarrativeMode_2090000000000 implements MigrationInterface {
   name = 'WeaknessNarrativeMode_2090000000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

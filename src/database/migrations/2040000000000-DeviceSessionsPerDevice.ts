@@ -24,9 +24,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *     per user (by created_at DESC) and drop the rest so returning to
  *     the strict model does not require manual cleanup.
  */
-export class DeviceSessionsPerDevice_2040000000000
-  implements MigrationInterface
-{
+export class DeviceSessionsPerDevice_2040000000000 implements MigrationInterface {
   public async up(qr: QueryRunner): Promise<void> {
     // Drop the single-column UNIQUE constraint that enforced
     // one-session-per-user.
@@ -48,9 +46,7 @@ export class DeviceSessionsPerDevice_2040000000000
         ORDER BY user_id, created_at DESC
       );
     `);
-    await qr.query(
-      `DROP INDEX IF EXISTS "idx_device_sessions_user_device";`,
-    );
+    await qr.query(`DROP INDEX IF EXISTS "idx_device_sessions_user_device";`);
     await qr.query(`
       CREATE UNIQUE INDEX "idx_device_sessions_user"
         ON "device_sessions" ("user_id");

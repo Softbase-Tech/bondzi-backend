@@ -164,9 +164,8 @@ describe('AuthService', () => {
         { provide: DataSource, useValue: dataSource },
         { provide: SubscriptionsService, useValue: subsService },
         {
-          provide: (
-            await import('../partners/partner-attributions.service')
-          ).PartnerAttributionsService,
+          provide: (await import('../partners/partner-attributions.service'))
+            .PartnerAttributionsService,
           useValue: partnerAttributions,
         },
       ],

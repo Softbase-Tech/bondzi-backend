@@ -108,11 +108,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     // Re-warm the cache (best-effort). Next token issuance refreshes
     // it anyway; we just avoid another DB hit until then.
     await this.redis
-      .setJson(
-        CacheKeys.activeDeviceId(userId, claimedDeviceId),
-        '1',
-        15 * 60,
-      )
+      .setJson(CacheKeys.activeDeviceId(userId, claimedDeviceId), '1', 15 * 60)
       .catch(() => undefined);
     return true;
   }

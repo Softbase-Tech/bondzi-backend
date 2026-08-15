@@ -38,10 +38,7 @@ export class SupportController {
   @ApiOperation({
     summary: 'Open a new support ticket (feedback / wrong-question / etc.).',
   })
-  create(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: CreateTicketDto,
-  ) {
+  create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateTicketDto) {
     return this.svc.createForUser(user.id, dto);
   }
 

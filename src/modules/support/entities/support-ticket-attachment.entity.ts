@@ -38,7 +38,10 @@ export class SupportTicketAttachmentEntity {
   @Column({ name: 'message_id', type: 'uuid', nullable: true })
   messageId: string | null;
 
-  @ManyToOne(() => SupportTicketMessage, { onDelete: 'CASCADE', nullable: true })
+  @ManyToOne(() => SupportTicketMessage, {
+    onDelete: 'CASCADE',
+    nullable: true,
+  })
   @JoinColumn({ name: 'message_id' })
   message: SupportTicketMessage | null;
 

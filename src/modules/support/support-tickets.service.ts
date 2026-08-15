@@ -217,14 +217,18 @@ export class SupportTicketsService {
           attachments,
         }),
       );
-      await em.getRepository(SupportTicket).update(
-        { id: ticket.id },
-        { lastReplyAt: new Date(), lastReplyBy: 'user' },
-      );
+      await em
+        .getRepository(SupportTicket)
+        .update(
+          { id: ticket.id },
+          { lastReplyAt: new Date(), lastReplyBy: 'user' },
+        );
     });
     void this.notifier
       .onUserReplied(ticket.id)
-      .catch((err) => this.logger.warn(`notifier onUserReplied: ${String(err)}`));
+      .catch((err) =>
+        this.logger.warn(`notifier onUserReplied: ${String(err)}`),
+      );
     return this.buildDetail(
       (await this.ticketsRepo.findOne({ where: { id: ticket.id } }))!,
     );
@@ -311,14 +315,18 @@ export class SupportTicketsService {
           attachments,
         }),
       );
-      await em.getRepository(SupportTicket).update(
-        { id: ticket.id },
-        { lastReplyAt: new Date(), lastReplyBy: 'admin' },
-      );
+      await em
+        .getRepository(SupportTicket)
+        .update(
+          { id: ticket.id },
+          { lastReplyAt: new Date(), lastReplyBy: 'admin' },
+        );
     });
     void this.notifier
       .onAdminReplied(ticket.id)
-      .catch((err) => this.logger.warn(`notifier onAdminReplied: ${String(err)}`));
+      .catch((err) =>
+        this.logger.warn(`notifier onAdminReplied: ${String(err)}`),
+      );
     return this.buildDetail(
       (await this.ticketsRepo.findOne({ where: { id: ticket.id } }))!,
       true,

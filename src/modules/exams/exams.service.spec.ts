@@ -186,9 +186,7 @@ describe('ExamsService', () => {
         {
           provide: WeaknessNarrativeService,
           useValue: {
-            invalidateBootstrapForToday: jest
-              .fn()
-              .mockResolvedValue(undefined),
+            invalidateBootstrapForToday: jest.fn().mockResolvedValue(undefined),
           },
         },
       ],

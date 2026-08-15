@@ -762,12 +762,7 @@ export class ExamsService {
     // flat — you got everything right, you get the full perfect bonus.
     const completionMultiplier = total > 0 ? correct / total : 0;
     const completionXp = await this.gamification
-      .awardXpMultiplied(
-        userId,
-        'exam_complete',
-        completionMultiplier,
-        exam.id,
-      )
+      .awardXpMultiplied(userId, 'exam_complete', completionMultiplier, exam.id)
       .catch(() => null);
     let perfectXp: Awaited<ReturnType<GamificationService['awardXp']>> | null =
       null;

@@ -176,8 +176,7 @@ describe('TokensService', () => {
       // another.
       const deviceCacheCall = redis.setJson.mock.calls.find(
         (call) =>
-          typeof call[0] === 'string' &&
-          call[0] === 'active_device:user-1:d1',
+          typeof call[0] === 'string' && call[0] === 'active_device:user-1:d1',
       );
       expect(deviceCacheCall).toBeDefined();
       expect(deviceCacheCall![2]).toBeGreaterThan(0);

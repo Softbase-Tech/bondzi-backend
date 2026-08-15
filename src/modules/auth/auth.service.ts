@@ -460,9 +460,7 @@ export class AuthService {
   public assertPlausibleExamDate(iso: string): void {
     const parsed = new Date(`${iso}T00:00:00.000Z`);
     if (Number.isNaN(parsed.getTime())) {
-      throw new BadRequestException(
-        'targetExamDate must be a valid ISO date',
-      );
+      throw new BadRequestException('targetExamDate must be a valid ISO date');
     }
     const now = Date.now();
     const fiveYearsFromNow = now + 5 * 365.25 * 24 * 60 * 60 * 1000;
