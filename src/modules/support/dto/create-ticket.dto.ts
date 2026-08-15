@@ -8,21 +8,32 @@ import {
   IsObject,
   IsOptional,
   IsString,
-  IsUrl,
+  Matches,
   MaxLength,
   MinLength,
   ValidateNested,
 } from 'class-validator';
 
 /**
- * Sanity caps on attachment metadata. The URL comes from an upload
- * flow the client already completed; the service does NOT reach out
- * to validate — it trusts the URL string. `sizeBytes` and `mime`
- * come from the client for display purposes.
+ * Sanity caps on attachment metadata. The URL comes from the
+ * attachment-upload endpoint (/support/attachments) — either the raw
+ * path returned by the endpoint (starts with `/support/attachments/`)
+ * or a fully-qualified https:// URL to the same. We accept both so
+ * the client doesn't need to know the API origin.
+ *
+ * The service does NOT re-validate the file itself here; it trusts
+ * the URL the caller received from the upload endpoint.
  */
 export class AttachmentDto {
-  @ApiProperty()
-  @IsUrl({ require_tld: true })
+  @ApiProperty({
+    description:
+      'Either a relative /support/attachments/{uuid} path or a full https URL to it.',
+  })
+  @IsString()
+  @MaxLength(500)
+  @Matches(/^(https?:\/\/[^\s]+|\/support\/attachments\/[a-f0-9-]{36})$/i, {
+    message: 'url must be a /support/attachments/{uuid} path or an https URL',
+  })
   url!: string;
 
   @ApiProperty({ example: 'image/png' })
