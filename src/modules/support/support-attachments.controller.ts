@@ -135,8 +135,11 @@ function sanitiseFilename(raw: string | undefined): string {
   if (!raw) return fallback;
   // Windows/mac filenames sometimes come with backslashes; kill anything
   // that looks like a path separator or shell character.
+  // Stripping ASCII control bytes (\x00-\x1f) from an uploaded filename
+  // is the whole point of the regex below — no-control-regex is exactly
+  // the class this code is defending against.
   const cleaned = raw
-    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '')
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '') // eslint-disable-line no-control-regex
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 200);
