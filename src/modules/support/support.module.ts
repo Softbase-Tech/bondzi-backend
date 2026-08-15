@@ -2,11 +2,13 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SupportTicket } from './entities/support-ticket.entity';
 import { SupportTicketMessage } from './entities/support-ticket-message.entity';
+import { SupportTicketAttachmentEntity } from './entities/support-ticket-attachment.entity';
 import { User } from '../users/entities/user.entity';
 import { SupportTicketsService } from './support-tickets.service';
 import { SupportNotifierService } from './support-notifier.service';
 import { SupportController } from './support.controller';
 import { SupportAdminController } from './support-admin.controller';
+import { SupportAttachmentsController } from './support-attachments.controller';
 import { MailModule } from '../mail/mail.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 
@@ -21,11 +23,20 @@ import { NotificationsModule } from '../notifications/notifications.module';
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([SupportTicket, SupportTicketMessage, User]),
+    TypeOrmModule.forFeature([
+      SupportTicket,
+      SupportTicketMessage,
+      SupportTicketAttachmentEntity,
+      User,
+    ]),
     MailModule,
     NotificationsModule,
   ],
-  controllers: [SupportController, SupportAdminController],
+  controllers: [
+    SupportController,
+    SupportAdminController,
+    SupportAttachmentsController,
+  ],
   providers: [SupportTicketsService, SupportNotifierService],
   exports: [SupportTicketsService],
 })
