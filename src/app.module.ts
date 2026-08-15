@@ -63,6 +63,7 @@ import { AccountDeletionsModule } from './modules/account-deletions/account-dele
 import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
 import { PartnersModule } from './modules/partners/partners.module';
 import { SupportModule } from './modules/support/support.module';
+import { AchievementsModule } from './modules/achievements/achievements.module';
 
 @Module({
   imports: [
@@ -162,6 +163,7 @@ import { SupportModule } from './modules/support/support.module';
     LegalModule,
     AccountDeletionsModule,
     SupportModule,
+    AchievementsModule,
     PromoCodesModule,
     PartnersModule,
     EntitlementsModule,
