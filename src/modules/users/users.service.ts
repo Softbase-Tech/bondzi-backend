@@ -139,6 +139,33 @@ export class UsersService {
   async updateProfile(userId: string, dto: UpdateProfileDto): Promise<User> {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
+
+    // Validate targetExamDate before the naive Object.assign below —
+    // AuthService owns the plausibility rule for registration, but we
+    // don't want a circular DI here so the same rule is duplicated
+    // inline. Any change here must be mirrored in
+    // AuthService.assertPlausibleExamDate.
+    if (dto.targetExamDate !== undefined && dto.targetExamDate !== null) {
+      const parsed = new Date(`${dto.targetExamDate}T00:00:00.000Z`);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new BadRequestException(
+          'targetExamDate must be a valid ISO date',
+        );
+      }
+      const now = Date.now();
+      const fiveYearsFromNow = now + 5 * 365.25 * 24 * 60 * 60 * 1000;
+      if (parsed.getTime() < now) {
+        throw new BadRequestException(
+          'targetExamDate: the exam date must be in the future',
+        );
+      }
+      if (parsed.getTime() > fiveYearsFromNow) {
+        throw new BadRequestException(
+          'targetExamDate: please pick a date within the next five years',
+        );
+      }
+    }
+
     Object.assign(user, dto);
     await this.usersRepo.save(user);
     return user;
