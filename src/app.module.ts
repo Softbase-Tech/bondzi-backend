@@ -62,6 +62,7 @@ import { LegalModule } from './modules/legal/legal.module';
 import { AccountDeletionsModule } from './modules/account-deletions/account-deletions.module';
 import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
 import { PartnersModule } from './modules/partners/partners.module';
+import { SupportModule } from './modules/support/support.module';
 
 @Module({
   imports: [
@@ -160,6 +161,7 @@ import { PartnersModule } from './modules/partners/partners.module';
     MailModule,
     LegalModule,
     AccountDeletionsModule,
+    SupportModule,
     PromoCodesModule,
     PartnersModule,
     EntitlementsModule,
