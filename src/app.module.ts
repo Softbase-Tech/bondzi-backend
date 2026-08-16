@@ -64,6 +64,7 @@ import { PromoCodesModule } from './modules/promo-codes/promo-codes.module';
 import { PartnersModule } from './modules/partners/partners.module';
 import { SupportModule } from './modules/support/support.module';
 import { AchievementsModule } from './modules/achievements/achievements.module';
+import { FaqModule } from './modules/faq/faq.module';
 
 @Module({
   imports: [
@@ -164,6 +165,7 @@ import { AchievementsModule } from './modules/achievements/achievements.module';
     AccountDeletionsModule,
     SupportModule,
     AchievementsModule,
+    FaqModule,
     PromoCodesModule,
     PartnersModule,
     EntitlementsModule,
