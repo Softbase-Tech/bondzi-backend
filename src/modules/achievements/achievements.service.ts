@@ -13,6 +13,8 @@ import {
 } from './entities/achievement.entity';
 import { UserAchievement } from './entities/user-achievement.entity';
 import { UsersService } from '../users/users.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationChannel } from '../../common/types/enums';
 import {
   CreateAchievementDto,
   UpsertAchievementDto,
@@ -59,6 +61,7 @@ export class AchievementsService {
     @InjectRepository(UserAchievement)
     private readonly userAchievementsRepo: Repository<UserAchievement>,
     private readonly usersService: UsersService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -180,6 +183,14 @@ export class AchievementsService {
     });
     if (dirty.length === 0) return;
 
+    // Freshly-crossed unlocks: either a brand-new row that already
+    // qualifies, or an existing row whose unlockedAt was null and just
+    // flipped to true. `!e.row` alone isn't enough — a first-time read
+    // for someone already past the threshold is still a fresh unlock.
+    const freshlyUnlocked = dirty.filter(
+      (e) => e.unlocked && (e.row === null || e.row.unlockedAt === null),
+    );
+
     await this.userAchievementsRepo.save(
       dirty.map((e) =>
         this.userAchievementsRepo.create({
@@ -191,6 +202,52 @@ export class AchievementsService {
         }),
       ),
     );
+
+    // Notify per fresh unlock. Fire-and-forget parallel — one bad
+    // send shouldn't block the others, and none should block the
+    // reconcile save that's already durable.
+    if (freshlyUnlocked.length > 0) {
+      await Promise.allSettled(
+        freshlyUnlocked.map((e) =>
+          this.dispatchUnlockNotification(userId, e.achievement),
+        ),
+      );
+    }
+  }
+
+  /**
+   * Send both an in-app row and a push for a freshly-crossed
+   * threshold. Both carry `achievementId` in the data payload so the
+   * mobile client can deep-link to the detail sheet from either
+   * surface. Failures are logged but never rethrown — the reconcile
+   * write is what matters; the notification is best-effort.
+   */
+  private async dispatchUnlockNotification(
+    userId: string,
+    achievement: Achievement,
+  ): Promise<void> {
+    const title = 'Badge unlocked!';
+    const body = `${achievement.title} — nice work.`;
+    const data = { achievementId: achievement.id, kind: 'achievement' };
+    for (const channel of [
+      NotificationChannel.IN_APP,
+      NotificationChannel.PUSH,
+    ]) {
+      try {
+        await this.notifications.send({
+          userId,
+          channel,
+          title,
+          body,
+          data,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `achievement unlock notification (${channel}) failed for ` +
+            `user=${userId} achievement=${achievement.key}: ${String(err)}`,
+        );
+      }
+    }
   }
 
   // ─── Admin surface ──────────────────────────────────────────────
