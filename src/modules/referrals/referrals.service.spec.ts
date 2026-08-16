@@ -6,6 +6,7 @@ import { ReferralEvent } from './entities/referral-event.entity';
 import { User } from '../users/entities/user.entity';
 import { ExamAnswer } from '../exams/entities/exam-answer.entity';
 import { XpTransaction } from '../xp-economy/entities/xp-transaction.entity';
+import { XpRateConfig } from '../xp-economy/entities/xp-rate-config.entity';
 import { GamificationService } from '../gamification/gamification.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../common/redis/redis.service';
@@ -41,10 +42,19 @@ describe('ReferralsService', () => {
     count: jest.Mock;
     manager: { query: jest.Mock };
   };
-  let xpTxRepo: { findOne: jest.Mock };
+  let xpTxRepo: {
+    findOne: jest.Mock;
+    // statsForUser sums referral-* XP transactions; listEvents groups
+    // per-event XP; both go through createQueryBuilder.
+    createQueryBuilder: jest.Mock;
+  };
+  // xp_rate_config lookup — statsForUser reads the two referral rows
+  // (referral_referred, referral_qualified) so the client copy always
+  // matches what the awarder will credit.
+  let xpRatesRepo: { find: jest.Mock };
   let gamification: { awardXp: jest.Mock };
   let notifications: { send: jest.Mock };
-  let redis: Record<string, unknown>;
+  let redis: { getString: jest.Mock; setString: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
@@ -60,15 +70,46 @@ describe('ReferralsService', () => {
         getOne: jest.fn().mockResolvedValue({ qualifyXpIssued: false }),
       })),
     };
-    usersRepo = { findOne: jest.fn(), update: jest.fn() } as never;
+    // listEvents batches referred-user names via .find(); include the
+    // stub even when a given test leaves it unused so DI resolves.
+    usersRepo = {
+      findOne: jest.fn(),
+      update: jest.fn(),
+      find: jest.fn().mockResolvedValue([]),
+    } as never;
     answersRepo = {
       count: jest.fn(),
       manager: { query: jest.fn() },
     };
-    xpTxRepo = { findOne: jest.fn() };
+    xpTxRepo = {
+      findOne: jest.fn(),
+      // Chainable stub. Default: SUM query returns 0. `getRawMany`
+      // covers the per-event xp grouping in listEvents.
+      createQueryBuilder: jest.fn(() => ({
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawOne: jest.fn().mockResolvedValue({ sum: '0' }),
+        getRawMany: jest.fn().mockResolvedValue([]),
+      })),
+    };
+    // Default: the two referral rows exist with the migration amounts.
+    // Tests can `mockResolvedValueOnce` to override.
+    xpRatesRepo = {
+      find: jest.fn().mockResolvedValue([
+        { eventKey: 'referral_referred', xpAmount: 50 },
+        { eventKey: 'referral_qualified', xpAmount: 100 },
+      ]),
+    };
     gamification = { awardXp: jest.fn() };
     notifications = { send: jest.fn().mockResolvedValue(undefined) };
-    redis = {};
+    // getShareTemplate reads from Redis; null falls back to the default.
+    redis = {
+      getString: jest.fn().mockResolvedValue(null),
+      setString: jest.fn().mockResolvedValue(undefined),
+    };
     // transaction(fn) runs the callback against a fake entity manager whose
     // getRepository returns the same mocked repos.
     dataSource = {
@@ -95,6 +136,7 @@ describe('ReferralsService', () => {
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: getRepositoryToken(ExamAnswer), useValue: answersRepo },
         { provide: getRepositoryToken(XpTransaction), useValue: xpTxRepo },
+        { provide: getRepositoryToken(XpRateConfig), useValue: xpRatesRepo },
         { provide: GamificationService, useValue: gamification },
         { provide: NotificationsService, useValue: notifications },
         { provide: RedisService, useValue: redis },
@@ -198,12 +240,24 @@ describe('ReferralsService', () => {
       .mockResolvedValueOnce(3); // qualifiedCount
 
     const out = await service.statsForUser('user-1');
+    // The response shape now also carries live earn rates, the total
+    // XP earned so far, and the share template. The counts assertion
+    // is the load-bearing part; the extra fields are just checked for
+    // presence with the mocked values so a schema drift will still
+    // trip this test.
     expect(out).toEqual({
       referralCode: 'ABCDGHN',
       referredCount: 8,
       qualifiedCount: 3,
       pendingCount: 5,
       referralQualified: true,
+      rates: {
+        signup: 50,
+        qualify: 100,
+        questionsRequired: 10,
+      },
+      totalXpEarned: 0,
+      shareTemplate: expect.stringContaining('{code}'),
     });
   });
 
