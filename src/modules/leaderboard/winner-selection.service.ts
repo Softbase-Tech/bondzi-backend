@@ -321,6 +321,49 @@ export class WinnerSelectionService {
     };
   }
 
+  /**
+   * Winners for the LATEST period_start present in the `winners` table
+   * matching (examType, periodType). Used by the mobile-facing
+   * `/leaderboard/winners` endpoint when the caller doesn't pin a
+   * specific period — the mobile UI is asking "who won this week /
+   * this month" and wants a single period's worth of top 20, not
+   * every period ever concatenated.
+   *
+   * Previously the mobile endpoint fell through to `listPast` with
+   * no period_start filter, so a user who had won multiple past
+   * weeks appeared once per win — the winners tab rendered the
+   * same student two-to-ten times and tripped a React key collision
+   * because the row key is userId.
+   *
+   * Returns [] (never throws) when no winners have been selected
+   * yet for that examType/periodType — the mobile falls through to
+   * its empty state.
+   */
+  async listCurrentPeriodWinners(params: {
+    examType: ExamType;
+    periodType: LeaderboardPeriodType;
+  }) {
+    const latestRow = await this.winnersRepo
+      .createQueryBuilder('w')
+      .select('MAX(w.period_start)', 'periodStart')
+      .where('w.exam_type = :et', { et: params.examType })
+      .andWhere('w.period_type = :pt', { pt: params.periodType })
+      .getRawOne<{ periodStart: string | Date | null }>();
+    const raw = latestRow?.periodStart ?? null;
+    if (!raw) return [];
+    // period_start is a DATE column — node-pg surfaces it as a Date
+    // in some configs and a string in others. Normalise to
+    // `YYYY-MM-DD` so the equality filter downstream matches the
+    // schema exactly.
+    const periodStart =
+      typeof raw === 'string' ? raw.slice(0, 10) : raw.toISOString().slice(0, 10);
+    return this.listPast({
+      examType: params.examType,
+      periodType: params.periodType,
+      periodStart,
+    });
+  }
+
   async listPast(params: {
     examType?: ExamType;
     periodType?: LeaderboardPeriodType;
