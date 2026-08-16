@@ -7,6 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import { hashPassword, verifyPassword } from '../../common/utils/password.util';
+import { ExamType } from '../../common/types/enums';
 import { User } from './entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
@@ -102,7 +103,20 @@ export class UsersService {
           'One or more subjects do not exist or are inactive.',
         );
       }
-      const mismatched = subjects.filter((s) => s.examType !== user.examType);
+      // NOVDEC students share the WASSCE subject catalogue — same
+      // syllabus, different sitting. GET /subjects?examType=novdec
+      // remaps to WASSCE on the way out, but the strict equality
+      // check below used to reject the save because subject rows
+      // carry examType='wassce' and the user carries
+      // examType='novdec'. Normalise both sides here so the pick
+      // that came from the list can be saved.
+      const normalisedUserExam =
+        user.examType === ExamType.NOVDEC ? ExamType.WASSCE : user.examType;
+      const mismatched = subjects.filter((s) => {
+        const normalisedSubjectExam =
+          s.examType === ExamType.NOVDEC ? ExamType.WASSCE : s.examType;
+        return normalisedSubjectExam !== normalisedUserExam;
+      });
       if (mismatched.length > 0) {
         throw new BadRequestException(
           'All selected subjects must match your current exam type.',
