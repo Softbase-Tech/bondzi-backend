@@ -5,6 +5,7 @@ import { ReferralEvent } from './entities/referral-event.entity';
 import { User } from '../users/entities/user.entity';
 import { ExamAnswer } from '../exams/entities/exam-answer.entity';
 import { XpTransaction } from '../xp-economy/entities/xp-transaction.entity';
+import { XpRateConfig } from '../xp-economy/entities/xp-rate-config.entity';
 import { GamificationService } from '../gamification/gamification.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../common/redis/redis.service';
@@ -14,12 +15,61 @@ import { MailEvent } from '../mail/mail.types';
 
 const QUALIFY_THRESHOLD = 10;
 
+/**
+ * First-name extractor. Referral list surfaces first names only —
+ * full names are PII we don't need on the invite dashboard.
+ */
+function firstNameOf(fullName: string | undefined | null): string {
+  if (!fullName) return 'Friend';
+  const first = fullName.trim().split(/\s+/)[0];
+  return first || 'Friend';
+}
+
 export interface ReferralStats {
   referralCode: string;
   referredCount: number;
   qualifiedCount: number;
   pendingCount: number;
   referralQualified: boolean;
+  /**
+   * Live XP rates from `xp_rate_config` — same source the awarder uses
+   * — so the mobile "you earn N XP" copy always agrees with what the
+   * ledger will actually credit. `questionsRequired` mirrors the
+   * hard-coded `QUALIFY_THRESHOLD` above so the two never drift.
+   */
+  rates: {
+    signup: number;
+    qualify: number;
+    questionsRequired: number;
+  };
+  /**
+   * Total XP the caller has earned from referral events to date
+   * (sum of xp_transactions.level_xp with event_key like `referral_%`).
+   * Was fabricated to 0 client-side before; now sourced.
+   */
+  totalXpEarned: number;
+  /** Admin-editable share message with `{code}` placeholder. */
+  shareTemplate: string;
+}
+
+export interface ReferralEventRow {
+  id: string;
+  referredId: string;
+  referralCode: string;
+  /** First-name only. Full name is redacted. */
+  firstName: string;
+  signupXpIssued: boolean;
+  qualifyXpIssued: boolean;
+  qualifiedAt: string | null;
+  createdAt: string;
+  /** Number of exam answers the referred user has recorded to date. */
+  answersToDate: number;
+  /**
+   * XP the referrer has actually earned from this specific referral
+   * to date — sum of xp_transactions with `reference_id = event.id`
+   * for `referral_referred` + `referral_qualified` event keys.
+   */
+  xpEarned: number;
 }
 
 /**
@@ -44,6 +94,8 @@ export class ReferralsService {
     private readonly answersRepo: Repository<ExamAnswer>,
     @InjectRepository(XpTransaction)
     private readonly xpTxRepo: Repository<XpTransaction>,
+    @InjectRepository(XpRateConfig)
+    private readonly xpRatesRepo: Repository<XpRateConfig>,
     private readonly gamification: GamificationService,
     private readonly notifications: NotificationsService,
     private readonly redis: RedisService,
@@ -191,28 +243,122 @@ export class ReferralsService {
   }
 
   async statsForUser(userId: string): Promise<ReferralStats> {
-    const user = await this.usersRepo.findOne({ where: { id: userId } });
-    const referredCount = await this.eventsRepo.count({
-      where: { referrerId: userId },
-    });
-    const qualifiedCount = await this.eventsRepo.count({
-      where: { referrerId: userId, qualifyXpIssued: true },
-    });
+    const [user, referredCount, qualifiedCount, rates, xpRow, template] =
+      await Promise.all([
+        this.usersRepo.findOne({ where: { id: userId } }),
+        this.eventsRepo.count({ where: { referrerId: userId } }),
+        this.eventsRepo.count({
+          where: { referrerId: userId, qualifyXpIssued: true },
+        }),
+        this.loadReferralRates(),
+        this.xpTxRepo
+          .createQueryBuilder('x')
+          .select('COALESCE(SUM(x.level_xp), 0)', 'sum')
+          .where('x.user_id = :userId', { userId })
+          .andWhere("x.event_key LIKE 'referral_%'")
+          .getRawOne<{ sum: string }>(),
+        this.getShareTemplate(),
+      ]);
+
     return {
       referralCode: user?.referralCode ?? '',
       referredCount,
       qualifiedCount,
       pendingCount: Math.max(0, referredCount - qualifiedCount),
       referralQualified: user?.referralQualified ?? false,
+      rates,
+      totalXpEarned: parseInt(xpRow?.sum ?? '0', 10),
+      shareTemplate: template.template,
     };
   }
 
-  async listEvents(userId: string): Promise<ReferralEvent[]> {
-    return this.eventsRepo.find({
+  /**
+   * Reads the current XP amounts admin has configured for the two
+   * referral event keys. Falls back to the migration defaults if a
+   * row is missing (shouldn't happen post-migration but keeps the
+   * response stable if ops accidentally drops one).
+   */
+  private async loadReferralRates(): Promise<ReferralStats['rates']> {
+    const rows = await this.xpRatesRepo.find({
+      where: [
+        { eventKey: 'referral_referred' },
+        { eventKey: 'referral_qualified' },
+      ],
+    });
+    const byKey = new Map(rows.map((r) => [r.eventKey, r.xpAmount] as const));
+    return {
+      signup: byKey.get('referral_referred') ?? 50,
+      qualify: byKey.get('referral_qualified') ?? 100,
+      questionsRequired: QUALIFY_THRESHOLD,
+    };
+  }
+
+  async listEvents(userId: string): Promise<ReferralEventRow[]> {
+    const events = await this.eventsRepo.find({
       where: { referrerId: userId },
       order: { createdAt: 'DESC' },
       take: 50,
     });
+    if (events.length === 0) return [];
+
+    const referredIds = events.map((e) => e.referredId);
+    const eventIds = events.map((e) => e.id);
+
+    // 3 cheap batched joins, all keyed by IDs we already have:
+    //   1. Referred users' names (first-name only surfaces to mobile).
+    //   2. Per-referred answer counts (drives the "N to go" pill).
+    //   3. Per-event XP awarded so far (referral_referred + referral_qualified
+    //      rows are stamped with reference_id = event.id).
+    const [referredUsers, answerRows, xpRows] = await Promise.all([
+      this.usersRepo.find({
+        where: referredIds.map((id) => ({ id })),
+        select: { id: true, fullName: true },
+      }),
+      this.answersRepo.manager.query<
+        Array<{ user_id: string; count: number }>
+      >(
+        `
+          select e.user_id::text as user_id, count(*)::int as count
+          from exam_answers a
+          inner join exams e on e.id = a.exam_id
+          where e.user_id = any($1::uuid[])
+          group by e.user_id
+        `,
+        [referredIds],
+      ),
+      this.xpTxRepo
+        .createQueryBuilder('x')
+        .select('x.reference_id', 'reference_id')
+        .addSelect('COALESCE(SUM(x.level_xp), 0)', 'sum')
+        .where('x.user_id = :userId', { userId })
+        .andWhere("x.event_key LIKE 'referral_%'")
+        .andWhere('x.reference_id = ANY(:ids)', { ids: eventIds })
+        .groupBy('x.reference_id')
+        .getRawMany<{ reference_id: string; sum: string }>(),
+    ]);
+
+    const nameById = new Map(
+      referredUsers.map((u) => [u.id, u.fullName] as const),
+    );
+    const answersById = new Map(
+      answerRows.map((r) => [r.user_id, r.count] as const),
+    );
+    const xpByEvent = new Map(
+      xpRows.map((r) => [r.reference_id, parseInt(r.sum, 10)] as const),
+    );
+
+    return events.map((e) => ({
+      id: e.id,
+      referredId: e.referredId,
+      referralCode: e.referralCode,
+      firstName: firstNameOf(nameById.get(e.referredId)),
+      signupXpIssued: e.signupXpIssued,
+      qualifyXpIssued: e.qualifyXpIssued,
+      qualifiedAt: e.qualifiedAt ? e.qualifiedAt.toISOString() : null,
+      createdAt: e.createdAt.toISOString(),
+      answersToDate: answersById.get(e.referredId) ?? 0,
+      xpEarned: xpByEvent.get(e.id) ?? 0,
+    }));
   }
 
   // ---------------------------------------------------------------------------
