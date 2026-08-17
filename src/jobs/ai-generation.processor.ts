@@ -15,6 +15,7 @@ import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
 import { NotificationsService } from '../modules/notifications/notifications.service';
 import { buildQuestionGenerationPrompt } from '../modules/ai/instruction-layer/question-generation.prompt';
 import { buildExplanationPrompt } from '../modules/ai/instruction-layer/explanation.prompt';
+import { SyllabusRetrievalService } from '../modules/syllabus/syllabus-retrieval.service';
 import {
   validateQuestionBatch,
   type ParsedQuestion,
@@ -97,8 +98,79 @@ export class AiGenerationProcessor extends WorkerHost {
     private readonly ai: AiService,
     private readonly notifications: NotificationsService,
     private readonly rejectLog: RejectLogService,
+    private readonly syllabusRetrieval: SyllabusRetrievalService,
   ) {
     super();
+  }
+
+  /**
+   * Grounds a generation batch on the NaCCA curriculum. Retrieves the
+   * nearest approved + embedded indicators for the subject/form/topic and
+   * formats them as a bullet list the model must ground on; the legacy
+   * topic description (if any) is appended as supplementary notes.
+   *
+   * Best-effort by design: any embed/retrieval failure — or simply a
+   * subject with nothing approved+embedded yet — falls back to the legacy
+   * context alone, so this never regresses generation for un-ingested
+   * subjects. Results are memoised per job via `cache` so the same
+   * (subject, form, topic) doesn't re-embed once per batch.
+   */
+  private async groundContext(args: {
+    subjectId: string;
+    formLevel: number | null;
+    topicTitle: string;
+    legacyContext: string;
+    cache: Map<string, string>;
+  }): Promise<string> {
+    const key = `${args.subjectId}|${args.formLevel ?? 'any'}|${args.topicTitle}`;
+    const cached = args.cache.get(key);
+    if (cached !== undefined) return cached;
+
+    let grounded = args.legacyContext;
+    try {
+      const queryText = [args.topicTitle, args.legacyContext]
+        .map((s) => s?.trim())
+        .filter(Boolean)
+        .join(' — ');
+      // Prefer form-scoped indicators; if the subject has none approved for
+      // this form, widen to any form so partially-ingested subjects still
+      // ground on something rather than nothing.
+      let hits = await this.syllabusRetrieval.retrieve({
+        subjectId: args.subjectId,
+        queryText,
+        formLevel: args.formLevel,
+        k: 6,
+      });
+      if (hits.length === 0 && args.formLevel != null) {
+        hits = await this.syllabusRetrieval.retrieve({
+          subjectId: args.subjectId,
+          queryText,
+          formLevel: null,
+          k: 6,
+        });
+      }
+      if (hits.length > 0) {
+        const lines = hits.map((h) => {
+          const dok = h.targetDokLevels?.length
+            ? ` [DoK ${h.targetDokLevels.join(',')}]`
+            : '';
+          return `- ${h.statement}${dok}`;
+        });
+        const block = [
+          'NaCCA syllabus indicators (each is a required learning point — ground the questions strictly on these):',
+          ...lines,
+        ].join('\n');
+        grounded = args.legacyContext?.trim()
+          ? `${block}\n\nTopic notes:\n${args.legacyContext.trim()}`
+          : block;
+      }
+    } catch (err) {
+      this.logger.warn(
+        `syllabus grounding failed for ${args.subjectId}/${args.topicTitle}; using legacy context: ${(err as Error).message}`,
+      );
+    }
+    args.cache.set(key, grounded);
+    return grounded;
   }
 
   /**
@@ -282,6 +354,9 @@ export class AiGenerationProcessor extends WorkerHost {
     let completed = 0;
     let failed = 0;
     let totalCost = 0;
+    // Memoises syllabus grounding per (subject, form, topic) for the life of
+    // this job so we embed each topic query once, not once per batch.
+    const groundCache = new Map<string, string>();
 
     for (const selection of params.selections) {
       if (selection.mode === 'replace') {
@@ -374,8 +449,17 @@ export class AiGenerationProcessor extends WorkerHost {
           const topicRow = batch[0].topicId
             ? (topics.find((t) => t.id === batch[0].topicId) ?? null)
             : null;
-          const syllabusContext =
+          const legacyContext =
             topicRow?.description?.trim() ?? topicRow?.title ?? '';
+          // Ground on the NaCCA curriculum when the subject is ingested;
+          // falls back to the legacy topic description otherwise.
+          const syllabusContext = await this.groundContext({
+            subjectId: selection.subjectId,
+            formLevel: selection.formLevel,
+            topicTitle,
+            legacyContext,
+            cache: groundCache,
+          });
           const built = buildQuestionGenerationPrompt({
             examType: params.examType,
             subjectName: subject.name,
