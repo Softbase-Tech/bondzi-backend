@@ -9,7 +9,9 @@ import { RejectLogService } from './reject-log.service';
 import { BedrockClient } from './clients/bedrock.client';
 import { OllamaClient } from './clients/ollama.client';
 import {
+  AI_EMBEDDING_CLIENT,
   AI_GENERATION_CLIENT,
+  aiEmbeddingClientProvider,
   aiGenerationClientProvider,
 } from './clients/ai-generation.factory';
 import { AdminRejectLogController } from './admin-reject-log.controller';
@@ -41,12 +43,14 @@ import { AdminRejectLogController } from './admin-reject-log.controller';
     BedrockClient,
     OllamaClient,
     aiGenerationClientProvider,
+    aiEmbeddingClientProvider,
   ],
   exports: [
     AiService,
     RejectLogService,
     BedrockClient,
     AI_GENERATION_CLIENT,
+    AI_EMBEDDING_CLIENT,
     TypeOrmModule,
   ],
 })

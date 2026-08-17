@@ -4,6 +4,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type {
+  AiEmbedParams,
+  AiEmbedResult,
   AiGenerationClient,
   AiInvokeParams,
   AiInvokeResult,
@@ -43,6 +45,10 @@ export class OllamaClient implements AiGenerationClient {
     process.env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434'
   ).replace(/\/$/, '');
   private readonly model = process.env.OLLAMA_MODEL ?? 'llama3.1:8b';
+  // Embedding model is separate from the generation model — `bge-m3`
+  // (1024-dim) matches the pgvector column default. Flip via env.
+  private readonly embeddingModel =
+    process.env.OLLAMA_EMBEDDING_MODEL ?? 'bge-m3';
   // Local generation is slower per token than Bedrock — an 8B model on
   // CPU can take 60-90s for a 1k-token generation. Give it room. The
   // BullMQ worker's timeout is what actually gates job total wall-clock.
@@ -118,6 +124,67 @@ export class OllamaClient implements AiGenerationClient {
       outputTokens: decoded.usage?.completion_tokens ?? 0,
       // Log-friendly provenance tag — see ai_usage_log write path.
       effectiveModel: `ollama:${this.model}`,
+    };
+  }
+
+  async embed(params: AiEmbedParams): Promise<AiEmbedResult> {
+    // OpenAI-compatible embeddings endpoint accepts a batch `input`.
+    // modelId is IGNORED — Ollama's model comes from env (OLLAMA_EMBEDDING_MODEL).
+    const url = `${this.baseUrl}/v1/embeddings`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.embeddingModel,
+          input: params.texts,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const message = (err as Error)?.message ?? 'unknown';
+      this.log.warn(
+        `[ollama] embed transport failure model=${this.embeddingModel} err=${message}`,
+      );
+      throw new ServiceUnavailableException(
+        `Local AI (Ollama) unreachable at ${this.baseUrl}: ${message}`,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '');
+      this.log.warn(
+        `[ollama] embed non-2xx model=${this.embeddingModel} status=${res.status} body=${bodyText.slice(0, 200)}`,
+      );
+      throw new ServiceUnavailableException(
+        `Local AI (Ollama) returned ${res.status}: ${bodyText.slice(0, 200)}`,
+      );
+    }
+
+    const decoded = (await res.json()) as {
+      data?: Array<{ embedding?: number[]; index?: number }>;
+      usage?: { prompt_tokens?: number };
+    };
+    // Sort by `index` to guarantee vectors line up with input order.
+    const rows = [...(decoded.data ?? [])].sort(
+      (a, b) => (a.index ?? 0) - (b.index ?? 0),
+    );
+    const vectors = rows.map((r) => r.embedding ?? []);
+    if (vectors.length !== params.texts.length) {
+      throw new ServiceUnavailableException(
+        `Ollama embed returned ${vectors.length} vectors for ${params.texts.length} inputs`,
+      );
+    }
+    return {
+      vectors,
+      effectiveModel: `ollama:${this.embeddingModel}`,
+      inputTokens: decoded.usage?.prompt_tokens ?? 0,
     };
   }
 }

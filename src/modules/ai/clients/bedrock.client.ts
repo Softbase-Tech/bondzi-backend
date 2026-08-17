@@ -6,6 +6,8 @@ import {
 } from '@aws-sdk/client-bedrock-runtime';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 import type {
+  AiEmbedParams,
+  AiEmbedResult,
   AiGenerationClient,
   AiInvokeParams,
   AiInvokeResult,
@@ -100,6 +102,94 @@ export class BedrockClient implements AiGenerationClient {
         throw err;
       }
     }
+  }
+
+  // --- Embeddings (Titan Text Embeddings V2 by default) ------------------
+  // Titan embeds ONE text per InvokeModel call, so we loop. Embeddings have
+  // a far higher RPM quota than Claude generation, so they get their own,
+  // faster pacer rather than inheriting `maxRpm` (which is tuned for the
+  // low cross-region Claude quota and would make bulk embedding crawl).
+  private readonly embedMaxRpm = Math.max(
+    1,
+    Number(process.env.AI_BEDROCK_EMBED_MAX_RPM ?? 480),
+  );
+  private readonly embedMinIntervalMs = Math.ceil(60_000 / this.embedMaxRpm);
+  private embedNextSlotAt = 0;
+
+  private async paceEmbed(): Promise<void> {
+    const now = Date.now();
+    const slot = Math.max(now, this.embedNextSlotAt);
+    this.embedNextSlotAt = slot + this.embedMinIntervalMs;
+    const wait = slot - now;
+    if (wait > 0) await sleep(wait);
+  }
+
+  async embed(params: AiEmbedParams): Promise<AiEmbedResult> {
+    const dimensions = Number(process.env.AI_EMBEDDING_DIM ?? 1024);
+    const vectors: number[][] = [];
+    let inputTokens = 0;
+
+    for (const text of params.texts) {
+      await this.paceEmbed();
+      const one = await this.embedOneWithRetry(
+        params.modelId,
+        text,
+        dimensions,
+      );
+      vectors.push(one.embedding);
+      inputTokens += one.inputTextTokenCount;
+    }
+
+    return { vectors, effectiveModel: params.modelId, inputTokens };
+  }
+
+  private async embedOneWithRetry(
+    modelId: string,
+    text: string,
+    dimensions: number,
+  ): Promise<{ embedding: number[]; inputTextTokenCount: number }> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.embedOnce(modelId, text, dimensions);
+      } catch (err) {
+        if (err instanceof ThrottlingException && attempt < this.maxRetries) {
+          const backoff = Math.min(30_000, 2_000 * 2 ** attempt);
+          this.log.warn(
+            `Bedrock embed throttled (${modelId}); retry ${attempt + 1}/${this.maxRetries} in ${backoff}ms`,
+          );
+          await sleep(backoff);
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  private async embedOnce(
+    modelId: string,
+    text: string,
+    dimensions: number,
+  ): Promise<{ embedding: number[]; inputTextTokenCount: number }> {
+    // Titan Text Embeddings V2 body. `normalize: true` returns unit vectors,
+    // which is what cosine distance (pgvector `<=>`) expects.
+    const cmd = new InvokeModelCommand({
+      modelId,
+      contentType: 'application/json',
+      accept: 'application/json',
+      body: JSON.stringify({ inputText: text, dimensions, normalize: true }),
+    });
+    const res = await this.client.send(cmd);
+    const decoded = JSON.parse(new TextDecoder().decode(res.body)) as {
+      embedding?: number[];
+      inputTextTokenCount?: number;
+    };
+    if (!Array.isArray(decoded.embedding)) {
+      throw new Error(`Bedrock embed returned no vector for model ${modelId}`);
+    }
+    return {
+      embedding: decoded.embedding,
+      inputTextTokenCount: decoded.inputTextTokenCount ?? 0,
+    };
   }
 
   private async sendOnce(params: AiInvokeParams): Promise<AiInvokeResult> {

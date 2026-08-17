@@ -2,7 +2,10 @@ import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { AiService } from './ai.service';
-import { AI_GENERATION_CLIENT } from './clients/ai-generation.factory';
+import {
+  AI_EMBEDDING_CLIENT,
+  AI_GENERATION_CLIENT,
+} from './clients/ai-generation.factory';
 import { AiUsageLog } from './entities/ai-usage-log.entity';
 import { PromptTemplate } from './entities/prompt-template.entity';
 import { RedisService } from '../../common/redis/redis.service';
@@ -23,6 +26,7 @@ import { AiAction } from '../../common/types/enums';
 describe('AiService', () => {
   let service: AiService;
   let bedrock: { invoke: jest.Mock };
+  let embedder: { embed: jest.Mock };
   let usage: { insert: jest.Mock };
   let prompts: { findOne: jest.Mock };
   let redis: { get: jest.Mock; incr: jest.Mock; incrByFloat: jest.Mock };
@@ -30,6 +34,7 @@ describe('AiService', () => {
 
   beforeEach(async () => {
     bedrock = { invoke: jest.fn() };
+    embedder = { embed: jest.fn() };
     usage = { insert: jest.fn() };
     prompts = { findOne: jest.fn() };
     redis = {
@@ -52,6 +57,7 @@ describe('AiService', () => {
         { provide: ConfigService, useValue: config },
         { provide: RedisService, useValue: redis },
         { provide: AI_GENERATION_CLIENT, useValue: bedrock },
+        { provide: AI_EMBEDDING_CLIENT, useValue: embedder },
         { provide: getRepositoryToken(AiUsageLog), useValue: usage },
         { provide: getRepositoryToken(PromptTemplate), useValue: prompts },
       ],
@@ -159,6 +165,50 @@ describe('AiService', () => {
       await expect(
         service.callBedrock('p', 'anthropic.claude-haiku-4-5-20251001-v1:0'),
       ).resolves.toBeDefined();
+    });
+  });
+
+  // ------------------------------- embed -------------------------------
+
+  describe('embed', () => {
+    it('routes texts to the embedding client, logs usage and returns vectors + dim', async () => {
+      embedder.embed.mockResolvedValueOnce({
+        vectors: [
+          [0.1, 0.2, 0.3],
+          [0.4, 0.5, 0.6],
+        ],
+        effectiveModel: 'amazon.titan-embed-text-v2:0',
+        inputTokens: 12,
+      });
+      redis.incrByFloat.mockResolvedValueOnce(0);
+
+      const out = await service.embed(['alpha', 'beta'], {
+        model: 'amazon.titan-embed-text-v2:0',
+        jobId: 'job-embed',
+      });
+
+      expect(embedder.embed).toHaveBeenCalledWith({
+        texts: ['alpha', 'beta'],
+        modelId: 'amazon.titan-embed-text-v2:0',
+      });
+      expect(usage.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: AiAction.EMBEDDING,
+          model: 'amazon.titan-embed-text-v2:0',
+          inputTokens: 12,
+          outputTokens: 0,
+        }),
+      );
+      expect(out.vectors).toHaveLength(2);
+      expect(out.dim).toBe(3);
+      expect(out.model).toBe('amazon.titan-embed-text-v2:0');
+    });
+
+    it('short-circuits on an empty input without calling the client', async () => {
+      const out = await service.embed([]);
+      expect(embedder.embed).not.toHaveBeenCalled();
+      expect(out.vectors).toEqual([]);
+      expect(out.dim).toBe(0);
     });
   });
 
