@@ -34,6 +34,7 @@ import { AccountDeletionsModule } from '../modules/account-deletions/account-del
 import { LeaderboardModule } from '../modules/leaderboard/leaderboard.module';
 import { ReferralsModule } from '../modules/referrals/referrals.module';
 import { AiModule } from '../modules/ai/ai.module';
+import { SyllabusModule } from '../modules/syllabus/syllabus.module';
 import { PaymentsModule } from '../modules/payments/payments.module';
 import { SubscriptionsModule } from '../modules/subscriptions/subscriptions.module';
 import { EmailProcessor } from './email.processor';
@@ -62,6 +63,7 @@ import { QUEUE_AI_GENERATION, QUEUE_EMAIL } from '../modules/ai/ai.queues';
     LeaderboardModule,
     ReferralsModule,
     AiModule,
+    SyllabusModule,
     PaymentsModule,
     // SubscriptionRenewalJob now uses PlansService (to format
     // expiring/expired emails with the plan name + level), so the
