@@ -19,9 +19,10 @@
  *     option pairs. The validation pipeline (0.1d) also enforces
  *     this at the wire level, but stating it in the prompt cuts
  *     the reject rate meaningfully.
- *   • Explanation contract: full worked solution + ≥1 additional
- *     worked example applying the same concept. Student level, no
- *     preamble/pleasantries. Explicitly rejects one-liners.
+ *   • Explanation contract: a clear worked solution, plus an OPTIONAL
+ *     worked example when it genuinely aids understanding (computational
+ *     questions). Student level, no preamble/pleasantries. Rejects
+ *     one-liners.
  *   • Output shape: strict JSON, no markdown fences, no prose
  *     outside the JSON. Any deviation is a validation reject.
  *
@@ -65,21 +66,23 @@ const QUESTION_TASK_RULES = `Multiple-choice question rules:
   numeric answers, no ambiguous phrasing.`;
 
 const EXPLANATION_TASK_RULES = `Explanation rules:
-- Produce a FULL worked solution. Identify the syllabus concept in
-  play, then walk the student through the derivation step by step,
-  showing each intermediate value with units.
+- Produce a clear worked solution. Identify the syllabus concept in
+  play, then reason it through: for a calculation, walk the derivation
+  step by step showing each intermediate value with units; for a
+  conceptual or recall question, explain the underlying idea plainly.
 - State the correct option and, in ONE line each, why the other
   options are wrong (common misconception behind each distractor).
-- Include AT LEAST ONE additional worked example — a different setup
-  applying the same concept, so the student sees the method
-  generalise. Label it clearly as "Example:" or "Worked example:".
+- Add a SECOND worked example ONLY when it genuinely helps — i.e.
+  computational / procedural questions where practising the method on
+  a different setup makes it generalise. For definition, recall, or
+  purely conceptual questions, give the solution alone; do not tack on
+  an example that just repeats it.
 - Write at the level of a WAEC {examType} Form {formLevel} student.
   Assume they know the topic exists; do NOT assume they can apply
   it yet.
 - No preamble ("Great question!", "Let's dive in"). No closing
   pleasantries ("Hope that helps!"). No mention of the exam board.
-- Plain paragraphs. Simple headings acceptable ("Solution:", "Example:").
-  No emoji.`;
+- Follow the exact section format the user turn specifies. No emoji.`;
 
 /**
  * System-turn text for question generation. The user turn (built by

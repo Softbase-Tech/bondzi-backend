@@ -10,11 +10,13 @@
  *   • Refusal path — if the model returned the JSON refusal shape,
  *     surface as `model_refused` (distinct reason so ops can tell
  *     "topic out of coverage" apart from "prompt drift").
- *   • Structure — must contain a `## Solution` section AND a
- *     `## Example` section, in that order. The `## Example` section
- *     is the extensive-worked-example requirement from your spec.
- *   • Length — under 400 characters typically means the worked
- *     example is missing or the solution is a one-liner. Reject.
+ *   • Structure — must contain a `## Solution` section. A
+ *     `## Worked Example` (or legacy `## Example`) section is OPTIONAL;
+ *     when present it must come after the solution. Conceptual / recall
+ *     questions legitimately have no worked example.
+ *   • Length — under 180 characters is a one-liner, not an explanation.
+ *     Reject. (The old 400-char floor assumed a mandatory worked
+ *     example; solution-only explanations are legitimately shorter.)
  *   • No verbatim stem — model shouldn't just parrot the question
  *     back before "explaining" it. Reject when the first 120
  *     characters of the stem appear verbatim in the output (line-
@@ -29,7 +31,6 @@
 export type ExplanationRejectReason =
   | 'model_refused'
   | 'missing_solution_section'
-  | 'missing_example_section'
   | 'section_order_wrong'
   | 'too_short'
   | 'stem_verbatim';
@@ -38,7 +39,7 @@ export type ExplanationValidationResult =
   | { ok: true; content: string }
   | { ok: false; reason: ExplanationRejectReason; detail: string };
 
-const MIN_LENGTH_CHARS = 400;
+const MIN_LENGTH_CHARS = 180;
 const STEM_MATCH_PREFIX = 120;
 
 export function validateExplanation(
@@ -73,18 +74,21 @@ export function validateExplanation(
     return {
       ok: false,
       reason: 'too_short',
-      detail: `${trimmed.length} chars (min ${MIN_LENGTH_CHARS}); likely missing worked example`,
+      detail: `${trimmed.length} chars (min ${MIN_LENGTH_CHARS}); one-liner, not an explanation`,
     };
   }
 
-  // Structure — both required sections, in the right order. Match a
-  // `Solution` / `Example` ATX heading at line-start (line-anchored so a
-  // mention of "example" inside a paragraph doesn't count). The prompt asks
-  // for `## Solution`, but accept ANY heading level (`#`–`######`) — models
-  // routinely emit `### Solution` instead, and rejecting a perfectly good
-  // explanation over one extra `#` is a validator bug, not a bad response.
+  // Structure — `## Solution` is required; the worked example is optional.
+  // Match ATX headings at line-start (line-anchored so a mention of
+  // "example" inside a paragraph doesn't count). Accept ANY heading level
+  // (`#`–`######`) — models routinely emit `### Solution` instead, and
+  // rejecting a good explanation over one extra `#` is a validator bug. The
+  // worked example may be titled `## Worked Example` (current) or `## Example`
+  // (legacy).
   const solutionMatch = /^\s*#{1,6}\s+Solution\b/im.exec(trimmed);
-  const exampleMatch = /^\s*#{1,6}\s+Example\b/im.exec(trimmed);
+  const exampleMatch = /^\s*#{1,6}\s+(?:Worked\s+Example|Example)\b/im.exec(
+    trimmed,
+  );
   if (!solutionMatch) {
     return {
       ok: false,
@@ -92,19 +96,14 @@ export function validateExplanation(
       detail: 'no `## Solution` heading found',
     };
   }
-  if (!exampleMatch) {
-    return {
-      ok: false,
-      reason: 'missing_example_section',
-      detail:
-        'no `## Example` heading found — extensive worked example is required',
-    };
-  }
-  if (exampleMatch.index < solutionMatch.index) {
+  // The worked example is optional, but if the model DID emit one it must
+  // come after the solution (a client that splits on the heading would
+  // otherwise mis-assign the sections).
+  if (exampleMatch && exampleMatch.index < solutionMatch.index) {
     return {
       ok: false,
       reason: 'section_order_wrong',
-      detail: '`## Example` appeared before `## Solution`',
+      detail: '`## Worked Example` appeared before `## Solution`',
     };
   }
 
