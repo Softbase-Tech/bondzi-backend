@@ -46,6 +46,12 @@ export interface SyllabusSourceRef {
   pageTo?: number;
 }
 
+/** A pedagogical exemplar block (a `Heading:` + its bullet items). */
+export interface SyllabusPedagogyExemplar {
+  heading: string;
+  items: string[];
+}
+
 @Entity({ name: 'syllabus_indicators' })
 // LI codes are NOT unique per subject — they RESET inside each content
 // standard (e.g. 1.1.1.CS.1 and 1.1.1.CS.2 both own a 1.1.1.LI.1, verified
@@ -92,6 +98,23 @@ export class SyllabusIndicator {
   /** Worked Examples + Solutions (LaTeX). The groundable knowledge. */
   @Column({ name: 'worked_content', type: 'text', nullable: true })
   workedContent: string | null;
+
+  /**
+   * Bold DoK level(s) from the Assessment cell — usually one, sometimes a
+   * range. Empty/null when none was found (flagged at extraction). The
+   * DoK→difficulty mapping uses the minimum.
+   */
+  @Column({
+    name: 'target_dok_levels',
+    type: 'int',
+    array: true,
+    nullable: true,
+  })
+  targetDokLevels: number[] | null;
+
+  /** Pedagogical exemplars (heading + bullets) parsed from the LI cell. */
+  @Column({ name: 'pedagogy_exemplars', type: 'jsonb', nullable: true })
+  pedagogyExemplars: SyllabusPedagogyExemplar[] | null;
 
   @Column({
     name: 'curriculum_version',

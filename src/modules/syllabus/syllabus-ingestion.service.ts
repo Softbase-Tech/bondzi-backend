@@ -15,6 +15,15 @@ import {
 import { SyllabusAssessmentItem } from './entities/syllabus-assessment-item.entity';
 import { SyllabusPedagogyRef } from './entities/syllabus-pedagogy-ref.entity';
 import { ExtractedSubStrand } from './extraction/syllabus-extraction.types';
+import { validateSyllabusExtraction } from './extraction/syllabus-extraction.validator';
+
+export interface IngestBatchResult {
+  ingested: number;
+  rejected: number;
+  contentStandards: number;
+  indicators: number;
+  errors: Array<{ index: number; reason: string; detail: string }>;
+}
 
 export interface IngestResult {
   strandId: string;
@@ -60,6 +69,42 @@ export class SyllabusIngestionService {
     @InjectRepository(SyllabusPedagogyRef)
     private readonly pedagogyRefs: Repository<SyllabusPedagogyRef>,
   ) {}
+
+  /**
+   * Ingest a batch of extracted sub-strands for one subject (the shape the
+   * pdfplumber tool emits per subject file). Each is validated before
+   * ingest; a malformed one is skipped and reported, never aborting the rest.
+   */
+  async ingestBatch(
+    subjectId: string,
+    rawSubStrands: unknown[],
+    opts: { curriculumVersion?: string } = {},
+  ): Promise<IngestBatchResult> {
+    const out: IngestBatchResult = {
+      ingested: 0,
+      rejected: 0,
+      contentStandards: 0,
+      indicators: 0,
+      errors: [],
+    };
+    for (let i = 0; i < rawSubStrands.length; i += 1) {
+      const res = validateSyllabusExtraction(JSON.stringify(rawSubStrands[i]));
+      if (!res.ok) {
+        out.rejected += 1;
+        out.errors.push({ index: i, reason: res.reason, detail: res.detail });
+        continue;
+      }
+      const r = await this.ingestSubStrand(
+        subjectId,
+        rawSubStrands[i] as ExtractedSubStrand,
+        { curriculumVersion: opts.curriculumVersion },
+      );
+      out.ingested += 1;
+      out.contentStandards += r.contentStandards;
+      out.indicators += r.indicators;
+    }
+    return out;
+  }
 
   async ingestSubStrand(
     subjectId: string,
@@ -259,11 +304,19 @@ export class SyllabusIngestionService {
         code: indicator.code,
       },
     });
+    const dok = indicator.targetDokLevels?.length
+      ? indicator.targetDokLevels
+      : null;
+    const pedagogy = indicator.pedagogyExemplars?.length
+      ? indicator.pedagogyExemplars
+      : null;
     if (existing) {
       existing.contentStandardId = args.contentStandardId;
       existing.formLevel = args.formLevel;
       existing.statement = indicator.statement;
       existing.workedContent = indicator.workedContent ?? null;
+      existing.targetDokLevels = dok;
+      existing.pedagogyExemplars = pedagogy;
       existing.sortOrder = args.sortOrder;
       if (args.sourceRef) existing.sourceRef = args.sourceRef;
       // Re-extraction → back to draft for admin re-review.
@@ -279,6 +332,8 @@ export class SyllabusIngestionService {
         code: indicator.code,
         statement: indicator.statement,
         workedContent: indicator.workedContent ?? null,
+        targetDokLevels: dok,
+        pedagogyExemplars: pedagogy,
         sourceRef: args.sourceRef,
         status: 'draft',
         sortOrder: args.sortOrder,

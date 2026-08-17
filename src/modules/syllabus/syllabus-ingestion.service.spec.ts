@@ -127,3 +127,56 @@ describe('SyllabusIngestionService', () => {
     );
   });
 });
+
+describe('SyllabusIngestionService.ingestBatch', () => {
+  it('validates each sub-strand: ingests the valid, reports the malformed', async () => {
+    const indicators = fakeRepo('ind');
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        SyllabusIngestionService,
+        { provide: getRepositoryToken(SyllabusStrand), useValue: fakeRepo('st') },
+        { provide: getRepositoryToken(SyllabusSubStrand), useValue: fakeRepo('ss') },
+        { provide: getRepositoryToken(SyllabusLearningOutcome), useValue: fakeRepo('lo') },
+        { provide: getRepositoryToken(SyllabusContentStandard), useValue: fakeRepo('cs') },
+        { provide: getRepositoryToken(SyllabusIndicator), useValue: indicators },
+        { provide: getRepositoryToken(SyllabusAssessmentItem), useValue: fakeRepo('ai') },
+        { provide: getRepositoryToken(SyllabusPedagogyRef), useValue: fakeRepo('ped') },
+      ],
+    }).compile();
+    const service: SyllabusIngestionService = moduleRef.get(SyllabusIngestionService);
+
+    const valid = {
+      formLevel: 1,
+      strand: { code: '1', title: 'S' },
+      subStrand: { code: '1.1', title: 'SS' },
+      learningOutcomes: [],
+      contentStandards: [
+        {
+          code: '1.1.1.CS.1',
+          statement: 'CS',
+          indicators: [
+            {
+              code: '1.1.1.LI.1',
+              statement: 'LI',
+              targetDokLevels: [2, 3],
+              pedagogyExemplars: [{ heading: 'Digital Learning', items: ['a'] }],
+            },
+          ],
+        },
+      ],
+    };
+    const malformed = { strand: { code: '1' } }; // missing subStrand/CS
+
+    const res = await service.ingestBatch('subject-1', [valid, malformed]);
+    expect(res.ingested).toBe(1);
+    expect(res.rejected).toBe(1);
+    expect(res.errors[0].index).toBe(1);
+    expect(indicators.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: '1.1.1.LI.1',
+        targetDokLevels: [2, 3],
+        pedagogyExemplars: [{ heading: 'Digital Learning', items: ['a'] }],
+      }),
+    );
+  });
+});

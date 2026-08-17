@@ -21,12 +21,22 @@ export interface ExtractedAssessmentItem {
   solution?: string | null;
 }
 
+export interface ExtractedPedagogyExemplar {
+  heading: string;
+  items: string[];
+}
+
 export interface ExtractedIndicator {
   /** e.g. `1.1.1.LI.1` — the atomic unit. */
   code: string;
   statement: string;
   /** Worked Examples + Solutions (LaTeX). Groundable knowledge only. */
   workedContent?: string | null;
+  /** Bold DoK level(s) from the Assessment cell (usually one; a range for some subjects). */
+  targetDokLevels?: number[];
+  /** Pedagogical exemplars split off the indicator statement. */
+  pedagogyExemplars?: ExtractedPedagogyExemplar[];
+  /** Reserved for a future per‑question extraction; empty from pdfplumber. */
   assessmentItems?: ExtractedAssessmentItem[];
 }
 
