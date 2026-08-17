@@ -37,12 +37,26 @@ export class PmTestQuestion {
   @JoinColumn({ name: 'subject_id' })
   subject: Subject;
 
+  /**
+   * @deprecated Superseded by `syllabusIndicatorId` (the NaCCA hierarchy).
+   * Kept nullable during the migration so nothing breaks; dropped in a
+   * later cleanup migration once all consumers read indicators.
+   */
   @Column({ name: 'syllabus_topic_id', type: 'uuid', nullable: true })
   syllabusTopicId: string | null;
 
   @ManyToOne(() => SyllabusTopic, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'syllabus_topic_id' })
   syllabusTopic: SyllabusTopic | null;
+
+  /**
+   * Canonical link into the NaCCA curriculum spine (a `syllabus_indicators`
+   * row). Nullable while ingestion + backfill are in progress. FK is
+   * enforced at the DB level (ON DELETE SET NULL) via the migration; kept
+   * as a plain column to avoid cross-module relation coupling.
+   */
+  @Column({ name: 'syllabus_indicator_id', type: 'uuid', nullable: true })
+  syllabusIndicatorId: string | null;
 
   @Column({ name: 'exam_type', type: 'enum', enum: ExamType })
   examType: ExamType;

@@ -48,6 +48,16 @@ export class Question {
   topic: Topic | null;
 
   /**
+   * Link into the NaCCA curriculum spine (a `syllabus_indicators` row).
+   * Past-paper questions predate the curriculum, so this is populated by
+   * the semantic past-paper→indicator backfill (plan §A7) and stays null
+   * until then. FK enforced at the DB level (ON DELETE SET NULL) via the
+   * migration; plain column to avoid cross-module relation coupling.
+   */
+  @Column({ name: 'syllabus_indicator_id', type: 'uuid', nullable: true })
+  syllabusIndicatorId: string | null;
+
+  /**
    * Shared stimulus FK for grouped past-paper items ("Use the table to
    * answer Questions 15 and 16"). Null for ordinary standalone questions.
    * Adjacent questions sharing the same stimulus_id render as one group
