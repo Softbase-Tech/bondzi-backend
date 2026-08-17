@@ -174,6 +174,45 @@ export class AiGenerationProcessor extends WorkerHost {
   }
 
   /**
+   * Grounding block for a single explanation, keyed off the question stem.
+   * Returns `undefined` when the subject has nothing to ground on or any
+   * retrieval error occurs — the caller then omits the syllabus context and
+   * the model grounds on the stem alone (unchanged legacy behaviour).
+   *
+   * The caller gates this behind `hasEmbeddedIndicators` (cached per job) so
+   * un-ingested subjects never reach here and pay no embed cost.
+   */
+  private async groundExplanation(
+    subjectId: string,
+    questionBody: string,
+  ): Promise<string | undefined> {
+    try {
+      const hits = await this.syllabusRetrieval.retrieve({
+        subjectId,
+        queryText: questionBody,
+        formLevel: null,
+        k: 4,
+      });
+      if (hits.length === 0) return undefined;
+      const lines = hits.map((h) => {
+        const dok = h.targetDokLevels?.length
+          ? ` [DoK ${h.targetDokLevels.join(',')}]`
+          : '';
+        return `- ${h.statement}${dok}`;
+      });
+      return [
+        'NaCCA syllabus indicators (ground the explanation strictly on these):',
+        ...lines,
+      ].join('\n');
+    } catch (err) {
+      this.logger.warn(
+        `explanation grounding failed for subject ${subjectId}: ${(err as Error).message}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
    * Best-effort reject-log write. Never propagates errors — losing one
    * log row is preferable to failing the parent generation loop over a
    * transient DB blip.
@@ -649,6 +688,10 @@ export class AiGenerationProcessor extends WorkerHost {
     let completed = 0;
     let failed = 0;
     let totalCost = 0;
+    // Skip-guard: remember per subject whether it has ANY approved+embedded
+    // indicator. Subjects with none never trigger an embedding query, so
+    // un-ingested subjects pay zero grounding cost/latency.
+    const embeddedSubjectCache = new Map<string, boolean>();
 
     // Spec §5.2 step 1: fetch question ids in batches of 50. Each DB round-trip
     // hydrates 50 questions + options + subjects; AI calls remain per-question.
@@ -675,6 +718,24 @@ export class AiGenerationProcessor extends WorkerHost {
           continue;
         }
 
+        // Ground the explanation on the NaCCA curriculum when the subject
+        // is ingested. Gated behind a cached existence check so un-ingested
+        // subjects never trigger an embedding query (see groundExplanation).
+        let syllabusContext: string | undefined;
+        const subjId = q.subject?.id;
+        if (subjId) {
+          let hasEmb = embeddedSubjectCache.get(subjId);
+          if (hasEmb === undefined) {
+            hasEmb = await this.syllabusRetrieval
+              .hasEmbeddedIndicators(subjId)
+              .catch(() => false);
+            embeddedSubjectCache.set(subjId, hasEmb);
+          }
+          if (hasEmb) {
+            syllabusContext = await this.groundExplanation(subjId, q.body);
+          }
+        }
+
         const built = buildExplanationPrompt({
           examType: q.examType,
           subjectName:
@@ -684,6 +745,7 @@ export class AiGenerationProcessor extends WorkerHost {
           questionBody: q.body,
           options: q.options.map((o) => ({ label: o.label, body: o.body })),
           correctLabel: correct.label,
+          syllabusContext,
         });
 
         let call: Awaited<ReturnType<typeof this.ai.callBedrock>> | null = null;
