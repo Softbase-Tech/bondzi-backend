@@ -46,10 +46,7 @@ export class FaqAdminController {
 
   @Patch(':id')
   @ApiOperation({ summary: 'Update fields on an FAQ entry.' })
-  update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: UpsertFaqDto,
-  ) {
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpsertFaqDto) {
     return this.svc.update(id, dto);
   }
 
