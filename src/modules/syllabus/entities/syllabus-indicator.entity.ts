@@ -47,7 +47,11 @@ export interface SyllabusSourceRef {
 }
 
 @Entity({ name: 'syllabus_indicators' })
-@Unique('syllabus_indicators_uq', ['subjectId', 'curriculumVersion', 'code'])
+// LI codes are NOT unique per subject — they RESET inside each content
+// standard (e.g. 1.1.1.CS.1 and 1.1.1.CS.2 both own a 1.1.1.LI.1, verified
+// on the Chemistry corpus). Uniqueness is therefore scoped to the content
+// standard, not the subject. (Migration 2190 alters this from the A1 form.)
+@Unique('syllabus_indicators_uq', ['contentStandardId', 'code'])
 // Hot retrieval path: filter by subject + form + status, then vector-search.
 @Index('idx_syllabus_indicators_retrieval', [
   'subjectId',

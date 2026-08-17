@@ -312,12 +312,14 @@ export enum AiAction {
   POST_EXAM_BREAKDOWN = 'post_exam_breakdown',
   AI_REVIEW = 'ai_review',
   EMBEDDING = 'embedding',
+  SYLLABUS_EXTRACTION = 'syllabus_extraction',
 }
 
 // v2: admin-triggered AI job lifecycle.
 export enum AiJobType {
   EXPLANATION_BULK = 'explanation_bulk',
   PM_TEST_GENERATION = 'pm_test_generation',
+  SYLLABUS_EXTRACTION = 'syllabus_extraction',
 }
 
 export enum AiJobStatus {
