@@ -7,14 +7,15 @@ import { SyllabusContentStandard } from './entities/syllabus-content-standard.en
 import { SyllabusIndicator } from './entities/syllabus-indicator.entity';
 import { SyllabusAssessmentItem } from './entities/syllabus-assessment-item.entity';
 import { SyllabusPedagogyRef } from './entities/syllabus-pedagogy-ref.entity';
+import { SyllabusIngestionService } from './syllabus-ingestion.service';
 
 /**
- * PART A / A1 — NaCCA curriculum hierarchy (knowledge spine).
+ * PART A — NaCCA curriculum hierarchy (knowledge spine).
  *
- * This first slice registers only the structured entities so their
- * repositories are available and `autoLoadEntities` picks up the
- * tables. Ingestion, admin review, embeddings, and retrieval services
- * arrive in later A-phases and slot into this module.
+ * A1 registered the structured entities. A3.2 adds the ingestion
+ * service that loads validated extractions into the hierarchy as
+ * `draft`. Admin review, the extraction job, embeddings, and retrieval
+ * slot into this module in later A-phases.
  */
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { SyllabusPedagogyRef } from './entities/syllabus-pedagogy-ref.entity';
       SyllabusPedagogyRef,
     ]),
   ],
-  exports: [TypeOrmModule],
+  providers: [SyllabusIngestionService],
+  exports: [TypeOrmModule, SyllabusIngestionService],
 })
 export class SyllabusModule {}
