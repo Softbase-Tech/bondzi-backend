@@ -311,6 +311,7 @@ export enum AiAction {
   WEAKNESS_NARRATIVE = 'weakness_narrative',
   POST_EXAM_BREAKDOWN = 'post_exam_breakdown',
   AI_REVIEW = 'ai_review',
+  EMBEDDING = 'embedding',
 }
 
 // v2: admin-triggered AI job lifecycle.

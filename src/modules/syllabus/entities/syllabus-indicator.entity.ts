@@ -108,6 +108,19 @@ export class SyllabusIndicator {
   @Column({ type: 'text', default: 'draft' })
   status: SyllabusIndicatorStatus;
 
+  /**
+   * The embedding model that produced this row's vector (e.g.
+   * `amazon.titan-embed-text-v2:0`). Stored so a model/dimension change
+   * is detectable and triggers re-embedding. The `embedding vector(1024)`
+   * column itself is added in migration 2180 but NOT mapped here —
+   * TypeORM has no `vector` type, so it is read/written via raw SQL.
+   */
+  @Column({ name: 'embedding_model', type: 'text', nullable: true })
+  embeddingModel: string | null;
+
+  @Column({ name: 'embedded_at', type: 'timestamptz', nullable: true })
+  embeddedAt: Date | null;
+
   @Column({ name: 'sort_order', type: 'int', default: 0 })
   sortOrder: number;
 

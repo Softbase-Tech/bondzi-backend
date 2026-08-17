@@ -56,4 +56,21 @@ export default registerAs('ai', () => ({
    * `src/modules/ai/clients/ai-generation.factory.ts`.
    */
   provider: (process.env.AI_PROVIDER ?? 'bedrock').trim().toLowerCase(),
+  /**
+   * Embeddings (syllabus RAG). Resolved independently of `provider` so
+   * embeddings can run free on local Ollama while generation stays on
+   * Bedrock (or vice versa). `AI_EMBEDDING_DIM` MUST match the model and
+   * the pgvector column width (Titan v2 = 1024, bge-m3 = 1024, nomic = 768);
+   * changing it later means re-embedding + a column change.
+   */
+  embeddingProvider: (
+    process.env.AI_EMBEDDING_PROVIDER ??
+    process.env.AI_PROVIDER ??
+    'bedrock'
+  )
+    .trim()
+    .toLowerCase(),
+  embeddingModel:
+    process.env.AI_EMBEDDING_MODEL ?? 'amazon.titan-embed-text-v2:0',
+  embeddingDim: parseInt(process.env.AI_EMBEDDING_DIM ?? '1024', 10),
 }));

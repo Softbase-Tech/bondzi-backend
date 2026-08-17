@@ -39,6 +39,32 @@ export interface AiInvokeResult {
   effectiveModel: string;
 }
 
+export interface AiEmbedParams {
+  /** Texts to embed, in order. The result vectors line up by index. */
+  texts: string[];
+  /**
+   * Bedrock embedding model id (e.g. `amazon.titan-embed-text-v2:0`).
+   * Passed through verbatim to BedrockClient. IGNORED by OllamaClient —
+   * Ollama uses `OLLAMA_EMBEDDING_MODEL` env instead.
+   */
+  modelId: string;
+}
+
+export interface AiEmbedResult {
+  /** One vector per input text, in the same order. */
+  vectors: number[][];
+  /** The model that actually ran (`ollama:<name>` for local). */
+  effectiveModel: string;
+  /** Best-effort total input tokens (0 when the provider doesn't report). */
+  inputTokens: number;
+}
+
 export interface AiGenerationClient {
   invoke(params: AiInvokeParams): Promise<AiInvokeResult>;
+  /**
+   * Embed one or more texts into vectors for semantic retrieval. The
+   * SAME model must be used at ingest time and query time — vectors from
+   * different models are not comparable.
+   */
+  embed(params: AiEmbedParams): Promise<AiEmbedResult>;
 }

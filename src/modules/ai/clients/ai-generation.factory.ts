@@ -48,3 +48,45 @@ export const aiGenerationClientProvider: Provider = {
   },
   inject: [BedrockClient, OllamaClient],
 };
+
+/**
+ * DI token for the resolved EMBEDDING client. Embeddings can run on a
+ * different provider than generation (e.g. generate on Bedrock, embed
+ * on a free local Ollama), so this is resolved independently from
+ * `AI_EMBEDDING_PROVIDER`, falling back to `AI_PROVIDER` when unset.
+ */
+export const AI_EMBEDDING_CLIENT = Symbol('AI_EMBEDDING_CLIENT');
+
+export const aiEmbeddingClientProvider: Provider = {
+  provide: AI_EMBEDDING_CLIENT,
+  useFactory: (
+    bedrock: BedrockClient,
+    ollama: OllamaClient,
+  ): AiGenerationClient => {
+    const log = new Logger('AiEmbeddingFactory');
+    const raw = (
+      process.env.AI_EMBEDDING_PROVIDER ??
+      process.env.AI_PROVIDER ??
+      'bedrock'
+    )
+      .trim()
+      .toLowerCase();
+    if (raw === 'self_hosted') {
+      log.log(
+        `Embedding provider: ollama (model=${process.env.OLLAMA_EMBEDDING_MODEL ?? 'bge-m3'})`,
+      );
+      return ollama;
+    }
+    if (raw !== 'bedrock') {
+      log.warn(
+        `AI_EMBEDDING_PROVIDER=${raw} unrecognised — falling back to bedrock.`,
+      );
+    } else {
+      log.log(
+        `Embedding provider: bedrock (model=${process.env.AI_EMBEDDING_MODEL ?? 'amazon.titan-embed-text-v2:0'})`,
+      );
+    }
+    return bedrock;
+  },
+  inject: [BedrockClient, OllamaClient],
+};
