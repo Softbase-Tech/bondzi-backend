@@ -31,6 +31,26 @@ export class SyllabusRetrievalService {
     private readonly ai: AiService,
   ) {}
 
+  /**
+   * Cheap existence check: does the subject have at least one approved,
+   * embedded indicator? Callers use this as a skip-guard so they never pay
+   * for an embedding query on subjects that aren't ingested yet (the
+   * explanation path runs per-question, so this avoids one wasted embed +
+   * round-trip per question on un-ingested subjects).
+   */
+  async hasEmbeddedIndicators(subjectId: string): Promise<boolean> {
+    const rows: Array<{ exists: boolean }> = await this.dataSource.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM syllabus_indicators
+          WHERE subject_id = $1
+            AND status = 'approved'
+            AND embedding IS NOT NULL
+       ) AS exists`,
+      [subjectId],
+    );
+    return rows[0]?.exists === true;
+  }
+
   async retrieve(params: {
     subjectId: string;
     queryText: string;
