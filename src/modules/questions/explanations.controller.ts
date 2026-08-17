@@ -23,6 +23,7 @@ import {
 import { EntitlementService } from '../../common/types/enums';
 import { RequiresService } from '../entitlements/requires-service.decorator';
 import { inlineMathInMarkdown } from '../../common/utils/math.util';
+import { splitExplanationSections } from './explanation-sections.util';
 import { Question } from './entities/question.entity';
 
 /**
@@ -90,6 +91,10 @@ export class ExplanationsController {
     // RequiresServiceGuard. If the user was Free-tier, we returned 403
     // before reading the DB; if they were Plus at the cap, 429; otherwise
     // we're through the gate with usedCount already bumped for the day.
+    // Split into the concise solution + the optional worked example so the
+    // client can render them on separate surfaces (inline card vs. sheet)
+    // and hide the worked-example affordance when there isn't one.
+    const sections = splitExplanationSections(question.explanation);
     return {
       questionId: question.id,
       // Mobile schema accepts `source` as a free string and normalises
@@ -102,7 +107,15 @@ export class ExplanationsController {
       // standalone endpoint was forgetting to do it, so explanations
       // fetched via GET /explanations/:id rendered as literal
       // `\frac{}` / `\times` / `$...$` text.
+      //
+      // `content` is the full blob (kept for backward compatibility with
+      // clients that render it whole); `solution` / `workedExample` are the
+      // split view the current mobile app consumes.
       content: inlineMathInMarkdown(question.explanation),
+      solution: inlineMathInMarkdown(sections.solution),
+      workedExample: sections.workedExample
+        ? inlineMathInMarkdown(sections.workedExample)
+        : null,
       contentHtml: question.explanationHtml,
       generatedAt: question.explanationGeneratedAt?.toISOString() ?? null,
     };

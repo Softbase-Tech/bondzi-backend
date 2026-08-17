@@ -67,12 +67,21 @@ describe('validateExplanation', () => {
     expect(result.reason).toBe('missing_solution_section');
   });
 
-  it('rejects when the Example heading is missing (extensive-example requirement)', () => {
-    const noExample = OK_MARKDOWN.replace('## Example', 'Another try:');
-    const result = validateExplanation(noExample, STEM);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reason).toBe('missing_example_section');
+  it('accepts a solution-only explanation (worked example is optional)', () => {
+    // Drop the example section entirely — a conceptual question does not
+    // need one. Keep the solution long enough to clear the length floor.
+    const solutionOnly = OK_MARKDOWN.slice(
+      0,
+      OK_MARKDOWN.indexOf('## Example'),
+    ).trim();
+    const result = validateExplanation(solutionOnly, STEM);
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts the `## Worked Example` heading', () => {
+    const worked = OK_MARKDOWN.replace('## Example', '## Worked Example');
+    const result = validateExplanation(worked, STEM);
+    expect(result.ok).toBe(true);
   });
 
   it('accepts deeper heading levels (### Solution / ### Example)', () => {

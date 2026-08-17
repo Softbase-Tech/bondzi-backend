@@ -9,25 +9,41 @@ import type { BuiltPrompt } from './question-generation.prompt';
  * pointless parse step. The validator (0.1d) checks the shape
  * against these rules directly.
  */
-export const EXPLANATION_OUTPUT_CONTRACT = `Output plain markdown with these sections in order:
-  1. \`## Solution\`
-     Full worked solution. Identify the concept, then show the
-     derivation step by step. Use units on every numeric intermediate.
-     State the correct option (e.g. "The correct answer is B.") and,
-     in one line each, why A / C / D are wrong (name the common
-     misconception behind each distractor).
-  2. \`## Example\`
-     A DIFFERENT worked example applying the same concept — different
-     numbers or a different framing. Show its full derivation too.
+export const EXPLANATION_OUTPUT_CONTRACT = `Output plain markdown.
 
-Length target: 250-600 words. Under 250 usually means the worked
-example is missing; over 600 usually means padding.
+REQUIRED section:
+  \`## Solution\`
+     Explain why the correct option is right. Identify the concept, then
+     reason it through — for a calculation, show the derivation step by
+     step with units on every numeric intermediate; for a conceptual or
+     recall question, explain the underlying idea plainly. State the
+     correct option (e.g. "The correct answer is B.") and, in one line
+     each, why the other options are wrong (name the common misconception
+     behind each distractor).
+
+OPTIONAL section:
+  \`## Worked Example\`
+     Include this section ONLY when a second, fresh worked example
+     genuinely deepens understanding — i.e. computational / procedural
+     questions where practising the method on DIFFERENT numbers or a
+     different framing helps. Show its full derivation.
+     DO NOT include this section for definition, recall, or purely
+     conceptual questions where a second example would just repeat the
+     solution. When you omit it, do not leave an empty heading — omit
+     the heading entirely.
+
+Length:
+  - Solution-only (no worked example): keep it tight — up to ~400 words.
+  - With a worked example: ~250-600 words total. Do not pad.
+
+The two sections must NOT repeat each other: the worked example is a
+NEW problem, never a restatement of the solution.
 
 Do not include:
   - Preamble ("Great question!", "Let's dive in!")
   - Closing pleasantries ("Hope that helps!")
   - Any reference to the exam board or "the syllabus"
-  - Emoji, or headings other than \`## Solution\` and \`## Example\``;
+  - Emoji, or headings other than \`## Solution\` and \`## Worked Example\``;
 
 export interface ExplanationPromptArgs {
   examType: ExamType;
