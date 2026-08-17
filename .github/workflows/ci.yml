@@ -11,7 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:15
+        # pgvector image (matches production + test.yml) so any migration/
+        # vector-dependent step works; plain postgres lacks the extension.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: bondzi
           POSTGRES_PASSWORD: bondzi
