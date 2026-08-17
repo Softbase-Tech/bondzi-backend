@@ -8,15 +8,19 @@ import { SyllabusIndicator } from './entities/syllabus-indicator.entity';
 import { SyllabusAssessmentItem } from './entities/syllabus-assessment-item.entity';
 import { SyllabusPedagogyRef } from './entities/syllabus-pedagogy-ref.entity';
 import { SyllabusIngestionService } from './syllabus-ingestion.service';
+import { SyllabusEmbeddingService } from './syllabus-embedding.service';
+import { SyllabusRetrievalService } from './syllabus-retrieval.service';
+import { SyllabusReviewService } from './syllabus-review.service';
 import { SyllabusAdminController } from './syllabus-admin.controller';
+import { AiModule } from '../ai/ai.module';
 
 /**
  * PART A — NaCCA curriculum hierarchy (knowledge spine).
  *
- * A1 registered the structured entities. A3.2 adds the ingestion
- * service that loads validated extractions into the hierarchy as
- * `draft`. Admin review, the extraction job, embeddings, and retrieval
- * slot into this module in later A-phases.
+ * A1 registered the structured entities; A3 the ingestion service +
+ * admin ingest. A5/A6 add embeddings (approved indicators → pgvector)
+ * and hybrid retrieval (exported so generation/AI-review can ground on
+ * the exact indicators).
  */
 @Module({
   imports: [
@@ -29,9 +33,15 @@ import { SyllabusAdminController } from './syllabus-admin.controller';
       SyllabusAssessmentItem,
       SyllabusPedagogyRef,
     ]),
+    AiModule,
   ],
   controllers: [SyllabusAdminController],
-  providers: [SyllabusIngestionService],
-  exports: [TypeOrmModule, SyllabusIngestionService],
+  providers: [
+    SyllabusIngestionService,
+    SyllabusEmbeddingService,
+    SyllabusRetrievalService,
+    SyllabusReviewService,
+  ],
+  exports: [TypeOrmModule, SyllabusIngestionService, SyllabusRetrievalService],
 })
 export class SyllabusModule {}
