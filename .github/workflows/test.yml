@@ -14,7 +14,9 @@ jobs:
 
     services:
       postgres:
-        image: postgres:15-alpine
+        # pgvector image (matches production) so migration:run can
+        # CREATE EXTENSION vector — plain postgres lacks the extension.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: bondzi
           POSTGRES_PASSWORD: bondzi_test
