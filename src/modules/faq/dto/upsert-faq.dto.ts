@@ -71,8 +71,7 @@ export class UpsertFaqDto {
  */
 export class CreateFaqDto {
   @ApiProperty({
-    description:
-      'Stable slug used by the mobile deep link /help/faq/:slug.',
+    description: 'Stable slug used by the mobile deep link /help/faq/:slug.',
     example: 'why-is-a-subject-locked',
   })
   @IsString()

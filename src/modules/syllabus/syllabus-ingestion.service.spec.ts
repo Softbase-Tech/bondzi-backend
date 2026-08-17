@@ -134,16 +134,39 @@ describe('SyllabusIngestionService.ingestBatch', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         SyllabusIngestionService,
-        { provide: getRepositoryToken(SyllabusStrand), useValue: fakeRepo('st') },
-        { provide: getRepositoryToken(SyllabusSubStrand), useValue: fakeRepo('ss') },
-        { provide: getRepositoryToken(SyllabusLearningOutcome), useValue: fakeRepo('lo') },
-        { provide: getRepositoryToken(SyllabusContentStandard), useValue: fakeRepo('cs') },
-        { provide: getRepositoryToken(SyllabusIndicator), useValue: indicators },
-        { provide: getRepositoryToken(SyllabusAssessmentItem), useValue: fakeRepo('ai') },
-        { provide: getRepositoryToken(SyllabusPedagogyRef), useValue: fakeRepo('ped') },
+        {
+          provide: getRepositoryToken(SyllabusStrand),
+          useValue: fakeRepo('st'),
+        },
+        {
+          provide: getRepositoryToken(SyllabusSubStrand),
+          useValue: fakeRepo('ss'),
+        },
+        {
+          provide: getRepositoryToken(SyllabusLearningOutcome),
+          useValue: fakeRepo('lo'),
+        },
+        {
+          provide: getRepositoryToken(SyllabusContentStandard),
+          useValue: fakeRepo('cs'),
+        },
+        {
+          provide: getRepositoryToken(SyllabusIndicator),
+          useValue: indicators,
+        },
+        {
+          provide: getRepositoryToken(SyllabusAssessmentItem),
+          useValue: fakeRepo('ai'),
+        },
+        {
+          provide: getRepositoryToken(SyllabusPedagogyRef),
+          useValue: fakeRepo('ped'),
+        },
       ],
     }).compile();
-    const service: SyllabusIngestionService = moduleRef.get(SyllabusIngestionService);
+    const service: SyllabusIngestionService = moduleRef.get(
+      SyllabusIngestionService,
+    );
 
     const valid = {
       formLevel: 1,
@@ -159,7 +182,9 @@ describe('SyllabusIngestionService.ingestBatch', () => {
               code: '1.1.1.LI.1',
               statement: 'LI',
               targetDokLevels: [2, 3],
-              pedagogyExemplars: [{ heading: 'Digital Learning', items: ['a'] }],
+              pedagogyExemplars: [
+                { heading: 'Digital Learning', items: ['a'] },
+              ],
             },
           ],
         },

@@ -314,9 +314,7 @@ export class ReferralsService {
         where: referredIds.map((id) => ({ id })),
         select: { id: true, fullName: true },
       }),
-      this.answersRepo.manager.query<
-        Array<{ user_id: string; count: number }>
-      >(
+      this.answersRepo.manager.query<Array<{ user_id: string; count: number }>>(
         `
           select e.user_id::text as user_id, count(*)::int as count
           from exam_answers a

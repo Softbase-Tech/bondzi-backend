@@ -356,7 +356,9 @@ export class WinnerSelectionService {
     // `YYYY-MM-DD` so the equality filter downstream matches the
     // schema exactly.
     const periodStart =
-      typeof raw === 'string' ? raw.slice(0, 10) : raw.toISOString().slice(0, 10);
+      typeof raw === 'string'
+        ? raw.slice(0, 10)
+        : raw.toISOString().slice(0, 10);
     return this.listPast({
       examType: params.examType,
       periodType: params.periodType,
