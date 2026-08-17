@@ -8,6 +8,7 @@ import { SyllabusIndicator } from './entities/syllabus-indicator.entity';
 import { SyllabusAssessmentItem } from './entities/syllabus-assessment-item.entity';
 import { SyllabusPedagogyRef } from './entities/syllabus-pedagogy-ref.entity';
 import { SyllabusIngestionService } from './syllabus-ingestion.service';
+import { SyllabusAdminController } from './syllabus-admin.controller';
 
 /**
  * PART A — NaCCA curriculum hierarchy (knowledge spine).
@@ -29,6 +30,7 @@ import { SyllabusIngestionService } from './syllabus-ingestion.service';
       SyllabusPedagogyRef,
     ]),
   ],
+  controllers: [SyllabusAdminController],
   providers: [SyllabusIngestionService],
   exports: [TypeOrmModule, SyllabusIngestionService],
 })
