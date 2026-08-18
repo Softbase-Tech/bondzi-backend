@@ -166,6 +166,14 @@ export class User {
   @Column({ name: 'country_code', type: 'varchar', length: 2, default: 'GH' })
   countryCode: string;
 
+  /**
+   * Platform the account was created from — 'web' (browser app) or
+   * 'ios'/'android' (mobile app). Set once at registration from the
+   * X-Platform header; null for legacy rows / clients that don't send it.
+   */
+  @Column({ name: 'signup_platform', type: 'text', nullable: true })
+  signupPlatform: string | null;
+
   @Column({ name: 'last_active_at', type: 'timestamptz', nullable: true })
   lastActiveAt: Date | null;
 

@@ -6,6 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../users/entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { DeviceSession } from './entities/device-session.entity';
+import { AuthLoginEvent } from './entities/auth-login-event.entity';
 import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -26,6 +27,7 @@ import { PartnersModule } from '../partners/partners.module';
       User,
       Subscription,
       DeviceSession,
+      AuthLoginEvent,
       ReferralEvent,
     ]),
     ReferralsModule,

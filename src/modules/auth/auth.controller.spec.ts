@@ -116,7 +116,7 @@ describe('AuthController', () => {
     );
     const [dto, ctx] = auth.register.mock.calls[0];
     expect(dto.deviceId).toBe('dev');
-    expect(ctx).toEqual({ ip: '1.2.3.4', userAgent: 'jest' });
+    expect(ctx).toEqual({ ip: '1.2.3.4', userAgent: 'jest', platform: null });
   });
 
   it('sendOtp forwards only the phone number', async () => {

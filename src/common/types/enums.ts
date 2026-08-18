@@ -496,3 +496,25 @@ export enum AccountDeletionStatus {
   CANCELLED = 'cancelled',
   COMPLETED = 'completed',
 }
+
+/**
+ * Client platform an auth request originated from. `web` = the browser app
+ * (app.bondzi.online); `ios`/`android` = the mobile app. Sent via the
+ * `X-Platform` request header. Used to stamp where a user signed up
+ * (`users.signup_platform`) and to log each login (`auth_login_events`).
+ * "web vs app" is derivable: app = ios | android.
+ */
+export enum ClientPlatform {
+  WEB = 'web',
+  IOS = 'ios',
+  ANDROID = 'android',
+}
+
+/** Parse an untrusted `X-Platform` header value; null if absent/unknown. */
+export function parseClientPlatform(v: unknown): ClientPlatform | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim().toLowerCase();
+  return (Object.values(ClientPlatform) as string[]).includes(s)
+    ? (s as ClientPlatform)
+    : null;
+}

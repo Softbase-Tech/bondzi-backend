@@ -34,6 +34,7 @@ import { BillingLogService } from '../payments/billing-log.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { BroadcastNotificationDto } from './dto/broadcast-notification.dto';
 import { SendUserPushDto } from './dto/send-user-push.dto';
+import { UpdateUserContactDto } from './dto/update-user-contact.dto';
 
 @ApiTags('admin')
 @ApiExcludeController()
@@ -89,6 +90,16 @@ export class AdminController {
     @Req() req: Request,
   ) {
     return this.admin.banUser(admin.id, id, req.ip);
+  }
+
+  @Patch('users/:id/contact')
+  updateUserContact(
+    @CurrentUser() admin: AuthenticatedUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateUserContactDto,
+    @Req() req: Request,
+  ) {
+    return this.admin.updateUserContact(admin.id, id, dto, req.ip);
   }
 
   @Get('questions/flags')
