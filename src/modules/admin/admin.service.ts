@@ -644,11 +644,36 @@ export class AdminService {
     dto: { email?: string | null; phone?: string | null },
     ip?: string,
   ): Promise<User> {
+    // Log at handler entry so we can see what body reached the server
+    // even when the request goes on to throw a 500. Values are trimmed
+    // to the first 6 chars — enough to eyeball the input in ops logs
+    // without pasting PII wholesale.
+    this.logger.log(
+      `[updateUserContact] enter adminId=${adminId} userId=${userId} emailKind=${
+        dto.email === undefined
+          ? 'omitted'
+          : dto.email === null
+            ? 'clear'
+            : `set(len=${dto.email.length})`
+      } phoneKind=${
+        dto.phone === undefined
+          ? 'omitted'
+          : dto.phone === null
+            ? 'clear'
+            : `set(len=${dto.phone.length})`
+      }`,
+    );
+
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
 
     const prev: Record<string, unknown> = {};
     const next: Record<string, unknown> = {};
+    // Explicit patch object — we write ONLY the columns we intended
+    // to touch. Bypasses TypeORM's whole-entity change tracker which
+    // was our best guess for the mystery 500 (an unrelated column on
+    // the loaded row failing revalidation on save).
+    const patch: Partial<User> = {};
 
     if (dto.email !== undefined) {
       const nextEmail = dto.email ? dto.email.trim().toLowerCase() : null;
@@ -665,10 +690,12 @@ export class AdminService {
         }
         prev.email = user.email;
         next.email = nextEmail;
-        user.email = nextEmail;
+        patch.email = nextEmail;
         // Admin-edited email is unverified until the user proves
         // possession — nulling the timestamp re-arms the "Verify
         // your email" banner on the mobile home screen.
+        patch.emailVerifiedAt = null;
+        user.email = nextEmail;
         user.emailVerifiedAt = null;
       }
     }
@@ -688,6 +715,7 @@ export class AdminService {
         }
         prev.phone = user.phone;
         next.phone = nextPhone;
+        patch.phone = nextPhone;
         user.phone = nextPhone;
       }
     }
@@ -695,10 +723,26 @@ export class AdminService {
     // No-op guard — nothing to save, nothing to audit. Return the
     // untouched user so the client's optimistic UI still gets a
     // consistent response shape.
-    if (Object.keys(next).length === 0) return user;
+    if (Object.keys(next).length === 0) {
+      this.logger.log(
+        `[updateUserContact] no-op userId=${userId} (values already match)`,
+      );
+      return user;
+    }
 
     try {
-      await this.usersRepo.save(user);
+      // Explicit UPDATE only touches the fields we intended. This is
+      // deliberately NOT save(user) because save() re-serializes the
+      // whole entity and hits every column, which risks a 500 on any
+      // unrelated column whose in-memory shape doesn't match what
+      // Postgres wants (default-serialised timestamps, jsonb quirks,
+      // etc.). update(id, patch) issues a bare
+      // "UPDATE users SET email = ?, email_verified_at = ? WHERE id = ?"
+      // and nothing else.
+      this.logger.log(
+        `[updateUserContact] update userId=${userId} columns=${Object.keys(patch).join(',')}`,
+      );
+      await this.usersRepo.update({ id: userId }, patch);
     } catch (err) {
       // Translate the two Postgres codes that indicate a client-fixable
       // input (dup email/phone; malformed value) into a 400 with a
