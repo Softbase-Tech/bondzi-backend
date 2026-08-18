@@ -49,11 +49,11 @@ export class SyllabusTopicSyncService {
    */
   async syncAll(opts: { subjectId?: string } = {}): Promise<TopicSyncResult> {
     const filter = opts.subjectId ? `AND subj.id = $1::uuid` : '';
-    const params = opts.subjectId ? [opts.subjectId] : [];
+    const params: string[] = opts.subjectId ? [opts.subjectId] : [];
 
     // Backfill missing topics. Mirrors migration 2220… so re-running
     // it after new CS rows land converges the topic table.
-    const insertResult = await this.dataSource.query(
+    const insertResult: Array<{ n: number }> = await this.dataSource.query(
       `
       WITH ins AS (
         INSERT INTO syllabus_topics
@@ -94,7 +94,7 @@ export class SyllabusTopicSyncService {
     // the title collision — an admin already hand-authored a topic
     // with the same title. This isn't an error, but it's worth
     // surfacing so the admin knows which CS is unbridged.
-    const collisionResult = await this.dataSource.query(
+    const collisionResult: Array<{ n: number }> = await this.dataSource.query(
       `
       SELECT count(*)::int AS n
       FROM syllabus_content_standards cs
@@ -121,7 +121,7 @@ export class SyllabusTopicSyncService {
     // Repoint pm_test_questions.syllabus_topic_id for any question
     // still NULL but tagged with an indicator that now maps to a
     // topic. Never overwrites.
-    const repointResult = await this.dataSource.query(
+    const repointResult: Array<{ n: number }> = await this.dataSource.query(
       `
       WITH upd AS (
         UPDATE pm_test_questions q
