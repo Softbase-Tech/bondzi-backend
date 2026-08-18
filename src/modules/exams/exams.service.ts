@@ -536,6 +536,47 @@ export class ExamsService {
     const answeredSet = new Set(answered.map((a) => a.questionId));
     const remaining = exam.questionIds.filter((id) => !answeredSet.has(id));
 
+    // Gate on the exam's OWN level, not the user's current profile level —
+    // a user who switches profile mid-session can still resume the
+    // in-progress exam at whatever account they had on its level. Using
+    // `exam.examType` also saves a user-row fetch on this hot path.
+    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
+      userId,
+      exam.examType,
+      AccountType.PLUS,
+    );
+
+    // Discriminate on the exam's declared question_pool. PM-Test rows
+    // live on a separate table with a separate options table; querying
+    // `questions` (the past-paper table) for a PM-Test exam returned
+    // an empty array and left the mobile client stranded on
+    // "Loading exam…" indefinitely — the mirror of the pool-branching
+    // that `submitAnswer` already does below.
+    if (exam.questionPool === QuestionPool.PM_TEST) {
+      const loaded =
+        remaining.length > 0
+          ? await this.pmTestQRepo.find({
+              where: { id: In(remaining) },
+              relations: ['options'],
+            })
+          : [];
+      const byId = new Map(loaded.map((q) => [q.id, q] as const));
+      const ordered = remaining
+        .map((id) => byId.get(id))
+        .filter((q): q is PmTestQuestion => Boolean(q));
+      // Reuse the past-paper serializer for envelope shape, then swap in
+      // pm-test-serialized questions. Keeps completedAt / abandonedAt /
+      // grade derivation identical for both pools — no divergent copies.
+      const envelope = toExamSessionResponse(exam, [], {
+        hasActiveSubscription,
+      });
+      envelope.questions = ordered.map((q) =>
+        toStudentQuestionFromPmTest(q, { hasActiveSubscription }),
+      );
+      envelope.questionCount = exam.totalQuestions ?? exam.questionIds.length;
+      return envelope;
+    }
+
     const rows =
       remaining.length > 0
         ? await this.questionsRepo.find({
@@ -551,15 +592,6 @@ export class ExamsService {
       .map((id) => byId.get(id))
       .filter((q): q is Question => Boolean(q));
 
-    // Gate on the exam's OWN level, not the user's current profile level —
-    // a user who switches profile mid-session can still resume the
-    // in-progress exam at whatever account they had on its level. Using
-    // `exam.examType` also saves a user-row fetch on this hot path.
-    const hasActiveSubscription = await this.subscriptions.hasEntitlement(
-      userId,
-      exam.examType,
-      AccountType.PLUS,
-    );
     return toExamSessionResponse(exam, ordered, { hasActiveSubscription });
   }
 
