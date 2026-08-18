@@ -41,6 +41,20 @@ describe('PmTestService', () => {
     qRepo.createQueryBuilder.mockReturnValueOnce(qb);
     return qb;
   }
+  function stubAnswersQb(rows: unknown[]) {
+    const qb = {
+      innerJoin: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      addGroupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue(rows),
+    };
+    answersRepo.createQueryBuilder.mockReturnValueOnce(qb);
+    return qb;
+  }
   function stubQuestionsQb(rows: unknown[]) {
     const qb = {
       leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -89,8 +103,9 @@ describe('PmTestService', () => {
       formLevel: 2,
     });
     const qb = stubSubjectsQb([
-      { id: 's-1', code: 'MATH', name: 'Maths', questionCount: '12' },
+      { subjectId: 's-1', subjectName: 'Maths', activeQuestionCount: '12' },
     ]);
+    const attemptsQb = stubAnswersQb([]);
     const out = await service.listSubjectsForUser('user-1');
     expect(qb.where).toHaveBeenCalledWith('q.exam_type = :et', {
       et: ExamType.BECE,
@@ -99,8 +114,56 @@ describe('PmTestService', () => {
     expect(qb.andWhere).toHaveBeenCalledWith('q.status = :st', {
       st: QuestionStatus.ACTIVE,
     });
+    // attempt-stats query is invoked to merge per-subject accuracy in
+    expect(attemptsQb.innerJoin).toHaveBeenCalled();
     expect(out).toEqual([
-      { id: 's-1', code: 'MATH', name: 'Maths', questionCount: 12 },
+      {
+        subjectId: 's-1',
+        subjectName: 'Maths',
+        iconSlug: null,
+        activeQuestionCount: 12,
+        lastAttemptedAt: null,
+        accuracy: null,
+      },
+    ]);
+  });
+
+  it('listSubjectsForUser merges per-subject accuracy + last attempted', async () => {
+    usersRepo.findOne.mockResolvedValueOnce({
+      examType: ExamType.WASSCE,
+      formLevel: 3,
+    });
+    stubSubjectsQb([
+      { subjectId: 's-1', subjectName: 'Chemistry', activeQuestionCount: '42' },
+      { subjectId: 's-2', subjectName: 'Physics', activeQuestionCount: '7' },
+    ]);
+    const attempted = new Date('2026-08-15T10:00:00.000Z');
+    stubAnswersQb([
+      {
+        subjectId: 's-1',
+        answered: '10',
+        correct: '8',
+        lastAttemptedAt: attempted,
+      },
+    ]);
+    const out = await service.listSubjectsForUser('user-1');
+    expect(out).toEqual([
+      {
+        subjectId: 's-1',
+        subjectName: 'Chemistry',
+        iconSlug: null,
+        activeQuestionCount: 42,
+        lastAttemptedAt: attempted.toISOString(),
+        accuracy: 0.8,
+      },
+      {
+        subjectId: 's-2',
+        subjectName: 'Physics',
+        iconSlug: null,
+        activeQuestionCount: 7,
+        lastAttemptedAt: null,
+        accuracy: null,
+      },
     ]);
   });
 
