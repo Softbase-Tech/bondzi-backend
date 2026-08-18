@@ -35,6 +35,7 @@ export class SyllabusReviewService {
   async list(opts: {
     subjectId?: string;
     status?: SyllabusIndicatorStatus;
+    embedded?: boolean;
     page: number;
     limit: number;
   }): Promise<PaginatedResult<SyllabusIndicatorRow>> {
@@ -48,6 +49,11 @@ export class SyllabusReviewService {
       .skip((opts.page - 1) * opts.limit);
     if (opts.subjectId) qb.andWhere('i.subjectId = :s', { s: opts.subjectId });
     if (opts.status) qb.andWhere('i.status = :st', { st: opts.status });
+    if (opts.embedded !== undefined) {
+      qb.andWhere(
+        opts.embedded ? 'i.embedding IS NOT NULL' : 'i.embedding IS NULL',
+      );
+    }
     qb.select([
       'i.id AS id',
       'i.code AS code',
@@ -63,7 +69,7 @@ export class SyllabusReviewService {
 
     const [rows, total] = await Promise.all([
       qb.getRawMany<SyllabusIndicatorRow>(),
-      this.countFor(opts.subjectId, opts.status),
+      this.countFor(opts.subjectId, opts.status, opts.embedded),
     ]);
     return { items: rows, total };
   }
@@ -71,10 +77,14 @@ export class SyllabusReviewService {
   private countFor(
     subjectId?: string,
     status?: SyllabusIndicatorStatus,
+    embedded?: boolean,
   ): Promise<number> {
     const qb = this.indicators.createQueryBuilder('i');
     if (subjectId) qb.andWhere('i.subjectId = :s', { s: subjectId });
     if (status) qb.andWhere('i.status = :st', { st: status });
+    if (embedded !== undefined) {
+      qb.andWhere(embedded ? 'i.embedding IS NOT NULL' : 'i.embedding IS NULL');
+    }
     return qb.getCount();
   }
 
