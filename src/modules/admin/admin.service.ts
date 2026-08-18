@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
 import { User } from '../users/entities/user.entity';
@@ -617,6 +621,97 @@ export class AdminService {
         answeredAt: a.answeredAt.toISOString(),
       })),
     };
+  }
+
+  /**
+   * Admin patch of a user's email and/or phone. Either or both.
+   * `null` explicitly clears a field; `undefined` leaves it alone.
+   * Uniqueness is checked at the app layer so the admin sees a
+   * friendly 400 ("already in use") instead of the DB's opaque
+   * 23505 unique-violation error.
+   *
+   * Editing the email drops `emailVerifiedAt` — the new address
+   * hasn't proven possession, and the mobile's "Verify your email"
+   * banner should come back on. Phone has no equivalent verified-
+   * at column today, so it stays as-is.
+   */
+  async updateUserContact(
+    adminId: string,
+    userId: string,
+    dto: { email?: string | null; phone?: string | null },
+    ip?: string,
+  ): Promise<User> {
+    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const prev: Record<string, unknown> = {};
+    const next: Record<string, unknown> = {};
+
+    if (dto.email !== undefined) {
+      const nextEmail = dto.email ? dto.email.trim().toLowerCase() : null;
+      if (nextEmail !== user.email) {
+        if (nextEmail) {
+          const collision = await this.usersRepo.findOne({
+            where: { email: nextEmail },
+          });
+          if (collision && collision.id !== userId) {
+            throw new BadRequestException(
+              'That email address is already in use by another account.',
+            );
+          }
+        }
+        prev.email = user.email;
+        next.email = nextEmail;
+        user.email = nextEmail;
+        // Admin-edited email is unverified until the user proves
+        // possession — nulling the timestamp re-arms the "Verify
+        // your email" banner on the mobile home screen.
+        user.emailVerifiedAt = null;
+      }
+    }
+
+    if (dto.phone !== undefined) {
+      const nextPhone = dto.phone ? dto.phone.trim() : null;
+      if (nextPhone !== user.phone) {
+        if (nextPhone) {
+          const collision = await this.usersRepo.findOne({
+            where: { phone: nextPhone },
+          });
+          if (collision && collision.id !== userId) {
+            throw new BadRequestException(
+              'That phone number is already in use by another account.',
+            );
+          }
+        }
+        prev.phone = user.phone;
+        next.phone = nextPhone;
+        user.phone = nextPhone;
+      }
+    }
+
+    // No-op guard — nothing to save, nothing to audit. Return the
+    // untouched user so the client's optimistic UI still gets a
+    // consistent response shape.
+    if (Object.keys(next).length === 0) return user;
+
+    await this.usersRepo.save(user);
+
+    // writeAuditLog scrubs PII from the delta (see comment on that
+    // helper). We still get "admin X changed user Y's contact
+    // fields at time T" for forensics; the actual old + new values
+    // are redacted so the audit table stays free of the same PII
+    // the users table already owns.
+    await this.writeAuditLog(
+      adminId,
+      'user.contact_update',
+      'user',
+      userId,
+      prev,
+      next,
+      ip,
+    );
+
+    return user;
   }
 
   async banUser(adminId: string, userId: string, ip?: string): Promise<User> {
