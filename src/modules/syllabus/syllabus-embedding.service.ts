@@ -23,6 +23,8 @@ interface EmbedRow {
 export class SyllabusEmbeddingService {
   private readonly logger = new Logger(SyllabusEmbeddingService.name);
   private static readonly BATCH = 50;
+  /** True while a background embed pass is running (single-flight guard). */
+  private running = false;
 
   constructor(
     private readonly dataSource: DataSource,
@@ -30,13 +32,66 @@ export class SyllabusEmbeddingService {
     private readonly config: ConfigService,
   ) {}
 
+  private embeddingModel(): string {
+    return (
+      this.config.get<string>('ai.embeddingModel') ??
+      'amazon.titan-embed-text-v2:0'
+    );
+  }
+
+  /** Count of approved indicators still needing an up-to-date vector. */
+  async pendingCount(): Promise<number> {
+    const rows: Array<{ n: string }> = await this.dataSource.query(
+      `SELECT count(*) AS n
+         FROM syllabus_indicators
+        WHERE status = 'approved'
+          AND (embedding IS NULL OR embedding_model IS DISTINCT FROM $1)`,
+      [this.embeddingModel()],
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Kick off an embed pass in the BACKGROUND and return immediately.
+   *
+   * Embedding thousands of indicators through Bedrock (paced at ~480 RPM)
+   * takes minutes — far longer than any HTTP/gateway timeout — so the admin
+   * endpoint must not await it. The pass is idempotent (code-keyed upsert of
+   * the vector), so a crash mid-run is simply finished by the next trigger.
+   * A single-flight guard prevents overlapping passes from double-embedding.
+   */
+  async startEmbedApproved(): Promise<{
+    started: boolean;
+    alreadyRunning: boolean;
+    pending: number;
+  }> {
+    const pending = await this.pendingCount();
+    if (this.running) {
+      return { started: false, alreadyRunning: true, pending };
+    }
+    if (pending === 0) {
+      return { started: false, alreadyRunning: false, pending: 0 };
+    }
+    this.running = true;
+    // Fire-and-forget: run detached, never let a failure become an unhandled
+    // rejection, and always clear the guard.
+    void this.embedApproved()
+      .catch((err: unknown) =>
+        this.logger.error(
+          `[syllabus] background embed failed: ${(err as Error).message}`,
+        ),
+      )
+      .finally(() => {
+        this.running = false;
+      });
+    return { started: true, alreadyRunning: false, pending };
+  }
+
   /** Embed approved indicators missing an up-to-date vector. Returns the count. */
   async embedApproved(
     opts: { limit?: number } = {},
   ): Promise<{ embedded: number }> {
-    const model =
-      this.config.get<string>('ai.embeddingModel') ??
-      'amazon.titan-embed-text-v2:0';
+    const model = this.embeddingModel();
 
     const rows: EmbedRow[] = await this.dataSource.query(
       `SELECT id, statement, worked_content

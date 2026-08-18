@@ -59,6 +59,7 @@ export class SyllabusAdminController {
     return this.review.list({
       subjectId: q.subjectId,
       status: q.status,
+      embedded: q.embedded,
       page: q.page ?? 1,
       limit: q.limit ?? 50,
     });
@@ -88,6 +89,8 @@ export class SyllabusAdminController {
   @Post('embed')
   @ApiExcludeEndpoint()
   embed() {
-    return this.embedding.embedApproved();
+    // Returns immediately; the embed pass runs in the background (it can take
+    // minutes and would otherwise blow the gateway timeout).
+    return this.embedding.startEmbedApproved();
   }
 }
