@@ -68,10 +68,10 @@ export class SyllabusTopicsBridge_2220000000000 implements MigrationInterface {
       SELECT
         subj.id,
         subj.exam_type,
-        cs.year,
-        cs.title,
+        strand.form_level,
+        cs.statement,
         (
-          SELECT string_agg(li.learning_indicator, E'\n\n' ORDER BY li.sort_order)
+          SELECT string_agg(li.statement, E'\n\n' ORDER BY li.sort_order)
           FROM syllabus_indicators li
           WHERE li.content_standard_id = cs.id
         ),
