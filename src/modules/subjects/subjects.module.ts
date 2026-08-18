@@ -9,6 +9,7 @@ import { SubjectsService } from './subjects.service';
 import { SyllabusTopicsController } from './syllabus-topics.controller';
 import { AdminSyllabusTopicsController } from './admin-syllabus-topics.controller';
 import { SyllabusTopicsService } from './syllabus-topics.service';
+import { SyllabusTopicSyncService } from './syllabus-topic-sync.service';
 
 @Module({
   imports: [
@@ -19,7 +20,12 @@ import { SyllabusTopicsService } from './syllabus-topics.service';
     SyllabusTopicsController,
     AdminSyllabusTopicsController,
   ],
-  providers: [SubjectsService, SyllabusTopicsService],
-  exports: [SubjectsService, SyllabusTopicsService, TypeOrmModule],
+  providers: [SubjectsService, SyllabusTopicsService, SyllabusTopicSyncService],
+  exports: [
+    SubjectsService,
+    SyllabusTopicsService,
+    SyllabusTopicSyncService,
+    TypeOrmModule,
+  ],
 })
 export class SubjectsModule {}

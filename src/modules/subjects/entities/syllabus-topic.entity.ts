@@ -49,6 +49,17 @@ export class SyllabusTopic {
   @Column({ name: 'sort_order', type: 'int', default: 0 })
   sortOrder: number;
 
+  /**
+   * Points at the `syllabus_content_standards` row this topic was
+   * derived from. NULL for topics an admin hand-authored via the
+   * subject-detail CRUD. Set for topics synced by the syllabus
+   * ingestion pipeline (2220... migration). The sync path is
+   * idempotent: it only writes rows whose `source_content_standard_id`
+   * does not already exist.
+   */
+  @Column({ name: 'source_content_standard_id', type: 'uuid', nullable: true })
+  sourceContentStandardId: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }

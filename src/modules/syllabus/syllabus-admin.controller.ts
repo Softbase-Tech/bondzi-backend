@@ -17,6 +17,7 @@ import { UserRole } from '../../common/types/enums';
 import { SyllabusIngestionService } from './syllabus-ingestion.service';
 import { SyllabusReviewService } from './syllabus-review.service';
 import { SyllabusEmbeddingService } from './syllabus-embedding.service';
+import { SyllabusTopicSyncService } from '../subjects/syllabus-topic-sync.service';
 import { IngestSyllabusDto } from './dto/ingest-syllabus.dto';
 import {
   ApproveAllDto,
@@ -43,14 +44,29 @@ export class SyllabusAdminController {
     private readonly ingestion: SyllabusIngestionService,
     private readonly review: SyllabusReviewService,
     private readonly embedding: SyllabusEmbeddingService,
+    private readonly topicSync: SyllabusTopicSyncService,
   ) {}
 
   @Post('ingest')
   @ApiExcludeEndpoint()
-  ingest(@Body() dto: IngestSyllabusDto) {
-    return this.ingestion.ingestBatch(dto.subjectId, dto.subStrands, {
-      curriculumVersion: dto.curriculumVersion,
-    });
+  async ingest(@Body() dto: IngestSyllabusDto) {
+    const result = await this.ingestion.ingestBatch(
+      dto.subjectId,
+      dto.subStrands,
+      { curriculumVersion: dto.curriculumVersion },
+    );
+    // Bridge every newly-landed content standard into
+    // `syllabus_topics` so the mobile Level Test picker sees it. Kept
+    // out of `SyllabusIngestionService` per extraction brief §10 —
+    // this is additive plumbing composed at the controller layer.
+    const sync = await this.topicSync.syncAll({ subjectId: dto.subjectId });
+    return { ...result, topicSync: sync };
+  }
+
+  @Post('sync-topics')
+  @ApiExcludeEndpoint()
+  syncTopics(@Body() body: { subjectId?: string } = {}) {
+    return this.topicSync.syncAll({ subjectId: body?.subjectId });
   }
 
   @Get('indicators')

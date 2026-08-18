@@ -13,6 +13,7 @@ import { SyllabusRetrievalService } from './syllabus-retrieval.service';
 import { SyllabusReviewService } from './syllabus-review.service';
 import { SyllabusAdminController } from './syllabus-admin.controller';
 import { AiModule } from '../ai/ai.module';
+import { SubjectsModule } from '../subjects/subjects.module';
 
 /**
  * PART A — NaCCA curriculum hierarchy (knowledge spine).
@@ -34,6 +35,7 @@ import { AiModule } from '../ai/ai.module';
       SyllabusPedagogyRef,
     ]),
     AiModule,
+    SubjectsModule,
   ],
   controllers: [SyllabusAdminController],
   providers: [
