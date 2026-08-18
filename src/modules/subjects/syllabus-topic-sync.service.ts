@@ -62,10 +62,10 @@ export class SyllabusTopicSyncService {
         SELECT
           subj.id,
           subj.exam_type,
-          cs.year,
-          cs.title,
+          strand.form_level,
+          cs.statement,
           (
-            SELECT string_agg(li.learning_indicator, E'\n\n' ORDER BY li.sort_order)
+            SELECT string_agg(li.statement, E'\n\n' ORDER BY li.sort_order)
             FROM syllabus_indicators li
             WHERE li.content_standard_id = cs.id
           ),
@@ -109,8 +109,8 @@ export class SyllabusTopicSyncService {
         SELECT 1 FROM syllabus_topics t
         WHERE t.subject_id = subj.id
           AND t.exam_type  = subj.exam_type
-          AND t.form_level = cs.year
-          AND t.title      = cs.title
+          AND t.form_level = strand.form_level
+          AND t.title      = cs.statement
       )
       ${filter}
       `,
