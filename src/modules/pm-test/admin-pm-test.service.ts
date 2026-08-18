@@ -247,6 +247,58 @@ export class AdminPmTestService {
     return { items, total, nextCursor: null };
   }
 
+  /**
+   * General-purpose browse over the pm_test_questions bank. Powers the
+   * "Level Test (AI)" source on /admin/questions so ops can filter and
+   * inspect Level Test items the same way they filter past-paper
+   * questions — instead of forcing them through the review queue,
+   * which only shows pending items.
+   *
+   * Status filter: omitted → all statuses; otherwise one of
+   * `pending_review` | `active` | `archived`. Search runs against
+   * body/explanation (ILIKE — the pm_test_questions table has no GIN
+   * index and the corpus is small enough that this is fine).
+   */
+  async listAll(params: {
+    examType?: string;
+    formLevel?: number;
+    subjectId?: string;
+    difficulty?: string;
+    status?: string;
+    search?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = Math.max(1, params.page ?? 1);
+    const limit = Math.min(100, Math.max(1, params.limit ?? 20));
+
+    const qb = this.qRepo
+      .createQueryBuilder('q')
+      .leftJoinAndSelect('q.options', 'o')
+      .leftJoinAndSelect('q.subject', 's');
+
+    if (params.status) qb.andWhere('q.status = :st', { st: params.status });
+    if (params.examType)
+      qb.andWhere('q.exam_type = :et', { et: params.examType });
+    if (params.formLevel !== undefined)
+      qb.andWhere('q.form_level = :fl', { fl: params.formLevel });
+    if (params.subjectId)
+      qb.andWhere('q.subject_id = :sid', { sid: params.subjectId });
+    if (params.difficulty)
+      qb.andWhere('q.difficulty = :d', { d: params.difficulty });
+    if (params.search && params.search.trim()) {
+      const needle = `%${params.search.trim()}%`;
+      qb.andWhere('(q.body ILIKE :n OR q.explanation ILIKE :n)', { n: needle });
+    }
+
+    qb.orderBy('q.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    const [items, total] = await qb.getManyAndCount();
+    return { items, total, nextCursor: null };
+  }
+
   async bulkReview(dto: PmTestReviewBulkDto) {
     const results: Array<{ id: string; action: string; ok: boolean }> = [];
     for (const item of dto.items) {

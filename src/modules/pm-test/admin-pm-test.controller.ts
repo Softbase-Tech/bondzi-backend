@@ -95,6 +95,33 @@ export class AdminPmTestController {
     return this.service.getJob(id);
   }
 
+  @Get('list')
+  @ApiOperation({
+    summary:
+      'Paginated browse of the pm_test_questions bank across all statuses. Powers the Level Test (AI) source on /admin/questions.',
+  })
+  list(
+    @Query('examType') examType?: string,
+    @Query('formLevel') formLevel?: string,
+    @Query('subjectId') subjectId?: string,
+    @Query('difficulty') difficulty?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.listAll({
+      examType,
+      formLevel: formLevel ? parseInt(formLevel, 10) : undefined,
+      subjectId,
+      difficulty,
+      status,
+      search,
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
   @Get('review')
   @ApiOperation({
     summary:
