@@ -42,6 +42,16 @@ export class ListIndicatorsQueryDto {
   limit?: number = 50;
 }
 
+export class ApproveAllDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Scope the bulk approve to one subject; omit to approve all.',
+  })
+  @IsOptional()
+  @IsUUID('4')
+  subjectId?: string;
+}
+
 export class UpdateIndicatorDto {
   @ApiPropertyOptional({ enum: ['draft', 'approved'] })
   @IsOptional()

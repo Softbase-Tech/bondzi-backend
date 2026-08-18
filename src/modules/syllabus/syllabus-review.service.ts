@@ -105,6 +105,27 @@ export class SyllabusReviewService {
     return this.indicators.save(row);
   }
 
+  /**
+   * Bulk-approve every `draft` indicator, optionally scoped to one subject.
+   * Mirrors the "Embed approved" bulk action so a reviewer can clear a whole
+   * subject's queue in one click instead of row by row. Already-approved rows
+   * are untouched. Returns how many drafts were flipped.
+   */
+  async approveAll(opts: {
+    subjectId?: string;
+  }): Promise<{ approved: number }> {
+    const qb = this.indicators
+      .createQueryBuilder()
+      .update(SyllabusIndicator)
+      .set({ status: 'approved' })
+      .where('status = :draft', { draft: 'draft' });
+    if (opts.subjectId) {
+      qb.andWhere('subject_id = :sid', { sid: opts.subjectId });
+    }
+    const res = await qb.execute();
+    return { approved: res.affected ?? 0 };
+  }
+
   /** Per-subject draft/approved/embedded counts for the coverage view. */
   async summary(): Promise<
     Array<{ subjectId: string; draft: number; approved: number }>

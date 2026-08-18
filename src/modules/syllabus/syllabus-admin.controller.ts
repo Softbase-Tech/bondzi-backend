@@ -19,6 +19,7 @@ import { SyllabusReviewService } from './syllabus-review.service';
 import { SyllabusEmbeddingService } from './syllabus-embedding.service';
 import { IngestSyllabusDto } from './dto/ingest-syllabus.dto';
 import {
+  ApproveAllDto,
   ListIndicatorsQueryDto,
   UpdateIndicatorDto,
 } from './dto/review-syllabus.dto';
@@ -28,6 +29,7 @@ import {
  *   POST   /admin/syllabus/ingest            load extracted sub-strands (draft)
  *   GET    /admin/syllabus/indicators        review queue (filter by subject/status)
  *   PATCH  /admin/syllabus/indicators/:id    edit / approve an indicator
+ *   POST   /admin/syllabus/approve-all       bulk-approve drafts (optional subject)
  *   GET    /admin/syllabus/summary           per-subject draft/approved coverage
  *   POST   /admin/syllabus/embed             embed approved indicators (pgvector)
  */
@@ -69,6 +71,12 @@ export class SyllabusAdminController {
     @Body() dto: UpdateIndicatorDto,
   ) {
     return this.review.update(id, dto);
+  }
+
+  @Post('approve-all')
+  @ApiExcludeEndpoint()
+  approveAll(@Body() dto: ApproveAllDto) {
+    return this.review.approveAll({ subjectId: dto.subjectId });
   }
 
   @Get('summary')
