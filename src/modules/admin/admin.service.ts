@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -32,6 +33,8 @@ import {
 
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(
     @InjectRepository(User) private readonly usersRepo: Repository<User>,
     @InjectRepository(Subscription)
@@ -641,11 +644,36 @@ export class AdminService {
     dto: { email?: string | null; phone?: string | null },
     ip?: string,
   ): Promise<User> {
+    // Log at handler entry so we can see what body reached the server
+    // even when the request goes on to throw a 500. Values are trimmed
+    // to the first 6 chars — enough to eyeball the input in ops logs
+    // without pasting PII wholesale.
+    this.logger.log(
+      `[updateUserContact] enter adminId=${adminId} userId=${userId} emailKind=${
+        dto.email === undefined
+          ? 'omitted'
+          : dto.email === null
+            ? 'clear'
+            : `set(len=${dto.email.length})`
+      } phoneKind=${
+        dto.phone === undefined
+          ? 'omitted'
+          : dto.phone === null
+            ? 'clear'
+            : `set(len=${dto.phone.length})`
+      }`,
+    );
+
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
 
     const prev: Record<string, unknown> = {};
     const next: Record<string, unknown> = {};
+    // Explicit patch object — we write ONLY the columns we intended
+    // to touch. Bypasses TypeORM's whole-entity change tracker which
+    // was our best guess for the mystery 500 (an unrelated column on
+    // the loaded row failing revalidation on save).
+    const patch: Partial<User> = {};
 
     if (dto.email !== undefined) {
       const nextEmail = dto.email ? dto.email.trim().toLowerCase() : null;
@@ -662,10 +690,12 @@ export class AdminService {
         }
         prev.email = user.email;
         next.email = nextEmail;
-        user.email = nextEmail;
+        patch.email = nextEmail;
         // Admin-edited email is unverified until the user proves
         // possession — nulling the timestamp re-arms the "Verify
         // your email" banner on the mobile home screen.
+        patch.emailVerifiedAt = null;
+        user.email = nextEmail;
         user.emailVerifiedAt = null;
       }
     }
@@ -685,6 +715,7 @@ export class AdminService {
         }
         prev.phone = user.phone;
         next.phone = nextPhone;
+        patch.phone = nextPhone;
         user.phone = nextPhone;
       }
     }
@@ -692,24 +723,80 @@ export class AdminService {
     // No-op guard — nothing to save, nothing to audit. Return the
     // untouched user so the client's optimistic UI still gets a
     // consistent response shape.
-    if (Object.keys(next).length === 0) return user;
+    if (Object.keys(next).length === 0) {
+      this.logger.log(
+        `[updateUserContact] no-op userId=${userId} (values already match)`,
+      );
+      return user;
+    }
 
-    await this.usersRepo.save(user);
+    try {
+      // Explicit UPDATE only touches the fields we intended. This is
+      // deliberately NOT save(user) because save() re-serializes the
+      // whole entity and hits every column, which risks a 500 on any
+      // unrelated column whose in-memory shape doesn't match what
+      // Postgres wants (default-serialised timestamps, jsonb quirks,
+      // etc.). update(id, patch) issues a bare
+      // "UPDATE users SET email = ?, email_verified_at = ? WHERE id = ?"
+      // and nothing else.
+      this.logger.log(
+        `[updateUserContact] update userId=${userId} columns=${Object.keys(patch).join(',')}`,
+      );
+      await this.usersRepo.update({ id: userId }, patch);
+    } catch (err) {
+      // Translate the two Postgres codes that indicate a client-fixable
+      // input (dup email/phone; malformed value) into a 400 with a
+      // useful message. Anything else falls through as a 500, but we
+      // log the code + message so server logs point at the real cause
+      // instead of the bare "Internal server error" the admin sees.
+      const dbErr = err as { code?: string; message?: string; detail?: string };
+      const code = dbErr?.code;
+      this.logger.error(
+        `[updateUserContact] save failed userId=${userId} code=${code ?? 'n/a'} message=${dbErr?.message ?? 'n/a'} detail=${dbErr?.detail ?? 'n/a'}`,
+      );
+      if (code === '23505') {
+        // Unique-violation — the DB rejected our INSERT/UPDATE because
+        // the email or phone collides with another user. Our pre-check
+        // above catches the common case; this fires on race conditions
+        // (two admins editing the same email at the same moment) and
+        // case-only variants the pre-check missed.
+        throw new BadRequestException(
+          'That contact detail is already in use by another account.',
+        );
+      }
+      if (code === '23514' || code === '22001' || code === '23502') {
+        // 23514: check constraint. 22001: value too long. 23502: not-null.
+        // All three are DTO-layer problems that leaked past validation.
+        throw new BadRequestException(
+          `Invalid contact value: ${dbErr?.detail ?? dbErr?.message ?? 'unknown DB constraint'}.`,
+        );
+      }
+      throw err;
+    }
 
     // writeAuditLog scrubs PII from the delta (see comment on that
     // helper). We still get "admin X changed user Y's contact
     // fields at time T" for forensics; the actual old + new values
     // are redacted so the audit table stays free of the same PII
     // the users table already owns.
-    await this.writeAuditLog(
-      adminId,
-      'user.contact_update',
-      'user',
-      userId,
-      prev,
-      next,
-      ip,
-    );
+    //
+    // Audit failure is NOT allowed to fail the contact update — the
+    // user-facing change has already been persisted. Log and move on.
+    try {
+      await this.writeAuditLog(
+        adminId,
+        'user.contact_update',
+        'user',
+        userId,
+        prev,
+        next,
+        ip,
+      );
+    } catch (err) {
+      this.logger.error(
+        `[updateUserContact] audit log failed userId=${userId} err=${(err as Error).message}`,
+      );
+    }
 
     return user;
   }
