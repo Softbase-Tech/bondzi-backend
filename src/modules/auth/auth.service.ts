@@ -18,6 +18,7 @@ import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import {
   AuthProvider,
+  ClientPlatform,
   ExamType,
   Gender,
   SchoolLevel,
@@ -269,7 +270,7 @@ export class AuthService {
 
   async register(
     dto: RegisterDto,
-    req: { ip?: string; userAgent?: string },
+    req: { ip?: string; userAgent?: string; platform?: ClientPlatform | null },
   ): Promise<{ user: SafeUser; tokens: TokenPair }> {
     if (!dto.email && !dto.phone) {
       throw new BadRequestException('Either email or phone is required');
@@ -365,6 +366,8 @@ export class AuthService {
       // immediately so the in-app banner doesn't show and we skip the
       // verify-link email below.
       emailVerifiedAt: emailOtpVerified ? new Date() : null,
+      // Where the account was created (web vs mobile app).
+      signupPlatform: req.platform ?? null,
     });
     await this.usersRepo.save(user);
 
@@ -405,6 +408,8 @@ export class AuthService {
       deviceId: dto.deviceId,
       deviceName: dto.deviceName,
       ip: req.ip,
+      platform: req.platform ?? null,
+      loginEvent: 'register',
     });
 
     // Spec §2.3 step 6: welcome push + email (+ verification for email
@@ -490,7 +495,12 @@ export class AuthService {
   async login(
     identifier: { email?: string; phone?: string },
     password: string,
-    req: { ip?: string; deviceId: string; deviceName?: string },
+    req: {
+      ip?: string;
+      deviceId: string;
+      deviceName?: string;
+      platform?: ClientPlatform | null;
+    },
   ): Promise<{ user: SafeUser; tokens: TokenPair }> {
     const email = identifier.email?.trim().toLowerCase();
     const phone = identifier.phone?.trim();
@@ -544,6 +554,8 @@ export class AuthService {
       deviceId: req.deviceId,
       deviceName: req.deviceName,
       ip: req.ip,
+      platform: req.platform ?? null,
+      loginEvent: 'login',
     });
     return { user: this.toSafeUser(user), tokens };
   }
@@ -555,7 +567,12 @@ export class AuthService {
   async verifyOtp(
     phone: string,
     code: string,
-    req: { ip?: string; deviceId: string; deviceName?: string },
+    req: {
+      ip?: string;
+      deviceId: string;
+      deviceName?: string;
+      platform?: ClientPlatform | null;
+    },
   ): Promise<{ user: SafeUser; tokens: TokenPair }> {
     await this.otp.verify(phone, code);
     const user = await this.usersRepo.findOne({ where: { phone } });
@@ -569,6 +586,8 @@ export class AuthService {
       deviceId: req.deviceId,
       deviceName: req.deviceName,
       ip: req.ip,
+      platform: req.platform ?? null,
+      loginEvent: 'otp',
     });
     return { user: this.toSafeUser(user), tokens };
   }
@@ -579,6 +598,7 @@ export class AuthService {
       ip?: string;
       deviceId: string;
       deviceName?: string;
+      platform?: ClientPlatform | null;
       examType?: ExamType;
       formLevel?: number;
       referralCode?: string;
@@ -618,6 +638,7 @@ export class AuthService {
         referralCode: await this.allocateReferralCode(profile.name),
         emailVerifiedAt: new Date(),
         emailUnsubscribeToken: randomBytes(24).toString('hex'),
+        signupPlatform: req.platform ?? null,
       });
       await this.usersRepo.save(user);
       if (req.referralCode) {
@@ -632,6 +653,8 @@ export class AuthService {
       deviceId: req.deviceId,
       deviceName: req.deviceName,
       ip: req.ip,
+      platform: req.platform ?? null,
+      loginEvent: 'google',
     });
     return { user: this.toSafeUser(user), tokens, isNew };
   }

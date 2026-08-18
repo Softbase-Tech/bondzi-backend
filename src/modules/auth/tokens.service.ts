@@ -7,6 +7,7 @@ import { Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { DeviceSession } from './entities/device-session.entity';
+import { AuthLoginEvent } from './entities/auth-login-event.entity';
 import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { parseExpiryMs } from '../../common/utils/expiry.util';
@@ -101,7 +102,19 @@ export class TokensService {
 
   async issuePair(
     user: Pick<User, 'id' | 'email' | 'phone' | 'role' | 'examType'>,
-    opts: { deviceId: string; deviceName?: string; ip?: string },
+    opts: {
+      deviceId: string;
+      deviceName?: string;
+      ip?: string;
+      /** Platform this sign-in came from ('web'|'ios'|'android'|null). */
+      platform?: string | null;
+      /**
+       * When set, records a row in `auth_login_events` for this sign-in.
+       * Omitted for refresh-token rotation / exam-type re-issue, which
+       * re-issue tokens but are not new logins.
+       */
+      loginEvent?: 'register' | 'login' | 'google' | 'otp';
+    },
   ): Promise<TokenPair> {
     const accessJti = randomUUID();
     const refreshJti = randomUUID();
@@ -217,6 +230,25 @@ export class TokensService {
       this.logger.warn(
         `[auth] last_active_at stamp failed user=${user.id}: ${(err as Error).message}`,
       );
+    }
+
+    // Append-only login history with the platform. Only for real sign-ins
+    // (loginEvent set) — refresh/exam-type rotations skip this. Best-effort:
+    // a failed insert must never block issuing the token pair.
+    if (opts.loginEvent) {
+      try {
+        await this.sessionsRepo.manager.getRepository(AuthLoginEvent).insert({
+          userId: user.id,
+          platform: opts.platform ?? null,
+          eventType: opts.loginEvent,
+          deviceId: opts.deviceId,
+          ipAddress: opts.ip ?? null,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `[auth] login-event insert failed user=${user.id}: ${(err as Error).message}`,
+        );
+      }
     }
 
     return { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt };

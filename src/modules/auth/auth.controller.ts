@@ -22,7 +22,11 @@ import {
   Min,
   ValidateIf,
 } from 'class-validator';
-import { ExamType } from '../../common/types/enums';
+import {
+  ClientPlatform,
+  ExamType,
+  parseClientPlatform,
+} from '../../common/types/enums';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
@@ -43,6 +47,18 @@ import { GoogleSignInDto } from './dto/google.dto';
 
 const DEVICE_ID_HEADER = 'x-device-id';
 const DEVICE_NAME_HEADER = 'x-device-name';
+const PLATFORM_HEADER = 'x-platform';
+
+/**
+ * Which platform this request came from — 'web' (browser app) or 'ios'/'android'
+ * (mobile app), sent via the `X-Platform` header. Untrusted + best-effort: an
+ * absent or unknown value resolves to null (we don't reject auth over it).
+ */
+function pickPlatform(req: Request): ClientPlatform | null {
+  const header = req.headers[PLATFORM_HEADER];
+  const headerStr = Array.isArray(header) ? header[0] : header;
+  return parseClientPlatform(headerStr);
+}
 
 /**
  * Spec §2.2: "Extract X-Device-ID header from request (client generates UUID
@@ -148,6 +164,7 @@ export class AuthController {
       {
         ip: req.ip,
         userAgent: req.headers['user-agent'],
+        platform: pickPlatform(req),
       },
     );
   }
@@ -165,6 +182,7 @@ export class AuthController {
         ip: req.ip,
         deviceId: pickDeviceId(req, dto.deviceId),
         deviceName: pickDeviceName(req, dto.deviceName),
+        platform: pickPlatform(req),
       },
     );
   }
@@ -188,6 +206,7 @@ export class AuthController {
       ip: req.ip,
       deviceId: pickDeviceId(req, dto.deviceId),
       deviceName: pickDeviceName(req, dto.deviceName),
+      platform: pickPlatform(req),
     });
   }
 
@@ -289,6 +308,7 @@ export class AuthController {
       ip: req.ip,
       deviceId: pickDeviceId(req, dto.deviceId),
       deviceName: pickDeviceName(req, dto.deviceName),
+      platform: pickPlatform(req),
       examType: dto.examType,
       formLevel: dto.formLevel,
       referralCode: dto.referralCode,
