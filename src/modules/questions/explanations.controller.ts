@@ -25,6 +25,7 @@ import { RequiresService } from '../entitlements/requires-service.decorator';
 import { inlineMathInMarkdown } from '../../common/utils/math.util';
 import { splitExplanationSections } from './explanation-sections.util';
 import { Question } from './entities/question.entity';
+import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
 
 /**
  * Vote body for POST /explanations/:id/vote. -1 = downvote, 0 = clear, 1 = up.
@@ -61,6 +62,8 @@ export class ExplanationsController {
   constructor(
     @InjectRepository(Question)
     private readonly questions: Repository<Question>,
+    @InjectRepository(PmTestQuestion)
+    private readonly pmTestQuestions: Repository<PmTestQuestion>,
   ) {}
 
   @Get(':questionId')
@@ -70,7 +73,19 @@ export class ExplanationsController {
       'Fetch the inline AI / human explanation for a question. Gated by the AI_EXPLANATIONS entitlement — Free=disabled (403), Plus=20/day (429 on 21st), Pro=unlimited.',
   })
   async get(@Param('questionId', new ParseUUIDPipe()) questionId: string) {
-    const question = await this.questions.findOne({
+    // Question ids can point at either the past-paper `questions` table or
+    // the AI-generated `pm_test_questions` table — same UUID namespace,
+    // different homes. Try past-paper first, fall back to pm-test on
+    // miss. Without this branching every Level Test wrong answer showed
+    // "Could not load explanation." in the app, since the pm-test row
+    // came back null → 404 → mobile fallback string.
+    let source: {
+      id: string;
+      explanation: string | null;
+      explanationHtml: string | null;
+      explanationModel: string | null;
+      explanationGeneratedAt: Date | null;
+    } | null = await this.questions.findOne({
       where: { id: questionId },
       select: [
         'id',
@@ -80,8 +95,29 @@ export class ExplanationsController {
         'explanationGeneratedAt',
       ],
     });
-    if (!question) throw new NotFoundException('Question not found');
-    if (!question.explanation) {
+
+    if (!source) {
+      const pm = await this.pmTestQuestions.findOne({
+        where: { id: questionId },
+        select: ['id', 'explanation'],
+      });
+      if (pm) {
+        // `pm_test_questions` doesn't carry the html/model/generatedAt
+        // columns — those live on the past-paper `questions` table. The
+        // explanation itself is generated inline at AI generation time,
+        // so we synthesise the envelope from what pm_test does store.
+        source = {
+          id: pm.id,
+          explanation: pm.explanation,
+          explanationHtml: null,
+          explanationModel: 'ai',
+          explanationGeneratedAt: null,
+        };
+      }
+    }
+
+    if (!source) throw new NotFoundException('Question not found');
+    if (!source.explanation) {
       throw new NotFoundException(
         'No explanation has been generated for this question yet.',
       );
@@ -94,12 +130,12 @@ export class ExplanationsController {
     // Split into the concise solution + the optional worked example so the
     // client can render them on separate surfaces (inline card vs. sheet)
     // and hide the worked-example affordance when there isn't one.
-    const sections = splitExplanationSections(question.explanation);
+    const sections = splitExplanationSections(source.explanation);
     return {
-      questionId: question.id,
+      questionId: source.id,
       // Mobile schema accepts `source` as a free string and normalises
       // via `s.startsWith('ai')`. Existing rows are AI-generated.
-      source: question.explanationModel ? 'ai' : 'human',
+      source: source.explanationModel ? 'ai' : 'human',
       // Inline any `$...$` LaTeX to SVG data-URIs BEFORE returning —
       // the mobile MathMarkdown renderer only handles the SVG shape,
       // not raw LaTeX. `toStudentQuestion` runs the same treatment on
@@ -111,13 +147,13 @@ export class ExplanationsController {
       // `content` is the full blob (kept for backward compatibility with
       // clients that render it whole); `solution` / `workedExample` are the
       // split view the current mobile app consumes.
-      content: inlineMathInMarkdown(question.explanation),
+      content: inlineMathInMarkdown(source.explanation),
       solution: inlineMathInMarkdown(sections.solution),
       workedExample: sections.workedExample
         ? inlineMathInMarkdown(sections.workedExample)
         : null,
-      contentHtml: question.explanationHtml,
-      generatedAt: question.explanationGeneratedAt?.toISOString() ?? null,
+      contentHtml: source.explanationHtml,
+      generatedAt: source.explanationGeneratedAt?.toISOString() ?? null,
     };
   }
 
@@ -133,11 +169,12 @@ export class ExplanationsController {
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<{ ok: true }> {
     // Existence check so the client gets a 404 for unknown questions
-    // (the mobile shows a toast on error). The actual vote write lands
-    // when the explanation_votes table is added.
-    const exists = await this.questions.exists({
-      where: { id: questionId },
-    });
+    // (the mobile shows a toast on error). Question ids can point at
+    // either the past-paper or the pm-test table — try past-paper
+    // first, fall back to pm-test on miss.
+    const exists =
+      (await this.questions.exists({ where: { id: questionId } })) ||
+      (await this.pmTestQuestions.exists({ where: { id: questionId } }));
     if (!exists) throw new NotFoundException('Question not found');
     // Log the vote attempt so we have a paper trail until the ledger
     // table lands. The @Body() and @CurrentUser() decorators remain so
