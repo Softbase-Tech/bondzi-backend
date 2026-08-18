@@ -5,6 +5,7 @@ import { Question } from './entities/question.entity';
 import { Option } from './entities/option.entity';
 import { QuestionFlag } from './entities/question-flag.entity';
 import { QuestionStimulus } from './entities/question-stimulus.entity';
+import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
 import { SrsCard } from '../srs/entities/srs-card.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
 import { Topic } from '../subjects/entities/topic.entity';
@@ -22,6 +23,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
       Option,
       QuestionFlag,
       QuestionStimulus,
+      PmTestQuestion,
       SrsCard,
       UserSubjectProgress,
       AuditLog,
