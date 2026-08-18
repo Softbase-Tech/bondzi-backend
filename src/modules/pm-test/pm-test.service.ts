@@ -22,10 +22,12 @@ import {
 } from './serializers/pm-test.serializer';
 
 export interface PmTestSubjectRow {
-  id: string;
-  code: string;
-  name: string;
-  questionCount: number;
+  subjectId: string;
+  subjectName: string;
+  iconSlug: string | null;
+  activeQuestionCount: number;
+  lastAttemptedAt: string | null;
+  accuracy: number | null;
 }
 
 export interface PmTestSubjectStat {
@@ -60,23 +62,54 @@ export class PmTestService {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
     // NOVDEC reuses the WASSCE PM Test pool — they study the same syllabus.
-    return this.listSubjects(questionPoolFor(user.examType), user.formLevel);
+    const examType = questionPoolFor(user.examType);
+    const formLevel = user.formLevel;
+
+    // One query for question counts, another for the user's per-subject
+    // Bondzi Test performance. Merged in code because the two shapes
+    // fan out differently — subjects with zero attempts still appear in
+    // the counts result, but wouldn't survive an INNER JOIN into
+    // exam_answers.
+    const counts = await this.listSubjects(examType, formLevel);
+    const stats = await this.attemptStatsForUser(userId, examType);
+    const statBySubject = new Map(stats.map((s) => [s.subjectId, s]));
+
+    return counts.map((c) => {
+      const s = statBySubject.get(c.subjectId);
+      return {
+        subjectId: c.subjectId,
+        subjectName: c.subjectName,
+        iconSlug: null,
+        activeQuestionCount: c.activeQuestionCount,
+        lastAttemptedAt: s?.lastAttemptedAt ?? null,
+        accuracy: s?.accuracy ?? null,
+      };
+    });
   }
 
+  /**
+   * Internal count-only variant used by listSubjectsForUser and by admin
+   * previews. Doesn't join into exam_answers so it stays cheap.
+   */
   async listSubjects(
     examType: ExamType,
     formLevel: number | null,
-  ): Promise<PmTestSubjectRow[]> {
+  ): Promise<
+    Array<{
+      subjectId: string;
+      subjectName: string;
+      activeQuestionCount: number;
+    }>
+  > {
     // Remedial (NOVDEC) users have NULL form_level — they sit WASSCE re-sits
     // as private candidates so they aren't bound to a school form. Skip the
     // form-level filter for them.
     const qb = this.qRepo
       .createQueryBuilder('q')
       .innerJoin(Subject, 's', 's.id = q.subject_id')
-      .select('s.id', 'id')
-      .addSelect('s.code', 'code')
-      .addSelect('s.name', 'name')
-      .addSelect('COUNT(q.id)', 'questionCount')
+      .select('s.id', 'subjectId')
+      .addSelect('s.name', 'subjectName')
+      .addSelect('COUNT(q.id)', 'activeQuestionCount')
       .where('q.exam_type = :et', { et: examType })
       .andWhere('q.status = :st', { st: QuestionStatus.ACTIVE });
     if (formLevel != null) {
@@ -84,22 +117,68 @@ export class PmTestService {
     }
     const rows = await qb
       .groupBy('s.id')
-      .addGroupBy('s.code')
       .addGroupBy('s.name')
       .orderBy('s.name', 'ASC')
       .getRawMany<{
-        id: string;
-        code: string;
-        name: string;
-        questionCount: string;
+        subjectId: string;
+        subjectName: string;
+        activeQuestionCount: string;
       }>();
 
     return rows.map((r) => ({
-      id: r.id,
-      code: r.code,
-      name: r.name,
-      questionCount: parseInt(r.questionCount, 10) || 0,
+      subjectId: r.subjectId,
+      subjectName: r.subjectName,
+      activeQuestionCount: parseInt(r.activeQuestionCount, 10) || 0,
     }));
+  }
+
+  /**
+   * Per-subject Bondzi-Test attempt stats for one user — accuracy as a
+   * 0..1 fraction plus the most recent attempt timestamp. Only returns
+   * subjects the user has actually answered at least once.
+   */
+  private async attemptStatsForUser(
+    userId: string,
+    examType: ExamType,
+  ): Promise<
+    Array<{ subjectId: string; accuracy: number; lastAttemptedAt: string }>
+  > {
+    const rows = await this.answersRepo
+      .createQueryBuilder('a')
+      .innerJoin(
+        PmTestQuestion,
+        'q',
+        'q.id = a.question_id AND a.question_pool = :pool AND q.exam_type = :et',
+        { pool: QuestionPool.PM_TEST, et: examType },
+      )
+      .innerJoin('a.exam', 'e', 'e.user_id = :uid', { uid: userId })
+      .select('q.subject_id', 'subjectId')
+      .addSelect('COUNT(a.id)', 'answered')
+      .addSelect('SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END)', 'correct')
+      .addSelect('MAX(a.answered_at)', 'lastAttemptedAt')
+      .groupBy('q.subject_id')
+      .getRawMany<{
+        subjectId: string;
+        answered: string;
+        correct: string;
+        lastAttemptedAt: string | Date | null;
+      }>();
+
+    return rows
+      .filter((r) => r.lastAttemptedAt)
+      .map((r) => {
+        const answered = parseInt(r.answered, 10) || 0;
+        const correct = parseInt(r.correct, 10) || 0;
+        const last =
+          r.lastAttemptedAt instanceof Date
+            ? r.lastAttemptedAt.toISOString()
+            : String(r.lastAttemptedAt);
+        return {
+          subjectId: r.subjectId,
+          accuracy: answered > 0 ? correct / answered : 0,
+          lastAttemptedAt: last,
+        };
+      });
   }
 
   /**
