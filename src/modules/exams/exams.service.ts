@@ -739,6 +739,14 @@ export class ExamsService {
           .upsertFromAnswer(userId, dto.questionId, isCorrect)
           .catch(() => void 0);
 
+        // "Studying today" is answering questions, not finishing exams.
+        // Bumping the streak here (not just on complete()) means a user
+        // who grinds mid-exam or does a few practice answers per session
+        // actually keeps their streak alive. `recordStudyDay` is
+        // idempotent per Africa/Accra day, so calling it on every answer
+        // is cheap after the first hit — the guarded UPDATE short-circuits.
+        await this.streak.recordStudyDay(userId).catch(() => void 0);
+
         let xpAwarded: Awaited<
           ReturnType<GamificationService['awardXp']>
         > | null = null;
