@@ -35,6 +35,7 @@ import { validateQuestionBatch } from '../ai/validation/question.validator';
 import { validateExplanation } from '../ai/validation/explanation.validator';
 import { buildExplanationPrompt } from '../ai/instruction-layer/explanation.prompt';
 import { AiAction } from '../../common/types/enums';
+import { isQuantitativeSubject } from '../../common/utils/quantitative-subject.util';
 
 const PREVIEW_TTL_SECONDS = 10 * 60;
 const MAX_TOTAL_QUESTIONS_PER_JOB = 100_000;
@@ -576,6 +577,10 @@ export class AdminPmTestService {
     }
 
     const modelId = resolveModelId(model);
+    const quantitative = isQuantitativeSubject({
+      name: row.subject?.name,
+      code: row.subject?.code,
+    });
     const built = buildExplanationPrompt({
       examType: row.examType,
       subjectName: row.subject?.name ?? '',
@@ -584,15 +589,18 @@ export class AdminPmTestService {
       options: row.options.map((o) => ({ label: o.label, body: o.body })),
       correctLabel: correct.label,
       syllabusContext: '',
+      isQuantitativeSubject: quantitative,
     });
 
     const call = await this.ai.callBedrock(built.user, modelId, {
       system: built.system,
       action: AiAction.EXPLANATION,
-      maxTokens: 1200,
+      maxTokens: 1400,
     });
 
-    const val = validateExplanation(call.content, row.body);
+    const val = validateExplanation(call.content, row.body, {
+      requireWorkedExample: quantitative,
+    });
     if (!val.ok) {
       this.logger.warn(
         `[regen-explanation] pm-test ${id} rejected: ${val.reason} — ${val.detail}`,

@@ -148,17 +148,30 @@ LaTeX. Inside JSON, escape backslashes as \\\\ so \`$\\dfrac{a}{b}$\`
 becomes \`"$\\\\dfrac{a}{b}$"\`.`;
 
 const EXPLANATION_TASK_RULES = `Explanation rules:
-- Produce a clear worked solution. Identify the concept in play,
-  then reason it through: for a calculation, walk the derivation
-  step by step showing each intermediate value with units; for a
-  conceptual or recall question, explain the underlying idea plainly.
+- The explanation ALWAYS has a \`## Solution\` section — a step-by-step
+  worked solution that identifies the concept in play, then reasons
+  it through. For a calculation, walk the derivation showing each
+  intermediate value with units. For a conceptual or recall question,
+  explain the underlying idea plainly and cite the specific fact / law.
 - State the correct option and, in ONE line each, why the other
-  options are wrong (common misconception behind each distractor).
-- Add a SECOND worked example ONLY when it genuinely helps — i.e.
-  computational / procedural questions where practising the method on
-  a different setup makes it generalise. For definition, recall, or
-  purely conceptual questions, give the solution alone; do not tack
-  on an example that just repeats it.
+  options are wrong (name the specific misconception behind each
+  distractor — not generic phrasing like "this is incorrect").
+- Worked Example section:
+    • If the question is calculation-shaped (numeric answer, formula
+      application, step-by-step procedure, unit conversion, algebraic
+      manipulation, chemical stoichiometry, physics-derivation,
+      statistics computation, accounting-schedule) — you MUST include
+      a \`## Worked Example\` section immediately after the Solution.
+      The example must be a DIFFERENT problem on the same topic
+      (different numbers, different setup) worked step-by-step the
+      same way, so the student learns the METHOD not just the answer.
+    • If the user turn signals \`Quantitative subject: true\`, treat
+      every question in that batch as calculation-shaped and always
+      include the Worked Example — subjects like Physics, Chemistry,
+      Mathematics and Additional Mathematics fall here.
+    • Definition, recall, or purely conceptual questions may skip
+      the Worked Example — but only when there is genuinely no
+      method to demonstrate.
 - Write at the level of a WAEC {examType} Form {formLevel} student.
   Assume they know the topic exists; do NOT assume they can apply
   it yet.
@@ -181,6 +194,13 @@ const OUTPUT_RULES = `Output rules:
  * `buildQuestionGenerationPrompt`) contributes the syllabus context,
  * past-paper exemplars, and the exact JSON schema for the requested
  * batch.
+ *
+ * When `includeExplanations` is on, the user turn also asks for an
+ * inline `explanation` per question — so ship the explanation
+ * task rules alongside the question rules in that case. Keeping
+ * both blocks in the shell (rather than only in the user turn)
+ * makes the format enforceable via a strong system-level instruction
+ * the model can't skip while it juggles the batch shape.
  */
 export const SYSTEM_SHELL_QUESTION_GENERATION = [
   PREAMBLE,
@@ -188,6 +208,7 @@ export const SYSTEM_SHELL_QUESTION_GENERATION = [
   EXEMPLAR_RULES,
   META_LANGUAGE_RULES,
   QUESTION_TASK_RULES,
+  EXPLANATION_TASK_RULES,
   OUTPUT_RULES,
 ].join('\n\n');
 

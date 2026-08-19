@@ -20,6 +20,7 @@ import {
 import { buildExplanationPrompt } from '../modules/ai/instruction-layer/explanation.prompt';
 import { SyllabusRetrievalService } from '../modules/syllabus/syllabus-retrieval.service';
 import { PromptExemplarService } from '../modules/ai/prompt-exemplars.service';
+import { isQuantitativeSubject } from '../common/utils/quantitative-subject.util';
 import {
   validateQuestionBatch,
   type ParsedQuestion,
@@ -571,6 +572,10 @@ export class AiGenerationProcessor extends WorkerHost {
             syllabusContext,
             pastPaperExemplars,
             includeExplanations: params.includeExplanations,
+            isQuantitativeSubject: isQuantitativeSubject({
+              name: subject.name,
+              code: subject.code,
+            }),
           });
 
           let call: Awaited<ReturnType<typeof this.ai.callBedrock>> | null =
@@ -799,6 +804,10 @@ export class AiGenerationProcessor extends WorkerHost {
           }
         }
 
+        const quantitative = isQuantitativeSubject({
+          name: q.subject?.name,
+          code: q.subject?.code,
+        });
         const built = buildExplanationPrompt({
           examType: q.examType,
           subjectName:
@@ -809,6 +818,7 @@ export class AiGenerationProcessor extends WorkerHost {
           options: q.options.map((o) => ({ label: o.label, body: o.body })),
           correctLabel: correct.label,
           syllabusContext,
+          isQuantitativeSubject: quantitative,
         });
 
         let call: Awaited<ReturnType<typeof this.ai.callBedrock>> | null = null;
@@ -817,7 +827,7 @@ export class AiGenerationProcessor extends WorkerHost {
             system: built.system,
             action: AiAction.EXPLANATION,
             jobId: record.id,
-            maxTokens: 600,
+            maxTokens: quantitative ? 1200 : 600,
           });
         } catch (err) {
           failed += 1;
@@ -841,7 +851,9 @@ export class AiGenerationProcessor extends WorkerHost {
         totalCost += call.costUsd;
 
         // Validator gate — students never see a malformed explanation.
-        const validation = validateExplanation(call.content, q.body);
+        const validation = validateExplanation(call.content, q.body, {
+          requireWorkedExample: quantitative,
+        });
         if (!validation.ok) {
           failed += 1;
           this.logger.warn(

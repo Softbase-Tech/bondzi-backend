@@ -31,6 +31,7 @@
 export type ExplanationRejectReason =
   | 'model_refused'
   | 'missing_solution_section'
+  | 'missing_worked_example_calc'
   | 'section_order_wrong'
   | 'too_short'
   | 'stem_verbatim';
@@ -45,6 +46,7 @@ const STEM_MATCH_PREFIX = 120;
 export function validateExplanation(
   rawText: string,
   stem: string,
+  opts: { requireWorkedExample?: boolean } = {},
 ): ExplanationValidationResult {
   const trimmed = rawText.trim();
 
@@ -104,6 +106,20 @@ export function validateExplanation(
       ok: false,
       reason: 'section_order_wrong',
       detail: '`## Worked Example` appeared before `## Solution`',
+    };
+  }
+
+  // Quantitative subjects (Physics / Chemistry / Mathematics /
+  // Additional Mathematics / Accounting / Economics / …) MUST ship
+  // both sections. A one-line "why the answer is right" isn't good
+  // enough for a student who needs to see the method demonstrated
+  // on a fresh problem.
+  if (opts.requireWorkedExample && !exampleMatch) {
+    return {
+      ok: false,
+      reason: 'missing_worked_example_calc',
+      detail:
+        'Quantitative subject requires a `## Worked Example` section in addition to `## Solution`.',
     };
   }
 

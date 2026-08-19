@@ -65,6 +65,13 @@ export interface ExplanationPromptArgs {
    * the model then grounds on the question stem alone.
    */
   syllabusContext?: string;
+  /**
+   * Quantitative subject flag — Physics, Chemistry, Mathematics,
+   * Additional Mathematics, Statistics, Accounting, Economics, etc.
+   * When true, the explanation MUST contain both `## Solution` and
+   * `## Worked Example`. Otherwise the worked example is optional.
+   */
+  isQuantitativeSubject?: boolean;
 }
 
 export function buildExplanationPrompt(
@@ -100,6 +107,7 @@ ${args.syllabusContext}
   const user = `Exam: ${args.examType.toUpperCase()}
 Subject: ${args.subjectName}
 Student level: ${levelLabel}
+Quantitative subject: ${args.isQuantitativeSubject ? 'true' : 'false'}
 
 ${contextBlock}Question:
 ${args.questionBody}
