@@ -861,6 +861,7 @@ export class ExamsService {
       where: { examId: exam.id },
       relations: ['question', 'question.options', 'selectedOption'],
     });
+    await this.hydratePmTestAnswers(exam, hydrated);
     const topicIds = Array.from(
       new Set(
         hydrated
@@ -898,6 +899,7 @@ export class ExamsService {
       where: { examId },
       relations: ['question', 'question.options', 'selectedOption'],
     });
+    await this.hydratePmTestAnswers(exam, answers);
 
     const topicIds = Array.from(
       new Set(
@@ -913,6 +915,65 @@ export class ExamsService {
       : [];
 
     return toExamResultResponse(exam, answers, topics);
+  }
+
+  /**
+   * `ExamAnswer.question` is a TypeORM relation to the past-paper
+   * `questions` table. For a PM Test exam the id lives in
+   * `pm_test_questions` — same UUID namespace, different home — so
+   * the relation join returns null and the wrong-answer review card
+   * on the result screen renders as "You: —  Correct: —".
+   *
+   * Fix: after the initial load, if the exam is a PM Test one, fetch
+   * the matching pm_test rows and monkey-patch a compatible shape
+   * onto `a.question`. The exam-result serializer only reads `body`,
+   * `options`, `topicId` from that field — so a duck-typed object
+   * with those three keys keeps the serializer signature stable.
+   *
+   * Same pool-branching family as the submitAnswer / getOne /
+   * explanations fixes we shipped earlier — this is the last known
+   * read path that hadn't been updated.
+   */
+  private async hydratePmTestAnswers(
+    exam: Exam,
+    answers: ExamAnswer[],
+  ): Promise<void> {
+    if (exam.questionPool !== QuestionPool.PM_TEST) return;
+    if (answers.length === 0) return;
+    const ids = answers.map((a) => a.questionId);
+    const rows = await this.pmTestQRepo.find({
+      where: { id: In(ids) },
+      relations: ['options'],
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    for (const a of answers) {
+      const pm = byId.get(a.questionId);
+      if (!pm) continue;
+      // Duck-typed: only the fields the serializer needs, cast so
+      // TypeORM doesn't reject the assignment. `topicId` is null for
+      // pm_test — they use `syllabus_topic_id` — and the topic
+      // rollup already handles null topicId cleanly.
+      (a as unknown as { question: unknown }).question = {
+        id: pm.id,
+        body: pm.body,
+        options: pm.options,
+        topicId: null,
+      };
+      // If the answer's selectedOption pointer targeted the pm_test
+      // options table, the relation join also missed it — resolve
+      // from the pm_test option set we just loaded.
+      if (!a.selectedOption && a.selectedOptionId) {
+        const opt = pm.options.find((o) => o.id === a.selectedOptionId);
+        if (opt) {
+          (a as unknown as { selectedOption: unknown }).selectedOption = {
+            id: opt.id,
+            label: opt.label,
+            body: opt.body,
+            isCorrect: opt.isCorrect,
+          };
+        }
+      }
+    }
   }
 
   /**
