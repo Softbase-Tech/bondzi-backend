@@ -180,4 +180,174 @@ describe('validateQuestionBatch', () => {
       expect(result.ok).toBe(true);
     });
   });
+
+  describe('meta-syllabus rejects', () => {
+    it('rejects "According to the syllabus…" stems', () => {
+      const q = {
+        ...goodQuestion,
+        body: 'According to the syllabus, what is the SI unit of force?',
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('meta_syllabus_reference');
+    });
+
+    it('rejects "The curriculum states…" stems', () => {
+      const q = {
+        ...goodQuestion,
+        body: 'The curriculum states that force is measured in what unit?',
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('meta_syllabus_reference');
+    });
+
+    it('rejects "learners assess" outcome-statement phrasing', () => {
+      const q = {
+        ...goodQuestion,
+        body: 'When learners assess rule systems, which region should they focus on studying?',
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('meta_syllabus_reference');
+    });
+
+    it('rejects the bare word "syllabus" in a stem', () => {
+      const q = {
+        ...goodQuestion,
+        body: 'Which SI unit does the syllabus prescribe for measuring force?',
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('meta_syllabus_reference');
+    });
+
+    it('rejects meta phrasing that appears only in the explanation', () => {
+      const q = {
+        ...goodQuestion,
+        explanation:
+          'The syllabus explicitly states that Newton is the SI unit of force.',
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('meta_syllabus_reference');
+    });
+  });
+
+  describe('trivia + exam-institution rejects', () => {
+    it('rejects "In which year was WAEC founded" style stems', () => {
+      const q = {
+        ...goodQuestion,
+        body: 'In which year was WAEC founded to conduct exams in West Africa?',
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('trivia_meta_question');
+    });
+
+    it('rejects "Who is the chief examiner" style stems', () => {
+      const q = {
+        ...goodQuestion,
+        body: 'Who is the chief examiner responsible for BECE mathematics this year?',
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      // BECE match fires first (word-level) — either reason is a
+      // successful reject; we assert the type not the specific one.
+      expect(['trivia_meta_question']).toContain(r.reason);
+    });
+  });
+
+  describe('length + filler-option rejects', () => {
+    it('rejects stems shorter than 6 words', () => {
+      const q = { ...goodQuestion, body: 'What is force?' };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('stem_too_short');
+    });
+
+    it('rejects "All of the above" as an option', () => {
+      const q = {
+        ...goodQuestion,
+        body: 'Which of these is a valid SI unit of measurement?',
+        options: [
+          { label: 'A', body: 'Newton', isCorrect: false },
+          { label: 'B', body: 'Pascal', isCorrect: false },
+          { label: 'C', body: 'Joule', isCorrect: false },
+          { label: 'D', body: 'All of the above', isCorrect: true },
+        ],
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('all_or_none_option');
+    });
+
+    it('rejects "None of the above" as an option (case-insensitive)', () => {
+      const q = {
+        ...goodQuestion,
+        body: 'Which of these is a fundamental unit of thermal capacity?',
+        options: [
+          { label: 'A', body: 'Newton', isCorrect: false },
+          { label: 'B', body: 'Pascal', isCorrect: false },
+          { label: 'C', body: 'Joule', isCorrect: true },
+          { label: 'D', body: 'none of the above', isCorrect: false },
+        ],
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('all_or_none_option');
+    });
+  });
+
+  describe('stem-leaks-answer reject', () => {
+    it('rejects when 4+ consecutive words of the answer appear in the stem', () => {
+      const q = {
+        body: 'The mitochondrion is often described as the powerhouse of the cell in biology textbooks.',
+        difficulty: 'medium',
+        options: [
+          { label: 'A', body: 'nucleus of the cell', isCorrect: false },
+          { label: 'B', body: 'powerhouse of the cell', isCorrect: true },
+          {
+            label: 'C',
+            body: 'endoplasmic reticulum of the cell',
+            isCorrect: false,
+          },
+          { label: 'D', body: 'ribosome of the cell', isCorrect: false },
+        ],
+        explanation: 'The mitochondrion produces ATP.',
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.reason).toBe('stem_leaks_answer');
+    });
+
+    it('accepts short one- or two-word answers that overlap with the stem', () => {
+      // "Chad" would match against a syllabus context containing "Chad"
+      // but this rule only fires on 4+ token windows.
+      const q = {
+        body: 'A 6-million-year-old hominid skull discovered in 2002 was announced in which country?',
+        difficulty: 'medium',
+        options: [
+          { label: 'A', body: 'North Africa', isCorrect: false },
+          { label: 'B', body: 'East Africa', isCorrect: false },
+          { label: 'C', body: 'Chad', isCorrect: true },
+          { label: 'D', body: 'Egypt', isCorrect: false },
+        ],
+        explanation: 'The Sahelanthropus skull was found in Chad.',
+      };
+      const r = validateQuestionBatch(batch(q));
+      expect(r.ok).toBe(true);
+    });
+  });
 });
