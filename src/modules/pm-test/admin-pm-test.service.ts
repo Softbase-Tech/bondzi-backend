@@ -31,12 +31,30 @@ import {
   GenerationEstimate,
   resolveModelId,
 } from '../admin-ai-gen/estimates.util';
+import { validateQuestionBatch } from '../ai/validation/question.validator';
 
 const PREVIEW_TTL_SECONDS = 10 * 60;
 const MAX_TOTAL_QUESTIONS_PER_JOB = 100_000;
 
 function previewKey(token: string): string {
   return `pm-test:preview:${token}`;
+}
+
+/**
+ * Standard CSV escape — wrap in double quotes if the cell contains a
+ * comma, double quote, or newline; double any embedded quotes. Applied
+ * uniformly across every column so admins can round-trip an export
+ * through Excel / Numbers without corrupting the rows.
+ */
+function csvCell(v: unknown): string {
+  let s: string;
+  if (v === null || v === undefined) s = '';
+  else if (typeof v === 'string') s = v;
+  else if (typeof v === 'number' || typeof v === 'boolean') s = String(v);
+  else if (v instanceof Date) s = v.toISOString();
+  else s = JSON.stringify(v);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
 }
 
 export interface PmTestPreviewResult {
@@ -266,12 +284,43 @@ export class AdminPmTestService {
     difficulty?: string;
     status?: string;
     search?: string;
+    batchId?: string;
+    hasExplanation?: boolean;
+    createdFrom?: string;
+    createdTo?: string;
     page?: number;
     limit?: number;
   }) {
     const page = Math.max(1, params.page ?? 1);
     const limit = Math.min(100, Math.max(1, params.limit ?? 20));
 
+    const qb = this.buildListQuery(params);
+    qb.orderBy('q.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    const [items, total] = await qb.getManyAndCount();
+    return { items, total, nextCursor: null };
+  }
+
+  /**
+   * Shared filter builder used by `listAll` and `exportCsv`. Kept
+   * private so the two callers can't drift out of sync — an export
+   * that filters differently from the list would ship rows the
+   * reviewer never actually saw.
+   */
+  private buildListQuery(params: {
+    examType?: string;
+    formLevel?: number;
+    subjectId?: string;
+    difficulty?: string;
+    status?: string;
+    search?: string;
+    batchId?: string;
+    hasExplanation?: boolean;
+    createdFrom?: string;
+    createdTo?: string;
+  }) {
     const qb = this.qRepo
       .createQueryBuilder('q')
       .leftJoinAndSelect('q.options', 'o')
@@ -286,17 +335,272 @@ export class AdminPmTestService {
       qb.andWhere('q.subject_id = :sid', { sid: params.subjectId });
     if (params.difficulty)
       qb.andWhere('q.difficulty = :d', { d: params.difficulty });
+    if (params.batchId)
+      qb.andWhere('q.generation_batch_id = :b', { b: params.batchId });
+    if (params.hasExplanation === true)
+      qb.andWhere("coalesce(q.explanation, '') <> ''");
+    if (params.hasExplanation === false)
+      qb.andWhere("coalesce(q.explanation, '') = ''");
+    if (params.createdFrom)
+      qb.andWhere('q.created_at >= :cf', { cf: params.createdFrom });
+    if (params.createdTo)
+      qb.andWhere('q.created_at <= :ct', { ct: params.createdTo });
     if (params.search && params.search.trim()) {
       const needle = `%${params.search.trim()}%`;
       qb.andWhere('(q.body ILIKE :n OR q.explanation ILIKE :n)', { n: needle });
     }
 
-    qb.orderBy('q.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit);
+    return qb;
+  }
 
-    const [items, total] = await qb.getManyAndCount();
-    return { items, total, nextCursor: null };
+  /**
+   * Fetch one full question with options + subject + syllabus topic
+   * relation loaded. Powers the admin Level-Test detail screen.
+   */
+  async getOne(id: string): Promise<PmTestQuestion> {
+    const row = await this.qRepo.findOne({
+      where: { id },
+      relations: ['options', 'subject', 'syllabusTopic'],
+    });
+    if (!row) throw new NotFoundException('PM Test question not found');
+    return row;
+  }
+
+  /**
+   * Surgical PATCH — replace only the fields the admin sent. The
+   * options array is all-or-nothing: if provided, must be exactly 4
+   * with exactly one isCorrect. Rejecting the whole payload on
+   * option-shape violation keeps the invariant that every row in
+   * pm_test_questions has a valid answer key.
+   */
+  async updateOne(
+    id: string,
+    dto: {
+      body?: string;
+      explanation?: string;
+      difficulty?: 'easy' | 'medium' | 'hard';
+      syllabusTopicId?: string | null;
+      options?: Array<{ label: string; body: string; isCorrect: boolean }>;
+    },
+  ): Promise<PmTestQuestion> {
+    const row = await this.qRepo.findOne({
+      where: { id },
+      relations: ['options'],
+    });
+    if (!row) throw new NotFoundException('PM Test question not found');
+
+    if (dto.options) {
+      const correctCount = dto.options.filter((o) => o.isCorrect).length;
+      if (correctCount !== 1) {
+        throw new BadRequestException(
+          `options must contain exactly one isCorrect=true (got ${correctCount})`,
+        );
+      }
+      const labels = new Set(dto.options.map((o) => o.label.trim()));
+      if (labels.size !== 4) {
+        throw new BadRequestException('options must have four unique labels');
+      }
+      const bodies = new Set(
+        dto.options.map((o) => o.body.trim().toLowerCase()),
+      );
+      if (bodies.size !== 4) {
+        throw new BadRequestException(
+          'options must have four unique bodies (case-insensitive)',
+        );
+      }
+    }
+
+    if (dto.body !== undefined) row.body = dto.body;
+    if (dto.explanation !== undefined) row.explanation = dto.explanation;
+    if (dto.difficulty !== undefined) {
+      // The QuestionStatus vs Difficulty enums both live on the row —
+      // keep the cast tight so a typo doesn't silently store 'medum'.
+      row.difficulty = dto.difficulty as PmTestQuestion['difficulty'];
+    }
+    if (dto.syllabusTopicId !== undefined)
+      row.syllabusTopicId = dto.syllabusTopicId;
+    await this.qRepo.save(row);
+
+    if (dto.options) {
+      // Replace the option set. Delete-then-insert is simpler and
+      // correct — labels are stable within a question, and the option
+      // FK cascade fires as expected.
+      await this.oRepo.delete({ questionId: row.id });
+      const fresh = dto.options.map((o) =>
+        this.oRepo.create({
+          questionId: row.id,
+          label: o.label.trim(),
+          body: o.body.trim(),
+          isCorrect: o.isCorrect,
+        }),
+      );
+      await this.oRepo.save(fresh);
+    }
+
+    return this.getOne(id);
+  }
+
+  /**
+   * Bulk import path for CSV / JSONL uploads. Each item goes through
+   * the same wire-level validation as AI-generated batches so admin
+   * uploads can't slip past the meta-syllabus / stem-leak / all-of-
+   * the-above checks either.
+   *
+   * Rows default to `pending_review` unless the admin explicitly
+   * opts into `publishImmediately`. Rejected rows are returned in
+   * the response — nothing partially applies within a row (options
+   * insert only after the parent question insert succeeds).
+   */
+  async bulkImport(dto: {
+    items: Array<{
+      subjectId: string;
+      formLevel: number;
+      examType: string;
+      difficulty: 'easy' | 'medium' | 'hard';
+      body: string;
+      explanation?: string;
+      syllabusTopicId?: string;
+      options: Array<{ label: string; body: string; isCorrect: boolean }>;
+    }>;
+    publishImmediately?: boolean;
+  }): Promise<{
+    inserted: number;
+    rejected: Array<{ index: number; reason: string; detail: string }>;
+    ids: string[];
+  }> {
+    const rejected: Array<{ index: number; reason: string; detail: string }> =
+      [];
+    const ids: string[] = [];
+    const status = dto.publishImmediately
+      ? QuestionStatus.ACTIVE
+      : QuestionStatus.PENDING_REVIEW;
+
+    for (let i = 0; i < dto.items.length; i++) {
+      const item = dto.items[i];
+
+      // Same wire-level validation used against AI-generated rows so
+      // an admin upload can't sneak a meta-syllabus stem past the gate.
+      const asBatch = JSON.stringify([
+        {
+          body: item.body,
+          difficulty: item.difficulty,
+          options: item.options,
+          explanation: item.explanation ?? '',
+        },
+      ]);
+      const val = validateQuestionBatch(asBatch);
+      if (!val.ok) {
+        rejected.push({
+          index: i,
+          reason: val.reason,
+          detail: val.detail,
+        });
+        continue;
+      }
+
+      try {
+        const row = this.qRepo.create({
+          subjectId: item.subjectId,
+          examType: item.examType as PmTestQuestion['examType'],
+          formLevel: item.formLevel,
+          body: item.body.trim(),
+          difficulty: item.difficulty as PmTestQuestion['difficulty'],
+          explanation: item.explanation?.trim() || null,
+          syllabusTopicId: item.syllabusTopicId ?? null,
+          status,
+          generationBatchId: null,
+        });
+        await this.qRepo.save(row);
+        const opts = item.options.map((o) =>
+          this.oRepo.create({
+            questionId: row.id,
+            label: o.label.trim(),
+            body: o.body.trim(),
+            isCorrect: o.isCorrect,
+          }),
+        );
+        await this.oRepo.save(opts);
+        ids.push(row.id);
+      } catch (err) {
+        rejected.push({
+          index: i,
+          reason: 'db_insert_failed',
+          detail: (err as Error).message,
+        });
+      }
+    }
+
+    return { inserted: ids.length, rejected, ids };
+  }
+
+  /**
+   * Server-side CSV export. Reuses the exact filter shape so the
+   * download matches the on-screen list. Streams into memory (not a
+   * response stream) because the cap here is small — max 5000 rows
+   * is the sensible admin-workflow bound, well under the memory
+   * ceiling and small enough to send as a single response.
+   */
+  async exportCsv(
+    params: Parameters<AdminPmTestService['listAll']>[0],
+  ): Promise<string> {
+    const qb = this.buildListQuery(params);
+    qb.orderBy('q.createdAt', 'DESC').take(5000);
+    const rows = await qb.getMany();
+
+    const header = [
+      'id',
+      'subject',
+      'exam_type',
+      'form_level',
+      'difficulty',
+      'status',
+      'batch_id',
+      'body',
+      'option_a',
+      'option_b',
+      'option_c',
+      'option_d',
+      'correct_letter',
+      'explanation',
+      'times_answered',
+      'times_correct',
+      'created_at',
+    ];
+
+    const csvRows: string[] = [header.map(csvCell).join(',')];
+    for (const q of rows) {
+      const opts = [...(q.options ?? [])].sort((a, b) =>
+        a.label.localeCompare(b.label),
+      );
+      const findOpt = (l: string) =>
+        opts.find((o) => o.label === l)?.body ?? '';
+      const correctLetter = opts.find((o) => o.isCorrect)?.label ?? '';
+      csvRows.push(
+        [
+          q.id,
+          q.subject?.name ?? '',
+          q.examType,
+          q.formLevel,
+          q.difficulty,
+          q.status,
+          q.generationBatchId ?? '',
+          q.body,
+          findOpt('A'),
+          findOpt('B'),
+          findOpt('C'),
+          findOpt('D'),
+          correctLetter,
+          q.explanation ?? '',
+          q.timesAnswered,
+          q.timesCorrect,
+          q.createdAt.toISOString(),
+        ]
+          .map(csvCell)
+          .join(','),
+      );
+    }
+
+    return csvRows.join('\n');
   }
 
   async bulkReview(dto: PmTestReviewBulkDto) {

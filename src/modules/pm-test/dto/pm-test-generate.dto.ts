@@ -136,3 +136,113 @@ export class PmTestReviewBulkDto {
   @Type(() => PmTestReviewItemDto)
   items!: PmTestReviewItemDto[];
 }
+
+export class PmTestOptionInputDto {
+  @ApiProperty()
+  @IsString()
+  label!: string;
+
+  @ApiProperty()
+  @IsString()
+  body!: string;
+
+  @ApiProperty()
+  @IsBoolean()
+  isCorrect!: boolean;
+}
+
+export class PmTestUpdateDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  body?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  explanation?: string;
+
+  @ApiPropertyOptional({ enum: ['easy', 'medium', 'hard'] })
+  @IsOptional()
+  @IsEnum(['easy', 'medium', 'hard'] as const)
+  difficulty?: 'easy' | 'medium' | 'hard';
+
+  @ApiPropertyOptional({ format: 'uuid', nullable: true })
+  @IsOptional()
+  @IsUUID('4')
+  syllabusTopicId?: string | null;
+
+  @ApiPropertyOptional({
+    isArray: true,
+    type: PmTestOptionInputDto,
+    description:
+      'When provided, replaces the entire options array — must contain exactly 4 with exactly one isCorrect=true.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(4)
+  @ArrayMaxSize(4)
+  @ValidateNested({ each: true })
+  @Type(() => PmTestOptionInputDto)
+  options?: PmTestOptionInputDto[];
+}
+
+export class PmTestImportItemDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID('4')
+  subjectId!: string;
+
+  @ApiProperty({ minimum: 1, maximum: 3 })
+  @IsInt()
+  @Min(1)
+  @Max(3)
+  formLevel!: number;
+
+  @ApiProperty({ enum: ExamType })
+  @IsEnum(ExamType)
+  examType!: ExamType;
+
+  @ApiProperty({ enum: ['easy', 'medium', 'hard'] })
+  @IsEnum(['easy', 'medium', 'hard'] as const)
+  difficulty!: 'easy' | 'medium' | 'hard';
+
+  @ApiProperty()
+  @IsString()
+  body!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  explanation?: string;
+
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsOptional()
+  @IsUUID('4')
+  syllabusTopicId?: string;
+
+  @ApiProperty({ isArray: true, type: PmTestOptionInputDto })
+  @IsArray()
+  @ArrayMinSize(4)
+  @ArrayMaxSize(4)
+  @ValidateNested({ each: true })
+  @Type(() => PmTestOptionInputDto)
+  options!: PmTestOptionInputDto[];
+}
+
+export class PmTestBulkImportDto {
+  @ApiProperty({ isArray: true, type: PmTestImportItemDto })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => PmTestImportItemDto)
+  items!: PmTestImportItemDto[];
+
+  @ApiPropertyOptional({
+    description:
+      'When true, imported rows land as ACTIVE (live). Default: false — rows land as PENDING_REVIEW so an admin sanity-checks bulk uploads.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  publishImmediately?: boolean;
+}
