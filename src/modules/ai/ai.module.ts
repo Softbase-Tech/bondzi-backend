@@ -15,6 +15,10 @@ import {
   aiGenerationClientProvider,
 } from './clients/ai-generation.factory';
 import { AdminRejectLogController } from './admin-reject-log.controller';
+import { PromptExemplarService } from './prompt-exemplars.service';
+import { Question } from '../questions/entities/question.entity';
+import { Option } from '../questions/entities/option.entity';
+import { SyllabusTopic } from '../subjects/entities/syllabus-topic.entity';
 
 /**
  * Both concrete clients (Bedrock, Ollama) are registered as
@@ -34,6 +38,9 @@ import { AdminRejectLogController } from './admin-reject-log.controller';
       PromptTemplate,
       AiGenerationRejectLog,
       AiGenerationRejectAgg,
+      Question,
+      Option,
+      SyllabusTopic,
     ]),
   ],
   controllers: [AdminRejectLogController],
@@ -44,6 +51,7 @@ import { AdminRejectLogController } from './admin-reject-log.controller';
     OllamaClient,
     aiGenerationClientProvider,
     aiEmbeddingClientProvider,
+    PromptExemplarService,
   ],
   exports: [
     AiService,
@@ -51,6 +59,7 @@ import { AdminRejectLogController } from './admin-reject-log.controller';
     BedrockClient,
     AI_GENERATION_CLIENT,
     AI_EMBEDDING_CLIENT,
+    PromptExemplarService,
     TypeOrmModule,
   ],
 })

@@ -13,9 +13,13 @@ import { SyllabusTopic } from '../modules/subjects/entities/syllabus-topic.entit
 import { AiService } from '../modules/ai/ai.service';
 import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
 import { NotificationsService } from '../modules/notifications/notifications.service';
-import { buildQuestionGenerationPrompt } from '../modules/ai/instruction-layer/question-generation.prompt';
+import {
+  buildQuestionGenerationPrompt,
+  type ExemplarForPrompt,
+} from '../modules/ai/instruction-layer/question-generation.prompt';
 import { buildExplanationPrompt } from '../modules/ai/instruction-layer/explanation.prompt';
 import { SyllabusRetrievalService } from '../modules/syllabus/syllabus-retrieval.service';
+import { PromptExemplarService } from '../modules/ai/prompt-exemplars.service';
 import {
   validateQuestionBatch,
   type ParsedQuestion,
@@ -99,8 +103,52 @@ export class AiGenerationProcessor extends WorkerHost {
     private readonly notifications: NotificationsService,
     private readonly rejectLog: RejectLogService,
     private readonly syllabusRetrieval: SyllabusRetrievalService,
+    private readonly exemplars: PromptExemplarService,
   ) {
     super();
+  }
+
+  /**
+   * Per-run cache of past-paper exemplars, keyed by
+   * (subject, syllabus_topic, difficulty). Populated on first miss
+   * per key inside a job so a 200-question generation doesn't hit
+   * the DB 200×; scoped to a single job so consecutive batches
+   * still get different exemplars (they'd be identical WITHIN a
+   * key, but every key sees its own random-ordered pick).
+   */
+  private async fetchExemplars(args: {
+    subjectId: string;
+    syllabusTopicId: string | null;
+    difficulty: 'easy' | 'medium' | 'hard';
+    cache: Map<string, ExemplarForPrompt[]>;
+  }): Promise<ExemplarForPrompt[]> {
+    const key = `${args.subjectId}|${args.syllabusTopicId ?? 'null'}|${args.difficulty}`;
+    const cached = args.cache.get(key);
+    if (cached !== undefined) return cached;
+    try {
+      const rows = await this.exemplars.fetch({
+        subjectId: args.subjectId,
+        syllabusTopicId: args.syllabusTopicId,
+        difficulty: args.difficulty as Difficulty,
+        k: 3,
+      });
+      const mapped: ExemplarForPrompt[] = rows.map((r) => ({
+        body: r.body,
+        options: r.options,
+        explanation: r.explanation,
+        year: r.year,
+        paper: r.paper,
+        difficulty: r.difficulty,
+      }));
+      args.cache.set(key, mapped);
+      return mapped;
+    } catch (err) {
+      this.logger.warn(
+        `[exemplars] fetch failed for subject=${args.subjectId} topic=${args.syllabusTopicId ?? 'null'}: ${(err as Error).message}`,
+      );
+      args.cache.set(key, []);
+      return [];
+    }
   }
 
   /**
@@ -396,6 +444,14 @@ export class AiGenerationProcessor extends WorkerHost {
     // Memoises syllabus grounding per (subject, form, topic) for the life of
     // this job so we embed each topic query once, not once per batch.
     const groundCache = new Map<string, string>();
+    // Per-job cache of past-paper exemplars keyed by
+    // (subject | syllabus_topic | difficulty). The first batch on a
+    // key hits the DB; subsequent batches on the same key reuse the
+    // same 3 stems. Different keys (topic changes, difficulty
+    // changes) get fresh random picks, which is what keeps the batch
+    // diverse — one topic × three difficulties gets three distinct
+    // sets of exemplars per subject.
+    const exemplarCache = new Map<string, ExemplarForPrompt[]>();
 
     for (const selection of params.selections) {
       if (selection.mode === 'replace') {
@@ -499,6 +555,12 @@ export class AiGenerationProcessor extends WorkerHost {
             legacyContext,
             cache: groundCache,
           });
+          const pastPaperExemplars = await this.fetchExemplars({
+            subjectId: selection.subjectId,
+            syllabusTopicId: batch[0].topicId,
+            difficulty: diff,
+            cache: exemplarCache,
+          });
           const built = buildQuestionGenerationPrompt({
             examType: params.examType,
             subjectName: subject.name,
@@ -507,6 +569,7 @@ export class AiGenerationProcessor extends WorkerHost {
             topicTitle,
             count: batch.length,
             syllabusContext,
+            pastPaperExemplars,
             includeExplanations: params.includeExplanations,
           });
 
