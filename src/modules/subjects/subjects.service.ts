@@ -85,13 +85,30 @@ export class SubjectsService {
     return enriched;
   }
 
-  async getById(id: string): Promise<Subject> {
+  async getById(id: string): Promise<SubjectWithCounts> {
     const s = await this.subjectsRepo.findOne({
       where: { id },
       relations: ['topics'],
     });
     if (!s) throw new NotFoundException('Subject not found');
-    return s;
+    // The detail endpoint used to return a bare entity with no counts, so the
+    // mobile subject hub read questionCount=0 and rendered the "…is on the
+    // way" empty state — hiding Past Papers + Mock — even for stocked
+    // subjects (e.g. Physics: real past-paper questions but no AI-quiz pool
+    // to mask it). Compute the ACTIVE-question count (no exam_type filter:
+    // a subject's questions all share its exam_type, and a NOVDEC student
+    // studies the WASSCE pool for a WASSCE subject) + the topic count.
+    const row = await this.questionsRepo
+      .createQueryBuilder('q')
+      .select('COUNT(*)', 'count')
+      .where('q.subject_id = :id', { id })
+      .andWhere('q.status = :status', { status: QuestionStatus.ACTIVE })
+      .getRawOne<{ count: string }>();
+    return {
+      ...s,
+      topicCount: s.topics?.length ?? 0,
+      questionCount: parseInt(row?.count ?? '0', 10),
+    } as SubjectWithCounts;
   }
 
   async getTopics(
