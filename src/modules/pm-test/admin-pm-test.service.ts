@@ -36,6 +36,7 @@ import { validateExplanation } from '../ai/validation/explanation.validator';
 import { buildExplanationPrompt } from '../ai/instruction-layer/explanation.prompt';
 import { AiAction } from '../../common/types/enums';
 import { isQuantitativeSubject } from '../../common/utils/quantitative-subject.util';
+import { looksLikeCalcQuestion } from '../../common/utils/looks-like-calc.util';
 
 const PREVIEW_TTL_SECONDS = 10 * 60;
 const MAX_TOTAL_QUESTIONS_PER_JOB = 100_000;
@@ -577,10 +578,21 @@ export class AdminPmTestService {
     }
 
     const modelId = resolveModelId(model);
-    const quantitative = isQuantitativeSubject({
-      name: row.subject?.name,
-      code: row.subject?.code,
-    });
+    // Broaden the "worked example required" gate: subject-level
+    // allowlist (Physics / Chemistry / Maths / …) as the strong
+    // default, PLUS a per-question content heuristic that catches
+    // calc-shaped items outside the allowlist (e.g. a numeric
+    // Economics question, a Biology titration). Either signal on its
+    // own is enough.
+    const quantitative =
+      isQuantitativeSubject({
+        name: row.subject?.name,
+        code: row.subject?.code,
+      }) ||
+      looksLikeCalcQuestion({
+        stem: row.body,
+        options: row.options,
+      });
     const built = buildExplanationPrompt({
       examType: row.examType,
       subjectName: row.subject?.name ?? '',

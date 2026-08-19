@@ -21,6 +21,7 @@ import { buildExplanationPrompt } from '../modules/ai/instruction-layer/explanat
 import { SyllabusRetrievalService } from '../modules/syllabus/syllabus-retrieval.service';
 import { PromptExemplarService } from '../modules/ai/prompt-exemplars.service';
 import { isQuantitativeSubject } from '../common/utils/quantitative-subject.util';
+import { looksLikeCalcQuestion } from '../common/utils/looks-like-calc.util';
 import {
   validateQuestionBatch,
   type ParsedQuestion,
@@ -630,7 +631,18 @@ export class AiGenerationProcessor extends WorkerHost {
           // Rejections don't insert anything and land in the log so
           // ops can spot patterns (e.g. one model consistently misses
           // "exactly one correct answer").
-          const validation = validateQuestionBatch(call.content);
+          //
+          // `requireWorkedExampleForBatch` fires when the subject is
+          // quantitative — an "if the question is calc-shaped, we
+          // still enforce" per-question guard runs inside the
+          // validator so a numeric item in a non-quantitative
+          // subject also gets a Worked Example.
+          const validation = validateQuestionBatch(call.content, {
+            requireWorkedExampleForBatch: isQuantitativeSubject({
+              name: subject.name,
+              code: subject.code,
+            }),
+          });
           if (!validation.ok) {
             failed += batch.length;
             this.logger.warn(
@@ -804,10 +816,20 @@ export class AiGenerationProcessor extends WorkerHost {
           }
         }
 
-        const quantitative = isQuantitativeSubject({
-          name: q.subject?.name,
-          code: q.subject?.code,
-        });
+        // Subject allowlist OR per-question content heuristic — same
+        // "either signal wins" pattern used at the pm-test regen
+        // site so a calc-shaped item outside a quantitative subject
+        // (e.g. Economics numeric, Biology titration) still gets the
+        // full Solution + Worked Example treatment.
+        const quantitative =
+          isQuantitativeSubject({
+            name: q.subject?.name,
+            code: q.subject?.code,
+          }) ||
+          looksLikeCalcQuestion({
+            stem: q.body,
+            options: q.options,
+          });
         const built = buildExplanationPrompt({
           examType: q.examType,
           subjectName:
