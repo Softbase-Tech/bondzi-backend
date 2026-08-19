@@ -40,7 +40,57 @@ export type QuestionRejectReason =
   | 'multiple_correct'
   | 'duplicate_option_text'
   | 'correct_answer_field_mismatch'
+  | 'meta_syllabus_reference'
+  | 'stem_leaks_answer'
+  | 'stem_too_short'
+  | 'trivia_meta_question'
+  | 'all_or_none_option'
   | 'model_refused';
+
+/**
+ * Phrases that mean "the model is testing the syllabus document itself
+ * rather than the subject matter". Matched case-insensitively against
+ * both stems and explanations. Present tense of "learners <verb>" is
+ * the NaCCA outcome-statement voice; if it survives into the question,
+ * the model is echoing the indicator rather than authoring a real
+ * WAEC-style question.
+ */
+const META_SYLLABUS_PATTERNS: RegExp[] = [
+  /\baccording to the syllabus\b/i,
+  /\bas stated in the syllabus\b/i,
+  /\bthe syllabus (?:explicitly )?states\b/i,
+  /\bthe curriculum states\b/i,
+  /\bas noted in the curriculum\b/i,
+  /\bin the syllabus\b/i,
+  /\bper the (?:syllabus|curriculum)\b/i,
+  /\blearners will (?:assess|identify|describe|analyse|explain|classify|demonstrate|discuss)\b/i,
+  /\blearners (?:assess|identify|describe|analyse|explain|classify|demonstrate|discuss)\b/i,
+];
+
+/**
+ * Blanket ban — even in isolation these words in a question stem are
+ * a smell: WAEC questions do not reference the document that defines
+ * them. Matched after the phrase-level rules so we can report the
+ * more specific reason first.
+ */
+const BANNED_WORDS: RegExp = /\b(syllabus|curriculum)\b/i;
+
+/**
+ * Meta-institution stems ("Which year did WAEC introduce…", "Who is
+ * the current chief examiner…") — WAEC tests the subject, not itself.
+ */
+const TRIVIA_META_PATTERNS: RegExp[] = [
+  /\b(waec|wassce|bece|novdec|nacca|ministry of education)\b/i,
+  /\bchief examiner\b/i,
+  /\bexam board\b/i,
+];
+
+/**
+ * "All of the above" / "None of the above" — banned per the system
+ * shell. WAEC style requires four distinct fact-based options.
+ */
+const ALL_OR_NONE: RegExp =
+  /^(?:\s*)(all of the above|none of the above|both a and b|both a & b|a and b only|a and c only|b and c only|a, b and c|a b and c)(?:\s*)$/i;
 
 export interface ParsedOption {
   label: string;
@@ -144,6 +194,60 @@ export function validateQuestionBatch(
         failedIndex: i,
       };
     }
+
+    // Stem length floor. 6 words is the shortest a real WAEC stem gets.
+    // Below that the model is either producing a trivial recall
+    // ("Water is?", "The capital of Ghana?") or a stem that leaked
+    // most of itself into the options.
+    const stemWordCount = body.split(/\s+/).filter((w) => w.length > 0).length;
+    if (stemWordCount < 6) {
+      return {
+        ok: false,
+        reason: 'stem_too_short',
+        detail: `item ${i} stem has ${stemWordCount} words; minimum is 6`,
+        failedIndex: i,
+      };
+    }
+
+    // Meta-syllabus phrasing. The whole class of "According to the
+    // syllabus…" questions dies here — matching against both stem
+    // and (below) the explanation. Order matters: report the
+    // phrase-level match first, only fall through to the blanket
+    // "banned word" reason when nothing more specific fired.
+    const rawExplanation =
+      typeof q.explanation === 'string' ? q.explanation : '';
+    const combined = `${body}\n${rawExplanation}`;
+    const metaPhrase = META_SYLLABUS_PATTERNS.find((r) => r.test(combined));
+    if (metaPhrase) {
+      return {
+        ok: false,
+        reason: 'meta_syllabus_reference',
+        detail: `item ${i} contains banned meta-syllabus phrase: ${metaPhrase.source}`,
+        failedIndex: i,
+      };
+    }
+    if (BANNED_WORDS.test(combined)) {
+      return {
+        ok: false,
+        reason: 'meta_syllabus_reference',
+        detail: `item ${i} references "syllabus" or "curriculum" — test the subject matter, not the document`,
+        failedIndex: i,
+      };
+    }
+
+    // Trivia questions about WAEC/NaCCA/the exam board. Same
+    // pedagogical mistake: the question tests the institution
+    // instead of the subject.
+    const triviaHit = TRIVIA_META_PATTERNS.find((r) => r.test(body));
+    if (triviaHit) {
+      return {
+        ok: false,
+        reason: 'trivia_meta_question',
+        detail: `item ${i} stem references the exam institution: ${triviaHit.source}`,
+        failedIndex: i,
+      };
+    }
+
     const rawOptions = q.options;
     if (!Array.isArray(rawOptions)) {
       return {
@@ -198,6 +302,20 @@ export function validateQuestionBatch(
         };
       }
       seenTexts.add(key);
+
+      // "All of the above" / "None of the above" / "Both A and B" —
+      // banned per system shell. Even if the model gets them factually
+      // right, they read as filler and inflate accuracy for students
+      // who pattern-match without reasoning.
+      if (ALL_OR_NONE.test(optBody)) {
+        return {
+          ok: false,
+          reason: 'all_or_none_option',
+          detail: `item ${i} option "${optBody.slice(0, 40)}" is an all-of-the-above / none-of-the-above filler`,
+          failedIndex: i,
+        };
+      }
+
       if (isCorrect) correctCount++;
       options.push({
         label: label || labelForIndex(j),
@@ -250,6 +368,22 @@ export function validateQuestionBatch(
       }
     }
 
+    // Stem-leaks-answer. If 4+ consecutive words of the correct
+    // option appear in the stem, the question tests reading not
+    // knowledge — the model wrapped the answer inside the prompt
+    // and the distractors are cosmetic. Short options (< 4 words)
+    // are exempt because a proper-noun answer like "Chad" can't
+    // trigger this without also matching against the syllabus
+    // context, which is a different failure.
+    if (stemLeaksAnswer(body, correctOption.body)) {
+      return {
+        ok: false,
+        reason: 'stem_leaks_answer',
+        detail: `item ${i} stem contains the correct answer verbatim (4+ words match)`,
+        failedIndex: i,
+      };
+    }
+
     const difficulty =
       q.difficulty === 'easy' ||
       q.difficulty === 'medium' ||
@@ -284,4 +418,39 @@ function firstString(...vals: unknown[]): string | undefined {
     if (typeof v === 'string' && v.trim().length > 0) return v;
   }
   return undefined;
+}
+
+/**
+ * Detects when a substantial chunk of the correct option text
+ * appears verbatim in the stem. "4+ consecutive words match after
+ * normalisation" is the threshold — chosen empirically to catch the
+ * common LLM failure ("The mitochondria of the cell is the … " →
+ * correct = "powerhouse of the cell") without false-positiving on
+ * short one- or two-word answers where any overlap is coincidental.
+ *
+ * Normalisation: lowercase, strip punctuation, collapse whitespace.
+ * Numeric/unit answers ("12 m/s") pass through as-is so an answer
+ * whose ONLY tokens are numbers doesn't get flagged.
+ */
+export function stemLeaksAnswer(stem: string, answerBody: string): boolean {
+  const answerTokens = tokenize(answerBody);
+  if (answerTokens.length < 4) return false;
+  const stemNorm = tokenize(stem).join(' ');
+  // Slide a 4-token window through the answer and check each
+  // window against the stem. 4 is deliberately conservative — 3 too
+  // eagerly flags "the mass is 12 kilograms" against "12 kilograms
+  // of iron" style patterns; 5 misses shorter leaks.
+  for (let i = 0; i <= answerTokens.length - 4; i++) {
+    const window = answerTokens.slice(i, i + 4).join(' ');
+    if (stemNorm.includes(window)) return true;
+  }
+  return false;
+}
+
+function tokenize(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
 }
