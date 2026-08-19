@@ -20,6 +20,15 @@ export const QUESTION_GENERATION_SCHEMA = `[
   }
 ]`;
 
+export interface ExemplarForPrompt {
+  body: string;
+  options: Array<{ label: string; body: string; isCorrect: boolean }>;
+  explanation: string | null;
+  year: number | null;
+  paper: number | null;
+  difficulty: string;
+}
+
 export interface QuestionGenerationPromptArgs {
   examType: ExamType;
   subjectName: string;
@@ -30,12 +39,19 @@ export interface QuestionGenerationPromptArgs {
   /** Human-readable syllabus topic title ("Vectors and scalars"). */
   topicTitle: string;
   /**
-   * Full syllabus context for the topic — bullet-list of sub-topics /
-   * outcomes / knowledge points. This is the ONLY thing the model is
-   * allowed to ground on (per system-shell grounding rules). Keep it
-   * short and specific: 5-15 lines is typical.
+   * Syllabus context for the topic — bullet list of learning
+   * outcomes / indicators. Defines the SCOPE of the batch, not the
+   * source material. Kept short and specific: 5–15 lines is typical.
    */
   syllabusContext: string;
+  /**
+   * Past-paper questions on the same subject (and preferably the
+   * same syllabus topic + difficulty) — few-shot style references.
+   * Empty array is allowed and just skips the exemplar block; the
+   * grounding rules in the system shell still hold, the model just
+   * has less signal about voice.
+   */
+  pastPaperExemplars: ExemplarForPrompt[];
   /** When true, the model includes a short rationale per question. */
   includeExplanations: boolean;
 }
@@ -59,8 +75,10 @@ export function buildQuestionGenerationPrompt(
       ? `Level: Form ${args.formLevel}`
       : `Level: senior review (no form level — NOVDEC candidate)`;
   const explanationLine = args.includeExplanations
-    ? '- Include a concise `explanation` per question (2-3 sentences).\n'
+    ? '- Include a concise `explanation` per question (2–4 sentences). Follow the explanation rules in the system turn.\n'
     : '- Set `explanation` to an empty string on every question.\n';
+
+  const exemplarBlock = renderExemplarBlock(args.pastPaperExemplars);
 
   const user = `Exam: ${args.examType.toUpperCase()}
 Subject: ${args.subjectName}
@@ -69,19 +87,73 @@ Topic: ${args.topicTitle}
 Difficulty: ${args.difficulty}
 Count: ${args.count}
 
-Syllabus context (ground on this ONLY — no outside knowledge):
+Syllabus scope for this batch (topic areas to cover — this is
+not the source material to quote):
 ${args.syllabusContext}
-
+${exemplarBlock}
 Task:
-- Produce EXACTLY ${args.count} multiple-choice questions on the topic above.
+- Produce EXACTLY ${args.count} new multiple-choice questions on
+  the topic scope above.
 - Every question is a 4-option MCQ with labels A, B, C, D.
 - Exactly one option per question is correct.
+- Distribute the correct answers roughly evenly across A / B / C / D
+  across the batch (do not put the correct answer at the same
+  position every time).
+- Vary the stem shape across the batch: mix short factual recall
+  with applied / calculation / comparison stems so the batch
+  doesn't read as ${args.count} of the same question type.
 ${explanationLine}
-Return a JSON array matching this exact schema. No prose outside the JSON:
+Return a JSON array matching this exact schema. No prose outside
+the JSON:
 ${QUESTION_GENERATION_SCHEMA}`;
 
   return {
     system: SYSTEM_SHELL_QUESTION_GENERATION,
     user,
   };
+}
+
+/**
+ * Render the past-paper exemplar block. Empty array collapses to an
+ * empty string so we don't inject noise when there's nothing on the
+ * shelf.
+ *
+ * The framing at the top of the block is deliberately blunt: the
+ * exemplars are for STYLE only — the model must not copy facts, and
+ * must not narrow onto whatever sub-topic the exemplars happen to
+ * bunch on. This is where the "3 examples all happen to be about
+ * quadratic equations even though the topic is 'polynomials'" trap
+ * gets called out inline.
+ */
+function renderExemplarBlock(exemplars: ExemplarForPrompt[]): string {
+  if (!exemplars.length) return '';
+  const rendered = exemplars
+    .map((e, i) => renderExemplar(e, i + 1))
+    .join('\n\n');
+  return `\nPast-paper reference questions on this subject/topic
+(these are STYLE MODELS — mirror the register, stem length,
+distractor plausibility, and explanation voice. Do NOT copy any
+facts, dates, names, or figures verbatim. Do NOT narrow the batch
+to only the sub-topics represented here — cover the full syllabus
+scope above):
+${rendered}
+`;
+}
+
+function renderExemplar(e: ExemplarForPrompt, n: number): string {
+  const provenance = [
+    e.year ? String(e.year) : null,
+    e.paper ? `Paper ${e.paper}` : null,
+    `[${e.difficulty}]`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const opts = e.options
+    .map((o) => `${o.label}. ${o.body}${o.isCorrect ? '  ← correct' : ''}`)
+    .join('\n');
+  const explanation = (e.explanation ?? '').trim();
+  const explanationBlock = explanation ? `\nExplanation: ${explanation}` : '';
+  return `Example ${n} — ${provenance}
+Q: ${e.body}
+${opts}${explanationBlock}`;
 }
