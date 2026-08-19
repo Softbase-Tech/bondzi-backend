@@ -770,6 +770,81 @@ export class QuestionsService {
     return question;
   }
 
+  /**
+   * Mark every unverified question matching the given filter as
+   * verified in a single UPDATE. Same filter shape as list() so the
+   * admin's "Verify all unverified matching the current view" button
+   * on the Question bank page verifies exactly the rows they were
+   * looking at — no accidental cross-subject or cross-exam mass
+   * verifications.
+   *
+   * Returns the row count actually flipped so the caller can toast
+   * "N verified" rather than lying about how many were affected.
+   *
+   * Cost-safety: the query is a single UPDATE with the same
+   * predicates the list uses; there's no batch loop. The
+   * `is_verified = false` guard means re-running is a no-op — no
+   * risk of double-writing the same row on tab-mash.
+   */
+  async verifyAllMatching(filter: {
+    examType?: string;
+    subjectId?: string;
+    topicId?: string;
+    year?: number;
+    difficulty?: string;
+    source?: string;
+    search?: string;
+  }): Promise<{ verified: number }> {
+    const qb = this.questionsRepo
+      .createQueryBuilder()
+      .update(Question)
+      .set({ isVerified: true })
+      .where('is_verified = false');
+
+    if (filter.examType)
+      qb.andWhere('exam_type = :et', { et: filter.examType });
+    if (filter.subjectId)
+      qb.andWhere('subject_id = :sid', { sid: filter.subjectId });
+    if (filter.topicId) qb.andWhere('topic_id = :tid', { tid: filter.topicId });
+    if (filter.year !== undefined)
+      qb.andWhere('year = :yr', { yr: filter.year });
+    if (filter.difficulty)
+      qb.andWhere('difficulty = :d', { d: filter.difficulty });
+    if (filter.source) qb.andWhere('source = :src', { src: filter.source });
+    if (filter.search && filter.search.trim()) {
+      qb.andWhere(
+        `to_tsvector('english', coalesce(body, '')) @@ plainto_tsquery('english', :search)`,
+        { search: filter.search.trim() },
+      );
+    }
+
+    const result = await qb.execute();
+    return { verified: result.affected ?? 0 };
+  }
+
+  /**
+   * Mark a specific set of question ids as verified. Distinct from
+   * `verifyAllMatching` — this one respects the visible-page selection
+   * the admin ticked in the table. Capped at 500 ids per call so the
+   * UI can't accidentally submit a bookmarklet-sized payload.
+   */
+  async verifyBulk(ids: string[]): Promise<{ verified: number }> {
+    if (!ids.length) return { verified: 0 };
+    if (ids.length > 500) {
+      throw new BadRequestException(
+        `Bulk verify caps at 500 ids per call; got ${ids.length}.`,
+      );
+    }
+    const result = await this.questionsRepo
+      .createQueryBuilder()
+      .update(Question)
+      .set({ isVerified: true })
+      .whereInIds(ids)
+      .andWhere('is_verified = false')
+      .execute();
+    return { verified: result.affected ?? 0 };
+  }
+
   private validateOptionsExactlyOneCorrect(
     options: Array<{ isCorrect: boolean }>,
   ): void {
