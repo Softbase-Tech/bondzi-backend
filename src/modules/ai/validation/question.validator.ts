@@ -1,3 +1,5 @@
+import { looksLikeCalcQuestion } from '../../../common/utils/looks-like-calc.util';
+
 /**
  * Rule-based validator for AI-generated multiple-choice question
  * batches. Runs BEFORE any insert into `pm_test_questions` or
@@ -45,6 +47,7 @@ export type QuestionRejectReason =
   | 'stem_too_short'
   | 'trivia_meta_question'
   | 'all_or_none_option'
+  | 'missing_worked_example_calc'
   | 'model_refused';
 
 /**
@@ -127,6 +130,20 @@ const EXPECTED_OPTION_COUNT = 4;
  */
 export function validateQuestionBatch(
   rawText: string,
+  opts: {
+    /**
+     * When true, every question in the batch is treated as
+     * calculation-shaped — its inline explanation MUST include
+     * `## Worked Example`. Callers flip this when the SUBJECT is
+     * quantitative (Physics / Chemistry / Maths / …).
+     *
+     * Regardless of this flag, an INDIVIDUAL question inside a
+     * non-quantitative batch is checked per-question via
+     * `looksLikeCalcQuestion` — so a numeric Economics item still
+     * gets the same worked-example enforcement as a Maths item.
+     */
+    requireWorkedExampleForBatch?: boolean;
+  } = {},
 ): QuestionValidationResult {
   const trimmed = rawText.trim();
   if (!trimmed) {
@@ -391,6 +408,31 @@ export function validateQuestionBatch(
         ? q.difficulty
         : 'medium';
     const explanation = typeof q.explanation === 'string' ? q.explanation : '';
+
+    // Per-question worked-example enforcement. Two paths trigger it:
+    //   1) the whole batch was flagged quantitative by the caller
+    //      (subject allowlist), or
+    //   2) this individual question looks calc-shaped by content —
+    //      calc keywords, LaTeX in stem, numeric options, unit hints.
+    // The check only runs when there's an explanation to inspect —
+    // if the caller opted out of explanations (`includeExplanations:
+    // false`), the field is empty by design and nothing to enforce.
+    if (explanation.trim()) {
+      const isCalc =
+        opts.requireWorkedExampleForBatch ||
+        looksLikeCalcQuestion({ stem: body, options });
+      if (
+        isCalc &&
+        !/^\s*#{1,6}\s+(?:Worked\s+Example|Example)\b/im.test(explanation)
+      ) {
+        return {
+          ok: false,
+          reason: 'missing_worked_example_calc',
+          detail: `item ${i} looks calculation-shaped but its explanation has no \`## Worked Example\` section`,
+          failedIndex: i,
+        };
+      }
+    }
 
     out.push({ body, difficulty, options, explanation });
   }
