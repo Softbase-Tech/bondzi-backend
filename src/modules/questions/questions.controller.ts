@@ -40,6 +40,7 @@ import {
   UpdateQuestionDto,
 } from './dto/create-question.dto';
 import { FlagQuestionDto } from './dto/flag-question.dto';
+import { VerifyAllMatchingDto, VerifyBulkDto } from './dto/verify-bulk.dto';
 
 @ApiTags('questions')
 @ApiBearerAuth()
@@ -231,6 +232,30 @@ export class QuestionsController {
     @Body() dto: FlagQuestionDto,
   ) {
     return this.questions.flag(user.id, id, dto);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPERADMIN)
+  @Post('verify/bulk')
+  @ApiExcludeEndpoint()
+  verifyBulk(@Body() dto: VerifyBulkDto) {
+    return this.questions.verifyBulk(dto.ids);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPERADMIN)
+  @Post('verify/all-matching')
+  @ApiExcludeEndpoint()
+  verifyAllMatching(@Body() dto: VerifyAllMatchingDto) {
+    return this.questions.verifyAllMatching({
+      examType: dto.examType,
+      subjectId: dto.subjectId,
+      topicId: dto.topicId,
+      year: dto.year,
+      difficulty: dto.difficulty,
+      source: dto.source,
+      search: dto.search,
+    });
   }
 
   @UseGuards(RolesGuard)
