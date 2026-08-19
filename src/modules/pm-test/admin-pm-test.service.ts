@@ -32,6 +32,9 @@ import {
   resolveModelId,
 } from '../admin-ai-gen/estimates.util';
 import { validateQuestionBatch } from '../ai/validation/question.validator';
+import { validateExplanation } from '../ai/validation/explanation.validator';
+import { buildExplanationPrompt } from '../ai/instruction-layer/explanation.prompt';
+import { AiAction } from '../../common/types/enums';
 
 const PREVIEW_TTL_SECONDS = 10 * 60;
 const MAX_TOTAL_QUESTIONS_PER_JOB = 100_000;
@@ -531,6 +534,77 @@ export class AdminPmTestService {
     }
 
     return { inserted: ids.length, rejected, ids };
+  }
+
+  /**
+   * Regenerate the AI explanation for a single pm_test question and
+   * overwrite the inline `explanation` column. Runs synchronously
+   * (one Bedrock round-trip, ~$0.001 on Haiku / ~$0.01 on Sonnet) so
+   * the admin sees the new text on the same request — no "check back
+   * in 30s" background job.
+   *
+   * The prompt reuses the same builder as bulk explanation
+   * generation, so voice and section format stay identical to what
+   * the AI-generation pipeline produces at batch time. The validator
+   * gate is the same one used by the async path — nothing that
+   * would fail wire-level validation can land on the row.
+   *
+   * If the model returns something the validator rejects (refusal,
+   * schema drift, meta-syllabus phrasing, empty sections), we throw
+   * and preserve the existing explanation. Admin sees a toast and
+   * can retry.
+   */
+  async regenerateExplanation(
+    id: string,
+    model: 'claude-haiku' | 'claude-sonnet',
+  ): Promise<PmTestQuestion> {
+    const row = await this.qRepo.findOne({
+      where: { id },
+      relations: ['options', 'subject'],
+    });
+    if (!row) throw new NotFoundException('PM Test question not found');
+    if (!row.options || row.options.length !== 4) {
+      throw new BadRequestException(
+        'Question is missing its 4-option set — fix that before regenerating the explanation.',
+      );
+    }
+    const correct = row.options.find((o) => o.isCorrect);
+    if (!correct) {
+      throw new BadRequestException(
+        'Question has no correct option set — fix that before regenerating the explanation.',
+      );
+    }
+
+    const modelId = resolveModelId(model);
+    const built = buildExplanationPrompt({
+      examType: row.examType,
+      subjectName: row.subject?.name ?? '',
+      formLevel: row.formLevel,
+      questionBody: row.body,
+      options: row.options.map((o) => ({ label: o.label, body: o.body })),
+      correctLabel: correct.label,
+      syllabusContext: '',
+    });
+
+    const call = await this.ai.callBedrock(built.user, modelId, {
+      system: built.system,
+      action: AiAction.EXPLANATION,
+      maxTokens: 1200,
+    });
+
+    const val = validateExplanation(call.content, row.body);
+    if (!val.ok) {
+      this.logger.warn(
+        `[regen-explanation] pm-test ${id} rejected: ${val.reason} — ${val.detail}`,
+      );
+      throw new BadRequestException(
+        `Model output failed validation: ${val.reason}. Try Sonnet if you were on Haiku, or edit the explanation manually.`,
+      );
+    }
+
+    row.explanation = val.content.trim();
+    await this.qRepo.save(row);
+    return this.getOne(id);
   }
 
   /**
