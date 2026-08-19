@@ -229,6 +229,12 @@ export class PmTestImportItemDto {
   options!: PmTestOptionInputDto[];
 }
 
+export class PmTestRegenerateExplanationDto {
+  @ApiProperty({ enum: ['claude-haiku', 'claude-sonnet'] })
+  @IsEnum(['claude-haiku', 'claude-sonnet'] as const)
+  model!: 'claude-haiku' | 'claude-sonnet';
+}
+
 export class PmTestBulkImportDto {
   @ApiProperty({ isArray: true, type: PmTestImportItemDto })
   @IsArray()

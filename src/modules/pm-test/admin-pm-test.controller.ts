@@ -32,6 +32,7 @@ import {
   PmTestBulkImportDto,
   PmTestGenerateDto,
   PmTestPreviewDto,
+  PmTestRegenerateExplanationDto,
   PmTestReviewBulkDto,
   PmTestUpdateDto,
 } from './dto/pm-test-generate.dto';
@@ -222,6 +223,19 @@ export class AdminPmTestController {
   })
   bulkImport(@Body() dto: PmTestBulkImportDto) {
     return this.service.bulkImport(dto);
+  }
+
+  @Post(':id/regenerate-explanation')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Synchronously regenerate the inline explanation on a single Level Test question. Body: { model: "claude-haiku" | "claude-sonnet" }.',
+  })
+  regenerateExplanation(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: PmTestRegenerateExplanationDto,
+  ) {
+    return this.service.regenerateExplanation(id, dto.model);
   }
 
   // ---- catch-all `:id` routes MUST be last so literal paths like
