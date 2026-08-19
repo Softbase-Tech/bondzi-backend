@@ -12,6 +12,7 @@ describe('buildQuestionGenerationPrompt', () => {
     syllabusContext:
       '- learners assess indirect and direct rule systems in West Africa',
     includeExplanations: true,
+    isQuantitativeSubject: false,
   };
 
   it('includes the topic scope and count on every batch', () => {

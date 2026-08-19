@@ -54,6 +54,14 @@ export interface QuestionGenerationPromptArgs {
   pastPaperExemplars: ExemplarForPrompt[];
   /** When true, the model includes a short rationale per question. */
   includeExplanations: boolean;
+  /**
+   * Quantitative subject flag — Physics, Chemistry, Mathematics,
+   * Additional Mathematics, Statistics, Accounting, Economics, etc.
+   * When true, every explanation MUST include both `## Solution` and
+   * `## Worked Example` sections. Otherwise the worked example
+   * is optional per the system shell's explanation rules.
+   */
+  isQuantitativeSubject: boolean;
 }
 
 export interface BuiltPrompt {
@@ -75,7 +83,9 @@ export function buildQuestionGenerationPrompt(
       ? `Level: Form ${args.formLevel}`
       : `Level: senior review (no form level — NOVDEC candidate)`;
   const explanationLine = args.includeExplanations
-    ? '- Include a concise `explanation` per question (2–4 sentences). Follow the explanation rules in the system turn.\n'
+    ? args.isQuantitativeSubject
+      ? '- Include an `explanation` per question following the explanation rules in the system turn. This is a QUANTITATIVE subject — every explanation MUST contain BOTH a `## Solution` section (step-by-step working with units) AND a `## Worked Example` section (a similar-but-different problem, worked step-by-step).\n'
+      : '- Include an `explanation` per question following the explanation rules in the system turn.\n'
     : '- Set `explanation` to an empty string on every question.\n';
 
   const exemplarBlock = renderExemplarBlock(args.pastPaperExemplars);
@@ -86,6 +96,7 @@ ${levelLine}
 Topic: ${args.topicTitle}
 Difficulty: ${args.difficulty}
 Count: ${args.count}
+Quantitative subject: ${args.isQuantitativeSubject ? 'true' : 'false'}
 
 Syllabus scope for this batch (topic areas to cover — this is
 not the source material to quote):
