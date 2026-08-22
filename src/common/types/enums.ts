@@ -498,16 +498,19 @@ export enum AccountDeletionStatus {
 }
 
 /**
- * Client platform an auth request originated from. `web` = the browser app
- * (app.bondzi.online); `ios`/`android` = the mobile app. Sent via the
+ * Client platform an auth request originated from. `web` = the student
+ * browser app (app.bondzi.online); `ios`/`android` = the mobile app;
+ * `admin-web` = the admin console (admin.bondzi.online). Sent via the
  * `X-Platform` request header. Used to stamp where a user signed up
- * (`users.signup_platform`) and to log each login (`auth_login_events`).
+ * (`users.signup_platform`) and to log each login (`auth_login_events`)
+ * so we can distinguish student and operator activity in analytics.
  * "web vs app" is derivable: app = ios | android.
  */
 export enum ClientPlatform {
   WEB = 'web',
   IOS = 'ios',
   ANDROID = 'android',
+  ADMIN_WEB = 'admin-web',
 }
 
 /** Parse an untrusted `X-Platform` header value; null if absent/unknown. */
