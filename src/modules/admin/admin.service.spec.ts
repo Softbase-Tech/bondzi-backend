@@ -15,6 +15,7 @@ import { XpRedemption } from '../xp-economy/entities/xp-redemption.entity';
 import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
 import { Winner } from '../leaderboard/entities/winner.entity';
+import { AuthLoginEvent } from '../auth/entities/auth-login-event.entity';
 
 /**
  * AdminService is mostly admin-only read paths + a handful of write paths
@@ -115,6 +116,21 @@ describe('AdminService', () => {
         { provide: getRepositoryToken(ReferralEvent), useValue: referralsRepo },
         { provide: getRepositoryToken(PmTestQuestion), useValue: pmTestRepo },
         { provide: getRepositoryToken(Winner), useValue: winnersRepo },
+        {
+          provide: getRepositoryToken(AuthLoginEvent),
+          useValue: {
+            find: jest.fn().mockResolvedValue([]),
+            createQueryBuilder: jest.fn(() => ({
+              select: jest.fn().mockReturnThis(),
+              addSelect: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
+              groupBy: jest.fn().mockReturnThis(),
+              addGroupBy: jest.fn().mockReturnThis(),
+              orderBy: jest.fn().mockReturnThis(),
+              getRawMany: jest.fn().mockResolvedValue([]),
+            })),
+          },
+        },
       ],
     }).compile();
     service = moduleRef.get(AdminService);

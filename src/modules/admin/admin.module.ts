@@ -15,6 +15,7 @@ import { XpRedemption } from '../xp-economy/entities/xp-redemption.entity';
 import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import { Winner } from '../leaderboard/entities/winner.entity';
 import { Notification } from '../notifications/entities/notification.entity';
+import { AuthLoginEvent } from '../auth/entities/auth-login-event.entity';
 import { AdminService } from './admin.service';
 import { AdminJobsService } from './admin-jobs.service';
 import { AdminNotificationsService } from './admin-notifications.service';
@@ -41,6 +42,7 @@ import { QUEUE_AI_GENERATION, QUEUE_NOTIFICATIONS } from '../ai/ai.queues';
       ReferralEvent,
       Winner,
       Notification,
+      AuthLoginEvent,
     ]),
     BullModule.registerQueue(
       { name: QUEUE_AI_GENERATION },

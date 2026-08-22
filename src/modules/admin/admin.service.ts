@@ -26,6 +26,7 @@ import { XpRedemption } from '../xp-economy/entities/xp-redemption.entity';
 import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
 import { Winner } from '../leaderboard/entities/winner.entity';
+import { AuthLoginEvent } from '../auth/entities/auth-login-event.entity';
 import {
   PaginationDto,
   PaginatedResult,
@@ -59,6 +60,8 @@ export class AdminService {
     @InjectRepository(PmTestQuestion)
     private readonly pmTestRepo: Repository<PmTestQuestion>,
     @InjectRepository(Winner) private readonly winnersRepo: Repository<Winner>,
+    @InjectRepository(AuthLoginEvent)
+    private readonly loginEventsRepo: Repository<AuthLoginEvent>,
   ) {}
 
   async dashboard() {
@@ -347,7 +350,7 @@ export class AdminService {
   async getUser(id: string) {
     const user = await this.usersRepo.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
-    const [subscriptions, examsCount, aiUsage] = await Promise.all([
+    const [subscriptions, examsCount, aiUsage, loginEvents] = await Promise.all([
       this.subsRepo.find({
         where: { userId: id },
         relations: ['plan'],
@@ -362,8 +365,114 @@ export class AdminService {
         .addSelect('COALESCE(SUM(a.cost_usd),0)', 'cost')
         .where('a.user_id = :uid', { uid: id })
         .getRawOne<{ calls: string; cost: string }>(),
+      // Last 20 sign-ins across all platforms. `auth_login_events` is
+      // append-only + only records real sign-ins (register / login /
+      // google / otp), so this is a durable history — refresh-token
+      // rotations don't pollute it. Enough rows for a support agent to
+      // spot pattern shifts ("suddenly all logins are Android") without
+      // paging.
+      this.loginEventsRepo.find({
+        where: { userId: id },
+        order: { createdAt: 'DESC' },
+        take: 20,
+      }),
     ]);
-    return { user, subscriptions, examsCount, aiUsage };
+    return { user, subscriptions, examsCount, aiUsage, loginEvents };
+  }
+
+  /**
+   * Auth analytics — signups and login events sliced by platform.
+   *
+   *   • `signups.byPlatform` — all-time distribution across the entire
+   *     users table. Answers "which surface has produced the most
+   *     accounts to date?"
+   *   • `signups.last30d` — daily counts per platform for the last 30
+   *     days, so growth-side stakeholders can see cadence, not just
+   *     the total.
+   *   • `logins.byPlatform` — the last 30 days of `auth_login_events`
+   *     grouped by platform × event type. Distinguishes register
+   *     bursts from password login vs Google vs OTP.
+   *
+   * All counts include a `null` bucket for rows that arrived without
+   * an X-Platform header (legacy clients, non-instrumented scripts).
+   */
+  async authAnalytics() {
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 86_400_000);
+
+    type Row = { platform: string | null; count: string };
+    type EventRow = {
+      platform: string | null;
+      event_type: string;
+      count: string;
+    };
+    type DailyRow = { day: string; platform: string | null; count: string };
+
+    const [signupsAll, signupsLast30, loginsByPlatform, loginsDaily] =
+      await Promise.all([
+        this.usersRepo
+          .createQueryBuilder('u')
+          .select('u.signup_platform', 'platform')
+          .addSelect('COUNT(*)', 'count')
+          .groupBy('u.signup_platform')
+          .getRawMany<Row>(),
+        this.usersRepo
+          .createQueryBuilder('u')
+          .select('u.signup_platform', 'platform')
+          .addSelect('COUNT(*)', 'count')
+          .where('u.created_at >= :start', { start: thirtyDaysAgo })
+          .groupBy('u.signup_platform')
+          .getRawMany<Row>(),
+        this.loginEventsRepo
+          .createQueryBuilder('e')
+          .select('e.platform', 'platform')
+          .addSelect('e.event_type', 'event_type')
+          .addSelect('COUNT(*)', 'count')
+          .where('e.created_at >= :start', { start: thirtyDaysAgo })
+          .groupBy('e.platform')
+          .addGroupBy('e.event_type')
+          .getRawMany<EventRow>(),
+        this.loginEventsRepo
+          .createQueryBuilder('e')
+          .select(
+            "to_char(date_trunc('day', e.created_at), 'YYYY-MM-DD')",
+            'day',
+          )
+          .addSelect('e.platform', 'platform')
+          .addSelect('COUNT(*)', 'count')
+          .where('e.created_at >= :start', { start: thirtyDaysAgo })
+          .groupBy('day')
+          .addGroupBy('e.platform')
+          .orderBy('day', 'ASC')
+          .getRawMany<DailyRow>(),
+      ]);
+
+    return {
+      windowStart: thirtyDaysAgo.toISOString(),
+      windowEnd: now.toISOString(),
+      signups: {
+        byPlatformAllTime: signupsAll.map((r) => ({
+          platform: r.platform,
+          count: parseInt(r.count, 10),
+        })),
+        byPlatformLast30d: signupsLast30.map((r) => ({
+          platform: r.platform,
+          count: parseInt(r.count, 10),
+        })),
+      },
+      logins: {
+        byPlatformLast30d: loginsByPlatform.map((r) => ({
+          platform: r.platform,
+          eventType: r.event_type,
+          count: parseInt(r.count, 10),
+        })),
+        dailyLast30d: loginsDaily.map((r) => ({
+          day: r.day,
+          platform: r.platform,
+          count: parseInt(r.count, 10),
+        })),
+      },
+    };
   }
 
   /**
