@@ -122,6 +122,20 @@ export class AdminController {
   }
 
   /**
+   * Auth analytics — signups + login events broken down by platform.
+   *
+   * Data sources:
+   *   • `users.signup_platform` (all-time + last-30d) — where each
+   *     account was born.
+   *   • `auth_login_events` (last 30d) — one row per real sign-in,
+   *     sliced by platform × event type + a daily series.
+   */
+  @Get('analytics/auth')
+  authAnalytics() {
+    return this.admin.authAnalytics();
+  }
+
+  /**
    * Paginated payment_attempts feed — every checkout we initiated,
    * regardless of outcome. Replaces the legacy /admin/payments view
    * over raw payment_events, which conflated webhook deliveries with
