@@ -11,8 +11,11 @@ import {
   MinLength,
 } from 'class-validator';
 import { ExamType } from '../../../common/types/enums';
+import { SignupAttributionDto } from './signup-attribution.dto';
 
-export class GoogleSignInDto {
+// See RegisterDto — Google sign-in also creates users, so it carries the
+// same attribution fields.
+export class GoogleSignInDto extends SignupAttributionDto {
   @ApiProperty({ description: 'Google ID token issued by the mobile SDK' })
   @IsJWT()
   idToken!: string;

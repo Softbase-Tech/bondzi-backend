@@ -21,8 +21,12 @@ import {
   USERNAME_MIN_LENGTH,
   USERNAME_REGEX,
 } from '../../users/username.rules';
+import { SignupAttributionDto } from './signup-attribution.dto';
 
-export class RegisterDto {
+// Extends SignupAttributionDto so the six optional utm* fields are
+// whitelisted here too — `forbidNonWhitelisted: true` would otherwise
+// 400 the entire registration the moment a client starts sending them.
+export class RegisterDto extends SignupAttributionDto {
   @ApiProperty()
   @IsString()
   @MinLength(2)

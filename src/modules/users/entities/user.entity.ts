@@ -174,6 +174,29 @@ export class User {
   @Column({ name: 'signup_platform', type: 'text', nullable: true })
   signupPlatform: string | null;
 
+  // First-touch campaign attribution (migration 2300). Written once on
+  // INSERT and never updated — a student who comes back later from a
+  // different campaign keeps the campaign that originally acquired them.
+  // Deliberately absent from `toSafeUser`: this is internal reporting,
+  // not something any client needs back.
+  @Column({ name: 'signup_source', type: 'text', nullable: true })
+  signupSource: string | null;
+
+  @Column({ name: 'signup_medium', type: 'text', nullable: true })
+  signupMedium: string | null;
+
+  @Column({ name: 'signup_campaign', type: 'text', nullable: true })
+  signupCampaign: string | null;
+
+  @Column({ name: 'signup_content', type: 'text', nullable: true })
+  signupContent: string | null;
+
+  @Column({ name: 'signup_term', type: 'text', nullable: true })
+  signupTerm: string | null;
+
+  @Column({ name: 'signup_referrer', type: 'text', nullable: true })
+  signupReferrer: string | null;
+
   @Column({ name: 'last_active_at', type: 'timestamptz', nullable: true })
   lastActiveAt: Date | null;
 
