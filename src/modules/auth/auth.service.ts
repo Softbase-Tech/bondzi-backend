@@ -1071,21 +1071,22 @@ export class AuthService {
     user.schoolLevel = schoolLevelFor(examType);
     user.formLevel = resolvedFormLevel;
     await this.usersRepo.save(user);
-    // Subject selections are scoped to the OLD exam type — a WASSCE
-    // student switching to BECE was studying Core Maths SHS, not Core
-    // Maths JHS, and those rows would now point at subjects with the
-    // wrong examType. Wipe them so the user lands on the new level
-    // with a clean "no preference, show everything" default; they can
-    // re-curate via Settings → Subjects.
+    // Subject selections are NOT touched here.
+    //
+    // This used to delete every `user_subjects` row for the user on any
+    // exam-type change. The reasoning was sound — a WASSCE shortlist is
+    // meaningless on BECE — but the remedy destroyed data: a student
+    // who flipped to BECE to look around and came straight back found
+    // their WASSCE picks gone for good, and the confirmation dialog
+    // (which counted the NEW level's selection) cheerfully announced it
+    // was clearing "0 subjects" while wiping all of them.
+    //
+    // Selections are now scoped by level on read and write instead
+    // (`UsersService.selectedSubjectIdsForExam`), so each level keeps
+    // its own shortlist and switching simply shows the other one.
+    // Switching back restores it.
     const examTypeChanged = before.examType !== examType;
     if (examTypeChanged) {
-      await this.dataSource
-        .createQueryBuilder()
-        .delete()
-        .from('user_subjects')
-        .where('user_id = :uid', { uid: userId })
-        .execute();
-
       // Anti-leaderboard-farming defense: a user could otherwise grind
       // to the top of BECE on Monday, switch to WASSCE on Tuesday and
       // accumulate a SECOND bucket, then flip back and continue the

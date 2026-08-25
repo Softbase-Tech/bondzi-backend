@@ -7,7 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import { hashPassword, verifyPassword } from '../../common/utils/password.util';
-import { ExamType } from '../../common/types/enums';
+import { ExamType, questionPoolFor } from '../../common/types/enums';
 import { User } from './entities/user.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { UserSubjectProgress } from '../progress/entities/user-subject-progress.entity';
@@ -29,6 +29,10 @@ import {
   accraDaysBetween,
   accraMondayIso,
 } from '../../common/utils/timezone.util';
+import {
+  STREAK_WINDOW_DAYS,
+  currentStreakFromActiveDays,
+} from '../gamification/streak.util';
 import { xpIntoLevel, xpToNextLevel } from '../gamification/level.util';
 
 @Injectable()
@@ -59,11 +63,48 @@ export class UsersService {
    * the user's selection to the public catalogue.
    */
   async getSelectedSubjectIds(userId: string): Promise<string[]> {
-    const rows = await this.userSubjectsRepo.find({
-      where: { userId },
-      select: ['subjectId'],
+    const user = await this.usersRepo.findOne({
+      where: { id: userId },
+      select: ['id', 'examType'],
     });
-    return rows.map((r) => r.subjectId);
+    if (!user) throw new NotFoundException('User not found');
+    return this.selectedSubjectIdsForExam(userId, user.examType);
+  }
+
+  /**
+   * Selected subject IDs scoped to ONE exam level.
+   *
+   * Selections are stored per (user, subject), and a subject belongs to
+   * exactly one exam type — so the level scoping is a join, not a
+   * column. Reading through this filter is what lets a student keep a
+   * WASSCE shortlist and a BECE shortlist at the same time and switch
+   * between them without losing either.
+   *
+   * Previously this returned every row regardless of level, which had
+   * two consequences: switching exam type surfaced the *other* level's
+   * subject IDs (they intersect to nothing against the new catalogue,
+   * so the UI rendered an empty grid rather than its "pick subjects"
+   * empty state), and it forced `updateExamType` to delete the rows
+   * outright to keep the app coherent — destroying the old level's
+   * picks permanently.
+   */
+  private async selectedSubjectIdsForExam(
+    userId: string,
+    examType: ExamType,
+  ): Promise<string[]> {
+    // NOVDEC sits the WASSCE papers and shares its catalogue, so the
+    // two are one bucket for selection purposes.
+    const pool = questionPoolFor(examType);
+    const rows: Array<{ subject_id: string }> =
+      await this.userSubjectsRepo.manager.query(
+        `select us.subject_id
+           from user_subjects us
+           join subjects s on s.id = us.subject_id
+          where us.user_id = $1
+            and (case when s.exam_type = 'novdec' then 'wassce' else s.exam_type end) = $2`,
+        [userId, pool],
+      );
+    return rows.map((r) => r.subject_id);
   }
 
   /**
@@ -125,12 +166,23 @@ export class UsersService {
     }
 
     await this.dataSource.transaction(async (em) => {
-      const repo = em.getRepository(UserSubject);
-      await repo.delete({ userId });
+      // Replace only THIS level's selection. A blanket
+      // `delete({ userId })` would silently discard the student's
+      // shortlist on every other exam level every time they saved on
+      // one — invisible until they switched back and found it empty.
+      const pool = questionPoolFor(user.examType);
+      await em.query(
+        `delete from user_subjects us
+          using subjects s
+          where s.id = us.subject_id
+            and us.user_id = $1
+            and (case when s.exam_type = 'novdec' then 'wassce' else s.exam_type end) = $2`,
+        [userId, pool],
+      );
       if (uniqueIds.length > 0) {
-        await repo.insert(
-          uniqueIds.map((subjectId) => ({ userId, subjectId })),
-        );
+        await em
+          .getRepository(UserSubject)
+          .insert(uniqueIds.map((subjectId) => ({ userId, subjectId })));
       }
     });
     return { subjectIds: uniqueIds };
@@ -463,18 +515,36 @@ export class UsersService {
         todayMs: string;
       }>();
 
-    // Per-day mask for this Accra week. AT TIME ZONE 'Africa/Accra' on a
-    // timestamptz returns a timestamp without tz in that zone; ::date
-    // extracts the wall-clock date. Grouping is over distinct days so
-    // the row count is at most 7 regardless of activity volume.
+    // ONE query feeds BOTH the week dots and the streak number.
+    //
+    // This used to be two sources: the dots came from `exam_answers`
+    // (live) while the streak came from `users.streak_days` (a counter
+    // incremented on the write path). Any single missed increment — a
+    // swallowed error, a 409 on a duplicate answer, a transient DB
+    // blip — desynchronised them permanently, because the next day's
+    // increment builds on the wrong base and nothing ever reconciles.
+    // The visible symptom was a card reading "3 days in a row" above a
+    // row of 5 filled dots.
+    //
+    // Deriving both from the same rows makes that class of bug
+    // unrepresentable: the number IS the count of the trailing run in
+    // the same set the dots are drawn from.
+    //
+    // AT TIME ZONE 'Africa/Accra' on a timestamptz yields the local
+    // wall clock; ::date extracts the day. DISTINCT caps the row count
+    // at one per active day, so the window below is at most ~366 rows
+    // for a user who has studied every single day for a year.
+    const historyStart = new Date(todayStart);
+    historyStart.setUTCDate(historyStart.getUTCDate() - STREAK_WINDOW_DAYS);
     const dayRows: Array<{ day: string }> =
       await this.answersRepo.manager.query(
         `select distinct (a.answered_at at time zone 'Africa/Accra')::date::text as day
            from exam_answers a
            join exams e on e.id = a.exam_id
           where e.user_id = $1
-            and a.answered_at >= $2`,
-        [userId, mondayStart.toISOString()],
+            and a.answered_at >= $2
+          order by day desc`,
+        [userId, historyStart.toISOString()],
       );
     const activeDayIsoSet = new Set(dayRows.map((r) => r.day));
     const activeDaysLast7: boolean[] = [];
@@ -484,6 +554,15 @@ export class UsersService {
       activeDaysLast7.push(activeDayIsoSet.has(d.toISOString().slice(0, 10)));
     }
 
+    // Length of the unbroken run of active days ending today (or
+    // yesterday — a streak stays alive until the day is actually
+    // missed). Same set as the dots above, so the two can never
+    // disagree.
+    const derivedStreak = currentStreakFromActiveDays(
+      activeDayIsoSet,
+      todayIso,
+    );
+
     // Mon=0..Sun=6 — `accraDaysBetween(today, monday)` is the index.
     const todayIndex = accraDaysBetween(todayIso, mondayIso);
 
@@ -492,12 +571,22 @@ export class UsersService {
     //   • daysSinceStudy === 1 → at risk (yesterday's the last entry).
     //   • daysSinceStudy >= 2 → broken; the persisted count is stale
     //     and will reset to 1 on the next study day.
-    const lastStudy = user.lastStudyDate;
+    // `lastStudyDate` is derived from the same day set rather than read
+    // off the user row, so a stale persisted column can't make a live
+    // streak look broken.
+    const lastActiveIso = dayRows.length > 0 ? dayRows[0].day : null;
     const daysSinceStudy =
-      lastStudy !== null ? accraDaysBetween(todayIso, lastStudy) : null;
-    const streakAtRisk = user.streakDays > 0 && daysSinceStudy === 1;
+      lastActiveIso !== null ? accraDaysBetween(todayIso, lastActiveIso) : null;
+    const streakAtRisk = derivedStreak > 0 && daysSinceStudy === 1;
+    // Broken means the run has actually lapsed. `derivedStreak` is
+    // already 0 in that case (it only anchors on today/yesterday), so
+    // this reports on the PERSISTED history rather than the live run —
+    // it's what drives the "start a new streak today" copy.
     const streakBroken =
-      user.streakDays > 0 && daysSinceStudy !== null && daysSinceStudy >= 2;
+      user.streakDays > 0 &&
+      derivedStreak === 0 &&
+      daysSinceStudy !== null &&
+      daysSinceStudy >= 2;
 
     const total = parseInt(aggregate?.total ?? '0', 10);
     const correct = parseInt(aggregate?.correct ?? '0', 10);
@@ -522,9 +611,11 @@ export class UsersService {
     return {
       totalQuestionsAttempted: total,
       accuracy: total > 0 ? Number(((correct / total) * 100).toFixed(1)) : 0,
-      streakDays: user.streakDays,
-      longestStreak: user.longestStreak,
-      lastStudyDate: user.lastStudyDate,
+      streakDays: derivedStreak,
+      // The persisted all-time record can legitimately exceed anything
+      // inside the query window, so take the larger of the two.
+      longestStreak: Math.max(user.longestStreak ?? 0, derivedStreak),
+      lastStudyDate: lastActiveIso,
       activeDaysLast7,
       todayIndex,
       streakAtRisk,

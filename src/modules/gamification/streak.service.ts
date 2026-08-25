@@ -3,10 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { GamificationService } from './gamification.service';
-import {
-  accraDateIso,
-  accraDaysBetween,
-} from '../../common/utils/timezone.util';
+import { accraDateIso } from '../../common/utils/timezone.util';
+import { STREAK_WINDOW_DAYS, currentStreakFromActiveDays } from './streak.util';
 
 const MILESTONES: Record<number, string> = {
   7: 'streak_7',
@@ -56,8 +54,25 @@ export class StreakService {
       };
     }
 
-    const nextStreak =
-      last && accraDaysBetween(today, last) === 1 ? user.streakDays + 1 : 1;
+    // DERIVED, not incremented.
+    //
+    // This used to be `user.streakDays + 1`, which made the column a
+    // running tally of successful writes rather than a fact about the
+    // user. Every path into here is best-effort (`.catch(() => void 0)`
+    // at both call sites), and a duplicate answer throws a 409 before
+    // the side effects run — so a single miss silently dropped the
+    // count by one, forever, because the next day incremented the
+    // already-wrong number. Users saw "3 days in a row" under five
+    // filled dots.
+    //
+    // Recomputing from `exam_answers` — the same rows the dots are
+    // drawn from — makes the write self-healing: whatever went wrong
+    // yesterday, the next answer restores the true value. It also
+    // means this agrees with `getStats` by construction, since both
+    // call the same helper over the same data.
+    const activeDays = await this.activeDaysFor(userId, today);
+    activeDays.add(today); // this call IS today's activity
+    const nextStreak = currentStreakFromActiveDays(activeDays, today);
 
     const newLongest = Math.max(user.longestStreak, nextStreak);
 
@@ -112,5 +127,28 @@ export class StreakService {
       changed: true,
       milestoneAwarded: milestoneEvent ? nextStreak : undefined,
     };
+  }
+
+  /**
+   * Distinct Accra days this user answered a question on, within the
+   * streak window. Mirrors the query in `UsersService.getStats` so the
+   * write path and the read path can never disagree about what counts
+   * as "a day studied".
+   */
+  private async activeDaysFor(
+    userId: string,
+    todayIso: string,
+  ): Promise<Set<string>> {
+    const since = new Date(`${todayIso}T00:00:00Z`);
+    since.setUTCDate(since.getUTCDate() - STREAK_WINDOW_DAYS);
+    const rows: Array<{ day: string }> = await this.usersRepo.manager.query(
+      `select distinct (a.answered_at at time zone 'Africa/Accra')::date::text as day
+         from exam_answers a
+         join exams e on e.id = a.exam_id
+        where e.user_id = $1
+          and a.answered_at >= $2`,
+      [userId, since.toISOString()],
+    );
+    return new Set(rows.map((r) => r.day));
   }
 }
