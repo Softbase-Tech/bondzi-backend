@@ -28,6 +28,7 @@ import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { generateReferralCode } from '../../common/utils/referral-code.util';
 import { RegisterDto } from './dto/register.dto';
+import { SignupAttributionDto } from './dto/signup-attribution.dto';
 import {
   canonicalUsername,
   validateUsernameFormat,
@@ -368,6 +369,8 @@ export class AuthService {
       emailVerifiedAt: emailOtpVerified ? new Date() : null,
       // Where the account was created (web vs mobile app).
       signupPlatform: req.platform ?? null,
+      // ...and which campaign brought them here.
+      ...this.attributionColumns(dto),
     });
     await this.usersRepo.save(user);
 
@@ -602,6 +605,8 @@ export class AuthService {
       examType?: ExamType;
       formLevel?: number;
       referralCode?: string;
+      // First-touch attribution, forwarded verbatim from GoogleSignInDto.
+      attribution?: SignupAttributionDto;
     },
   ): Promise<{ user: SafeUser; tokens: TokenPair; isNew: boolean }> {
     const profile = await this.google.verify(idToken);
@@ -639,6 +644,7 @@ export class AuthService {
         emailVerifiedAt: new Date(),
         emailUnsubscribeToken: randomBytes(24).toString('hex'),
         signupPlatform: req.platform ?? null,
+        ...this.attributionColumns(req.attribution ?? {}),
       });
       await this.usersRepo.save(user);
       if (req.referralCode) {
@@ -1183,6 +1189,37 @@ export class AuthService {
     }
 
     return { user: this.toSafeUser(user), tokens };
+  }
+
+  /**
+   * Map the client-supplied UTM fields onto the `signup_*` columns.
+   *
+   * Only ever spread into `usersRepo.create()`, never into an update —
+   * that is what makes the attribution first-touch. Values are already
+   * length-capped by `SignupAttributionDto`; blank strings collapse to
+   * null so "present but empty" and "absent" don't become two different
+   * buckets in the rollup.
+   */
+  private attributionColumns(dto: SignupAttributionDto): {
+    signupSource: string | null;
+    signupMedium: string | null;
+    signupCampaign: string | null;
+    signupContent: string | null;
+    signupTerm: string | null;
+    signupReferrer: string | null;
+  } {
+    const clean = (v?: string): string | null => {
+      const trimmed = (v ?? '').trim();
+      return trimmed.length > 0 ? trimmed : null;
+    };
+    return {
+      signupSource: clean(dto.utmSource),
+      signupMedium: clean(dto.utmMedium),
+      signupCampaign: clean(dto.utmCampaign),
+      signupContent: clean(dto.utmContent),
+      signupTerm: clean(dto.utmTerm),
+      signupReferrer: clean(dto.signupReferrer),
+    };
   }
 
   toSafeUser(user: User): SafeUser {
