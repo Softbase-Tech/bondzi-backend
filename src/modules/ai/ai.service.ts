@@ -19,6 +19,7 @@ import {
   AI_EMBEDDING_CLIENT,
   AI_GENERATION_CLIENT,
 } from './clients/ai-generation.factory';
+import { BedrockClient } from './clients/bedrock.client';
 import type { AiGenerationClient } from './clients/ai-generation-client.interface';
 
 /**
@@ -41,7 +42,45 @@ export interface AiCallResult {
   outputTokens: number;
   costUsd: number;
   latencyMs: number;
+  /**
+   * Why generation stopped — `max_tokens` means the output was
+   * TRUNCATED and must not be validated as if complete (remediation
+   * 0.4). `null` when the provider didn't report.
+   */
+  stopReason: string | null;
 }
+
+/**
+ * Actions whose prompts carry per-student data (weakness rollups,
+ * exam answers, personalised reviews). DPA policy: these NEVER route
+ * to the self-hosted provider — they pin to Bedrock regardless of
+ * AI_PROVIDER. Previously this policy existed only in comments
+ * (ollama.client.ts / ai-generation.factory.ts) with no enforcement;
+ * `callBedrock` now enforces it in code (remediation C-zero #3).
+ */
+const STUDENT_DATA_ACTIONS: ReadonlySet<AiAction> = new Set([
+  AiAction.WEAKNESS_NARRATIVE,
+  AiAction.AI_REVIEW,
+  AiAction.POST_EXAM_BREAKDOWN,
+  AiAction.CHAT_TUTOR,
+]);
+
+/**
+ * Per-action sampling temperature (remediation 1.4). Question
+ * generation wants diversity (exemplars are randomized precisely to
+ * avoid output collapse — a low temperature works against that);
+ * explanations and verification want determinism (fewer arithmetic
+ * slips). Callers can override via opts.temperature.
+ */
+const TEMPERATURE_BY_ACTION: Partial<Record<AiAction, number>> = {
+  [AiAction.QUESTION_GEN]: 0.8,
+  [AiAction.EXPLANATION]: 0.15,
+  [AiAction.MODERATION]: 0,
+  [AiAction.ANSWER_VERIFY]: 0,
+  [AiAction.WEAKNESS_NARRATIVE]: 0.4,
+  [AiAction.AI_REVIEW]: 0.5,
+  [AiAction.POST_EXAM_BREAKDOWN]: 0.4,
+};
 
 @Injectable()
 export class AiService {
@@ -51,12 +90,14 @@ export class AiService {
     private readonly config: ConfigService,
     private readonly redis: RedisService,
     // Resolved by AiGenerationFactory: BedrockClient by default,
-    // OllamaClient when AI_PROVIDER=self_hosted. Services that must
-    // stay on Bedrock regardless (weakness narratives, post-exam
-    // breakdowns) inject BedrockClient directly instead of going
-    // through the AiService generic path.
+    // OllamaClient when AI_PROVIDER=self_hosted. Actions that carry
+    // per-student data (STUDENT_DATA_ACTIONS) bypass this and route
+    // to `bedrock` below — enforced in callBedrock, not by comment.
     @Inject(AI_GENERATION_CLIENT)
     private readonly ai: AiGenerationClient,
+    // DPA pin target: student-data prompts must never reach a
+    // self-hosted model, so those actions dispatch here directly.
+    private readonly bedrock: BedrockClient,
     // Resolved independently by AiEmbeddingFactory (AI_EMBEDDING_PROVIDER,
     // falling back to AI_PROVIDER) so embeddings can run on a different
     // provider than generation.
@@ -148,14 +189,40 @@ export class AiService {
       userId?: string;
       jobId?: string;
       system?: string;
+      /** Override the per-action default temperature. */
+      temperature?: number;
+      /** Assistant prefill — see AiInvokeParams.prefill. */
+      prefill?: string;
+      /** Bedrock prompt-cache the system shell — see AiInvokeParams. */
+      cacheSystemPrompt?: boolean;
+      /** Recorded on ai_usage_log.prompt_version. */
+      promptVersion?: string;
     } = {},
   ): Promise<AiCallResult> {
+    const action = opts.action ?? AiAction.EXPLANATION;
+
+    // Budget guard (remediation C-zero #4): student-facing calls carry
+    // a userId and were previously bounded only by entitlement caps —
+    // the per-user daily call limit and the global daily USD ceiling
+    // now apply to them too. Job-driven calls (no userId) keep their
+    // existing job-level checkBudget call in the processor.
+    if (opts.userId) {
+      await this.checkBudget(opts.userId);
+    }
+
+    // DPA pin (remediation C-zero #3): per-student prompts never reach
+    // the self-hosted provider, whatever AI_PROVIDER says.
+    const client = STUDENT_DATA_ACTIONS.has(action) ? this.bedrock : this.ai;
+
     const start = Date.now();
-    const res = await this.ai.invoke({
+    const res = await client.invoke({
       modelId: model,
       system: opts.system,
       userPrompt: prompt,
       maxTokens: opts.maxTokens ?? 600,
+      temperature: opts.temperature ?? TEMPERATURE_BY_ACTION[action],
+      prefill: opts.prefill,
+      cacheSystemPrompt: opts.cacheSystemPrompt,
     });
     const latencyMs = Date.now() - start;
 
@@ -181,13 +248,14 @@ export class AiService {
     await this.logUsage({
       userId: opts.userId,
       jobId: opts.jobId,
-      action: opts.action ?? AiAction.EXPLANATION,
+      action,
       provider,
       model: res.effectiveModel,
       inputTokens,
       outputTokens,
       costUsd: cost,
       latencyMs,
+      promptVersion: opts.promptVersion,
     });
     await this.addCostToDailyBudget(cost);
 
@@ -199,6 +267,7 @@ export class AiService {
       outputTokens,
       costUsd: cost,
       latencyMs,
+      stopReason: res.stopReason,
     };
   }
 

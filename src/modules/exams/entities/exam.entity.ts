@@ -107,6 +107,18 @@ export class Exam {
   @Column({ name: 'ai_breakdown_model', type: 'text', nullable: true })
   aiBreakdownModel: string | null;
 
+  /**
+   * Machine-readable actions from the post-exam review v2 (premium
+   * plan §6.5) — the app renders them as "Read now" / "Practice"
+   * deep links. Null for pre-v2 breakdowns.
+   */
+  @Column({
+    name: 'ai_breakdown_recommendations',
+    type: 'jsonb',
+    nullable: true,
+  })
+  aiBreakdownRecommendations: Array<Record<string, unknown>> | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

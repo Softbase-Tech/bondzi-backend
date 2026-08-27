@@ -8,13 +8,15 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThanOrEqual, Repository } from 'typeorm';
 import { AiReview } from './entities/ai-review.entity';
-import { WeaknessService } from './weakness.service';
+import { StudentSignalService } from './student-signal.service';
 import { AiReviewConfigService } from './ai-review-config.service';
 import { AiService } from '../ai/ai.service';
+import { RejectLogService } from '../ai/reject-log.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { AccountType, AiAction, ExamType } from '../../common/types/enums';
 import { accraMonthStartIso } from '../../common/utils/timezone.util';
 import {
+  AI_REVIEW_PROMPT_VERSION,
   buildAiReviewPrompt,
   SYSTEM_SHELL_AI_REVIEW,
 } from './ai-review.prompt';
@@ -48,9 +50,10 @@ export class AiReviewService {
   constructor(
     @InjectRepository(AiReview)
     private readonly reviewsRepo: Repository<AiReview>,
-    private readonly weakness: WeaknessService,
+    private readonly signals: StudentSignalService,
     private readonly reviewConfig: AiReviewConfigService,
     private readonly ai: AiService,
+    private readonly rejectLog: RejectLogService,
     private readonly subscriptions: SubscriptionsService,
     private readonly config: ConfigService,
   ) {}
@@ -75,16 +78,16 @@ export class AiReviewService {
       });
     }
 
-    // 2. Pull weakness signal. Zero-signal students get a canned
-    //    bootstrap review — no Bedrock call and, crucially, no quota
-    //    charge (mode='bootstrap' rows are excluded from the count).
-    const data = await this.weakness.forUser(userId, {
+    // 2. Pull the grounded StudentSignal (weak + strong topics with
+    //    ids, trend, recent mistakes, reading citations — premium plan
+    //    §6.4). Zero-signal students get a canned bootstrap review —
+    //    no Bedrock call and, crucially, no quota charge
+    //    (mode='bootstrap' rows are excluded from the count).
+    const signal = await this.signals.forUser(userId, {
       subjectId: filters.subjectId,
     });
-    const hasSignal =
-      data.pastPaperWeakTopics.length > 0 || data.syllabusWeakTopics.length > 0;
 
-    if (!hasSignal) {
+    if (!signal.hasSignal) {
       const row = await this.reviewsRepo.save(
         this.reviewsRepo.create({
           userId,
@@ -101,7 +104,24 @@ export class AiReviewService {
       };
     }
 
-    // 3. Enforce the monthly quota for a real (personalised) generation.
+    // 3. Idempotency (premium plan §6.4): if the signal hasn't changed
+    //    since the latest personalised review in this scope, return
+    //    that review — no quota unit, no tokens. Identical signal
+    //    regenerating a near-identical 1,200-token report at full cost
+    //    was a pure leak given monthly quotas of 10/30.
+    const fingerprint = this.signals.fingerprint(signal);
+    const latest = await this.reviewsRepo.findOne({
+      where: { userId, subjectScope: scope, mode: 'personalised' },
+      order: { createdAt: 'DESC' },
+    });
+    if (latest && latest.signalFingerprint === fingerprint) {
+      return {
+        review: toAiReviewFull(latest),
+        quota: await this.quota(userId, examType),
+      };
+    }
+
+    // 4. Enforce the monthly quota for a real (personalised) generation.
     const limit = await this.monthlyLimitFor(tier);
     const used = await this.usedThisMonth(userId);
     if (used >= limit) {
@@ -111,14 +131,13 @@ export class AiReviewService {
       });
     }
 
-    // 4. Generate + validate. A bad response is NOT persisted, so it
+    // 5. Generate + validate. A bad response is NOT persisted, so it
     //    does not consume a unit — the student can simply retry.
-    const prompt = buildAiReviewPrompt(
-      data.pastPaperWeakTopics,
-      data.syllabusWeakTopics,
-    );
+    const prompt = buildAiReviewPrompt(this.signals.render(signal));
+    // `ai.fastModel` honors AI_DEFAULT_MODEL / AI_FAST_MODEL — the old
+    // `ai.defaultModel` key never existed in ai.config.ts.
     const model =
-      this.config.get<string>('ai.defaultModel') ??
+      this.config.get<string>('ai.fastModel') ??
       'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
 
     const result = await this.ai.callBedrock(prompt, model, {
@@ -126,12 +145,20 @@ export class AiReviewService {
       maxTokens: AiReviewService.MAX_TOKENS,
       action: AiAction.AI_REVIEW,
       userId,
+      cacheSystemPrompt: true,
+      promptVersion: AI_REVIEW_PROMPT_VERSION,
     });
 
     const validation = validateAiReview(result.content);
     if (!validation.ok) {
       this.logger.warn(
         `[ai-review] rejected user=${userId} reason=${validation.reason} detail=${validation.detail}`,
+      );
+      await this.recordRejectSafely(
+        model,
+        validation.reason,
+        validation.detail,
+        result.content,
       );
       throw new BadRequestException(
         'The AI review came back malformed. Please try again in a moment — this attempt was not counted.',
@@ -149,6 +176,7 @@ export class AiReviewService {
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
         costUsd: result.costUsd != null ? String(result.costUsd) : null,
+        signalFingerprint: fingerprint,
       }),
     );
 
@@ -156,6 +184,29 @@ export class AiReviewService {
       review: toAiReviewFull(row),
       quota: await this.quota(userId, examType),
     };
+  }
+
+  private async recordRejectSafely(
+    model: string,
+    reason: string,
+    detail: string,
+    rawOutput: string,
+  ): Promise<void> {
+    try {
+      await this.rejectLog.record({
+        jobId: null,
+        action: 'ai_review',
+        provider: model.startsWith('ollama:') ? 'ollama' : 'bedrock',
+        model,
+        reason,
+        detail,
+        rawOutput,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `[ai-review] reject-log write failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   /** Paginated history, newest first. Light rows (no full content). */

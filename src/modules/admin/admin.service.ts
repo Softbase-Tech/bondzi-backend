@@ -350,33 +350,35 @@ export class AdminService {
   async getUser(id: string) {
     const user = await this.usersRepo.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
-    const [subscriptions, examsCount, aiUsage, loginEvents] = await Promise.all([
-      this.subsRepo.find({
-        where: { userId: id },
-        relations: ['plan'],
-        order: { createdAt: 'DESC' },
-      }),
-      this.examsRepo.count({
-        where: { userId: id, status: ExamStatus.COMPLETED },
-      }),
-      this.aiRepo
-        .createQueryBuilder('a')
-        .select('COUNT(*)', 'calls')
-        .addSelect('COALESCE(SUM(a.cost_usd),0)', 'cost')
-        .where('a.user_id = :uid', { uid: id })
-        .getRawOne<{ calls: string; cost: string }>(),
-      // Last 20 sign-ins across all platforms. `auth_login_events` is
-      // append-only + only records real sign-ins (register / login /
-      // google / otp), so this is a durable history — refresh-token
-      // rotations don't pollute it. Enough rows for a support agent to
-      // spot pattern shifts ("suddenly all logins are Android") without
-      // paging.
-      this.loginEventsRepo.find({
-        where: { userId: id },
-        order: { createdAt: 'DESC' },
-        take: 20,
-      }),
-    ]);
+    const [subscriptions, examsCount, aiUsage, loginEvents] = await Promise.all(
+      [
+        this.subsRepo.find({
+          where: { userId: id },
+          relations: ['plan'],
+          order: { createdAt: 'DESC' },
+        }),
+        this.examsRepo.count({
+          where: { userId: id, status: ExamStatus.COMPLETED },
+        }),
+        this.aiRepo
+          .createQueryBuilder('a')
+          .select('COUNT(*)', 'calls')
+          .addSelect('COALESCE(SUM(a.cost_usd),0)', 'cost')
+          .where('a.user_id = :uid', { uid: id })
+          .getRawOne<{ calls: string; cost: string }>(),
+        // Last 20 sign-ins across all platforms. `auth_login_events` is
+        // append-only + only records real sign-ins (register / login /
+        // google / otp), so this is a durable history — refresh-token
+        // rotations don't pollute it. Enough rows for a support agent to
+        // spot pattern shifts ("suddenly all logins are Android") without
+        // paging.
+        this.loginEventsRepo.find({
+          where: { userId: id },
+          order: { createdAt: 'DESC' },
+          take: 20,
+        }),
+      ],
+    );
     return { user, subscriptions, examsCount, aiUsage, loginEvents };
   }
 

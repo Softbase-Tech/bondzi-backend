@@ -10,6 +10,7 @@ import { AiGenerationJob } from '../admin-ai-gen/entities/ai-generation-job.enti
 import { RedisService } from '../../common/redis/redis.service';
 import { QUEUE_AI_GENERATION } from '../ai/ai.queues';
 import { AiService } from '../ai/ai.service';
+import { PromptTemplateRuntimeService } from '../ai/prompt-template-runtime.service';
 import {
   AiJobStatus,
   AiJobType,
@@ -84,6 +85,11 @@ describe('AdminPmTestService', () => {
         { provide: RedisService, useValue: redis },
         { provide: ConfigService, useValue: config },
         { provide: AiService, useValue: aiService },
+        {
+          provide: PromptTemplateRuntimeService,
+          // Flag off in specs — builders use the compiled shells.
+          useValue: { activeShell: jest.fn().mockResolvedValue(null) },
+        },
       ],
     }).compile();
     service = moduleRef.get(AdminPmTestService);

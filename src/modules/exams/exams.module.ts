@@ -19,6 +19,7 @@ import { ReferralsModule } from '../referrals/referrals.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { EntitlementsModule } from '../entitlements/entitlements.module';
 import { AiModule } from '../ai/ai.module';
+import { SyllabusModule } from '../syllabus/syllabus.module';
 
 @Module({
   imports: [
@@ -45,6 +46,9 @@ import { AiModule } from '../ai/ai.module';
     // WeaknessNarrativeService: bootstrap-row invalidation runs post-
     // completion so the next Home visit sees fresh signal.
     ProgressModule,
+    // KnowledgeRetrievalService: post-exam review v2 cites textbook
+    // sections for the missed topics (premium plan §6.5).
+    SyllabusModule,
   ],
   controllers: [ExamsController],
   providers: [ExamsService],

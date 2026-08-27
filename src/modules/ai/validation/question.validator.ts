@@ -12,22 +12,23 @@ import { looksLikeCalcQuestion } from '../../../common/utils/looks-like-calc.uti
  * when the model — especially a weaker local one — hasn't fully
  * internalised the prompt.
  *
- * Five rules per question:
- *   (a) exactly one option is flagged `isCorrect: true`
- *   (b) stem (`body`) is non-empty after trim
- *   (c) every option body is non-empty after trim
- *   (d) no duplicate option text (weaker models produce dupes)
- *   (e) if the model added a free-form correct-answer field
- *       (`correctAnswer` / `answer` / `correct_option`), its content
- *       matches either the `label` or the `body` of the isCorrect
- *       option (weaker models occasionally write these fields
- *       independently of the isCorrect flag and disagree with
- *       themselves)
+ * Two entry points:
  *
- * No second-pass LLM verification — you asked to hold that until
- * the reject log shows enough BAD keys (not just bad structure) to
- * justify doubling generation cost. When we get there, the second
- * pass slots in AFTER these rule checks and BEFORE the DB insert.
+ *   `validateQuestionBatch`        — all-or-nothing (legacy behavior,
+ *                                    kept for callers/tests that want
+ *                                    a single verdict).
+ *   `validateQuestionBatchSalvage` — per-item (remediation 0.5): good
+ *                                    items are returned for insert,
+ *                                    bad items are returned with their
+ *                                    reasons so the caller can log
+ *                                    them individually and run ONE
+ *                                    reflexion retry on just the
+ *                                    failed ones. One bad item no
+ *                                    longer bills the whole batch.
+ *
+ * Answer-key CORRECTNESS is not checked here — that is the blind
+ * second-pass verifier's job (answer-verifier.service.ts), which runs
+ * after this validator and before the DB insert.
  */
 
 export type QuestionRejectReason =
@@ -45,6 +46,7 @@ export type QuestionRejectReason =
   | 'meta_syllabus_reference'
   | 'stem_leaks_answer'
   | 'stem_too_short'
+  | 'stem_too_long'
   | 'trivia_meta_question'
   | 'all_or_none_option'
   | 'missing_worked_example_calc'
@@ -71,10 +73,12 @@ const META_SYLLABUS_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Blanket ban — even in isolation these words in a question stem are
- * a smell: WAEC questions do not reference the document that defines
- * them. Matched after the phrase-level rules so we can report the
- * more specific reason first.
+ * Bare-word ban — applied to the STEM ONLY (remediation 1.6). The old
+ * blanket check over stem+explanation rejected legitimate items (a
+ * Social Studies question about Ghana's education system whose
+ * explanation mentions the school curriculum as subject matter). The
+ * phrase-level patterns above still cover both stem and explanation —
+ * they catch the actual failure mode.
  */
 const BANNED_WORDS: RegExp = /\b(syllabus|curriculum)\b/i;
 
@@ -106,6 +110,15 @@ export interface ParsedQuestion {
   difficulty: 'easy' | 'medium' | 'hard';
   options: ParsedOption[];
   explanation: string;
+  /** Non-fatal quality notes (option-length ratio, difficulty override…). */
+  warnings: string[];
+}
+
+export interface ItemReject {
+  /** 0-based index of the item in the model's returned array. */
+  index: number;
+  reason: QuestionRejectReason;
+  detail: string;
 }
 
 export type QuestionValidationResult =
@@ -118,33 +131,135 @@ export type QuestionValidationResult =
       failedIndex?: number;
     };
 
+export type QuestionSalvageResult =
+  | {
+      ok: true;
+      /** Items that passed every per-item rule, in returned order. */
+      value: ParsedQuestion[];
+      /** Items that failed, with per-item reasons — log + reflexion-retry these. */
+      rejected: ItemReject[];
+      /** Batch-level quality notes (count mismatch etc.). */
+      warnings: string[];
+    }
+  | {
+      /** Batch-level failure — nothing salvageable (bad JSON, refusal…). */
+      ok: false;
+      reason: QuestionRejectReason;
+      detail: string;
+    };
+
 /** How many options we expect. WAEC MCQ is always 4. */
 const EXPECTED_OPTION_COUNT = 4;
+/** Stem word bounds — mirror the system shell's promise (min 6, max 60). */
+const MIN_STEM_WORDS = 6;
+const MAX_STEM_WORDS = 60;
+/** "Correct is longest" LLM tell — warn when longest/shortest exceeds this. */
+const OPTION_LENGTH_RATIO_WARN = 1.6;
+
+export interface QuestionValidationOpts {
+  /**
+   * When true, every question in the batch is treated as
+   * calculation-shaped — its inline explanation MUST include
+   * `## Worked Example`. Callers flip this when the SUBJECT is
+   * quantitative (Physics / Chemistry / Maths / …).
+   *
+   * Regardless of this flag, an INDIVIDUAL question inside a
+   * non-quantitative batch is checked per-question via
+   * `looksLikeCalcQuestion` — so a numeric Economics item still
+   * gets the same worked-example enforcement as a Maths item.
+   */
+  requireWorkedExampleForBatch?: boolean;
+  /**
+   * The difficulty the admin requested for this batch. The REQUEST is
+   * authoritative (remediation 1.5): an item whose self-graded
+   * difficulty disagrees is overridden to the requested value with a
+   * warning, instead of the old silent coerce-to-medium which let the
+   * model rewrite the admin's difficulty mix.
+   */
+  requestedDifficulty?: 'easy' | 'medium' | 'hard';
+  /**
+   * How many items the batch asked for. A shortfall beyond 1 is
+   * reported as a batch warning (informational — with per-item
+   * salvage a short batch is still worth keeping); an overage is
+   * truncated to the requested count.
+   */
+  expectedCount?: number;
+}
 
 /**
- * Validates a raw model output string as a batch of MCQ questions.
- * Parses JSON, then applies the five rules above. Returns
- * `{ ok: true, value }` with a typed array on success, or
- * `{ ok: false, reason, detail, failedIndex? }` on failure — never
- * throws.
+ * All-or-nothing validation (legacy behavior): the first failing item
+ * fails the whole batch. Kept for callers/tests that want a single
+ * verdict; new pipeline code should prefer `validateQuestionBatchSalvage`.
  */
 export function validateQuestionBatch(
   rawText: string,
-  opts: {
-    /**
-     * When true, every question in the batch is treated as
-     * calculation-shaped — its inline explanation MUST include
-     * `## Worked Example`. Callers flip this when the SUBJECT is
-     * quantitative (Physics / Chemistry / Maths / …).
-     *
-     * Regardless of this flag, an INDIVIDUAL question inside a
-     * non-quantitative batch is checked per-question via
-     * `looksLikeCalcQuestion` — so a numeric Economics item still
-     * gets the same worked-example enforcement as a Maths item.
-     */
-    requireWorkedExampleForBatch?: boolean;
-  } = {},
+  opts: QuestionValidationOpts = {},
 ): QuestionValidationResult {
+  const parsed = parseBatch(rawText);
+  if (!parsed.ok) return parsed;
+
+  const out: ParsedQuestion[] = [];
+  for (let i = 0; i < parsed.items.length; i++) {
+    const res = validateSingleQuestion(parsed.items[i], i, opts);
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: res.reason,
+        detail: res.detail,
+        failedIndex: i,
+      };
+    }
+    out.push(res.value);
+  }
+  return { ok: true, value: out };
+}
+
+/**
+ * Per-item validation with salvage (remediation 0.5). Batch-level
+ * failures (unparseable JSON, refusal object, empty array) still fail
+ * the whole call; item-level failures only drop that item.
+ */
+export function validateQuestionBatchSalvage(
+  rawText: string,
+  opts: QuestionValidationOpts = {},
+): QuestionSalvageResult {
+  const parsed = parseBatch(rawText);
+  if (!parsed.ok) {
+    return { ok: false, reason: parsed.reason, detail: parsed.detail };
+  }
+
+  const warnings: string[] = [];
+  let items = parsed.items;
+  if (opts.expectedCount != null) {
+    if (items.length > opts.expectedCount) {
+      warnings.push(
+        `model returned ${items.length} items for a batch of ${opts.expectedCount}; extra items truncated`,
+      );
+      items = items.slice(0, opts.expectedCount);
+    } else if (items.length < opts.expectedCount - 1) {
+      warnings.push(
+        `model returned ${items.length} items for a batch of ${opts.expectedCount}`,
+      );
+    }
+  }
+
+  const value: ParsedQuestion[] = [];
+  const rejected: ItemReject[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const res = validateSingleQuestion(items[i], i, opts);
+    if (res.ok) value.push(res.value);
+    else rejected.push({ index: i, reason: res.reason, detail: res.detail });
+  }
+  return { ok: true, value, rejected, warnings };
+}
+
+// ---------------------------------------------------------------------------
+
+type BatchParse =
+  | { ok: true; items: unknown[] }
+  | { ok: false; reason: QuestionRejectReason; detail: string };
+
+function parseBatch(rawText: string): BatchParse {
   const trimmed = rawText.trim();
   if (!trimmed) {
     return { ok: false, reason: 'schema_invalid', detail: 'empty output' };
@@ -166,7 +281,7 @@ export function validateQuestionBatch(
   }
 
   // Model refusal path — the system shell instructs the model to
-  // return {"error":"out_of_syllabus", "detail":"..."} when the topic
+  // return {"error":"out_of_scope", "detail":"..."} when the topic
   // isn't covered. Surface as a distinct reason so the admin can
   // tell "prompt drift" apart from "genuine coverage gap".
   if (isRefusalObject(parsed)) {
@@ -190,254 +305,302 @@ export function validateQuestionBatch(
   if (parsed.length === 0) {
     return { ok: false, reason: 'empty_batch', detail: 'array had 0 items' };
   }
+  return { ok: true, items: parsed };
+}
 
-  const out: ParsedQuestion[] = [];
-  for (let i = 0; i < parsed.length; i++) {
-    const q = parsed[i] as Record<string, unknown>;
-    if (!q || typeof q !== 'object') {
+type SingleResult =
+  | { ok: true; value: ParsedQuestion }
+  | { ok: false; reason: QuestionRejectReason; detail: string };
+
+function validateSingleQuestion(
+  raw: unknown,
+  i: number,
+  opts: QuestionValidationOpts,
+): SingleResult {
+  const q = raw as Record<string, unknown>;
+  if (!q || typeof q !== 'object') {
+    return {
+      ok: false,
+      reason: 'schema_invalid',
+      detail: `item ${i} is not an object`,
+    };
+  }
+  const warnings: string[] = [];
+  const body = typeof q.body === 'string' ? q.body.trim() : '';
+  if (!body) {
+    return {
+      ok: false,
+      reason: 'empty_stem',
+      detail: `item ${i} has empty body`,
+    };
+  }
+
+  // Stem length bounds. 6 words is the shortest a real WAEC stem gets;
+  // above 60 the item is testing reading speed, not the subject —
+  // both are promised by the shell and now enforced (remediation 1.5).
+  const stemWordCount = body.split(/\s+/).filter((w) => w.length > 0).length;
+  if (stemWordCount < MIN_STEM_WORDS) {
+    return {
+      ok: false,
+      reason: 'stem_too_short',
+      detail: `item ${i} stem has ${stemWordCount} words; minimum is ${MIN_STEM_WORDS}`,
+    };
+  }
+  if (stemWordCount > MAX_STEM_WORDS) {
+    return {
+      ok: false,
+      reason: 'stem_too_long',
+      detail: `item ${i} stem has ${stemWordCount} words; maximum is ${MAX_STEM_WORDS}`,
+    };
+  }
+
+  // Meta-syllabus phrasing. The whole class of "According to the
+  // syllabus…" questions dies here — the phrase patterns match against
+  // both stem and explanation; the bare-word ban is stem-only
+  // (remediation 1.6) so legitimate subject matter about Ghana's
+  // education system isn't false-positived via its explanation.
+  const rawExplanation = typeof q.explanation === 'string' ? q.explanation : '';
+  const combined = `${body}\n${rawExplanation}`;
+  const metaPhrase = META_SYLLABUS_PATTERNS.find((r) => r.test(combined));
+  if (metaPhrase) {
+    return {
+      ok: false,
+      reason: 'meta_syllabus_reference',
+      detail: `item ${i} contains banned meta-syllabus phrase: ${metaPhrase.source}`,
+    };
+  }
+  if (BANNED_WORDS.test(body)) {
+    return {
+      ok: false,
+      reason: 'meta_syllabus_reference',
+      detail: `item ${i} stem references "syllabus" or "curriculum" — test the subject matter, not the document`,
+    };
+  }
+
+  // Trivia questions about WAEC/NaCCA/the exam board. Same
+  // pedagogical mistake: the question tests the institution
+  // instead of the subject.
+  const triviaHit = TRIVIA_META_PATTERNS.find((r) => r.test(body));
+  if (triviaHit) {
+    return {
+      ok: false,
+      reason: 'trivia_meta_question',
+      detail: `item ${i} stem references the exam institution: ${triviaHit.source}`,
+    };
+  }
+
+  const rawOptions = q.options;
+  if (!Array.isArray(rawOptions)) {
+    return {
+      ok: false,
+      reason: 'no_options',
+      detail: `item ${i} missing options array`,
+    };
+  }
+  if (rawOptions.length !== EXPECTED_OPTION_COUNT) {
+    return {
+      ok: false,
+      reason: 'wrong_option_count',
+      detail: `item ${i} has ${rawOptions.length} options; expected ${EXPECTED_OPTION_COUNT}`,
+    };
+  }
+
+  const options: ParsedOption[] = [];
+  const seenTexts = new Set<string>();
+  let correctCount = 0;
+  for (let j = 0; j < rawOptions.length; j++) {
+    const opt = rawOptions[j] as Record<string, unknown>;
+    if (!opt || typeof opt !== 'object') {
       return {
         ok: false,
         reason: 'schema_invalid',
-        detail: `item ${i} is not an object`,
-        failedIndex: i,
+        detail: `item ${i} option ${j} not an object`,
       };
     }
-    const body = typeof q.body === 'string' ? q.body.trim() : '';
-    if (!body) {
+    const label = typeof opt.label === 'string' ? opt.label.trim() : '';
+    const optBody = typeof opt.body === 'string' ? opt.body.trim() : '';
+    const isCorrect = opt.isCorrect === true;
+    if (!optBody) {
       return {
         ok: false,
-        reason: 'empty_stem',
-        detail: `item ${i} has empty body`,
-        failedIndex: i,
+        reason: 'empty_option',
+        detail: `item ${i} option ${label || j} has empty body`,
       };
     }
-
-    // Stem length floor. 6 words is the shortest a real WAEC stem gets.
-    // Below that the model is either producing a trivial recall
-    // ("Water is?", "The capital of Ghana?") or a stem that leaked
-    // most of itself into the options.
-    const stemWordCount = body.split(/\s+/).filter((w) => w.length > 0).length;
-    if (stemWordCount < 6) {
+    // Duplicate option text. Case-insensitive because "Water" vs
+    // "water" is still a dupe from the student's POV.
+    const key = optBody.toLowerCase();
+    if (seenTexts.has(key)) {
       return {
         ok: false,
-        reason: 'stem_too_short',
-        detail: `item ${i} stem has ${stemWordCount} words; minimum is 6`,
-        failedIndex: i,
+        reason: 'duplicate_option_text',
+        detail: `item ${i} has duplicate option text: "${optBody.slice(0, 60)}"`,
       };
     }
+    seenTexts.add(key);
 
-    // Meta-syllabus phrasing. The whole class of "According to the
-    // syllabus…" questions dies here — matching against both stem
-    // and (below) the explanation. Order matters: report the
-    // phrase-level match first, only fall through to the blanket
-    // "banned word" reason when nothing more specific fired.
-    const rawExplanation =
-      typeof q.explanation === 'string' ? q.explanation : '';
-    const combined = `${body}\n${rawExplanation}`;
-    const metaPhrase = META_SYLLABUS_PATTERNS.find((r) => r.test(combined));
-    if (metaPhrase) {
+    // "All of the above" / "None of the above" / "Both A and B" —
+    // banned per system shell. Even if the model gets them factually
+    // right, they read as filler and inflate accuracy for students
+    // who pattern-match without reasoning.
+    if (ALL_OR_NONE.test(optBody)) {
       return {
         ok: false,
-        reason: 'meta_syllabus_reference',
-        detail: `item ${i} contains banned meta-syllabus phrase: ${metaPhrase.source}`,
-        failedIndex: i,
-      };
-    }
-    if (BANNED_WORDS.test(combined)) {
-      return {
-        ok: false,
-        reason: 'meta_syllabus_reference',
-        detail: `item ${i} references "syllabus" or "curriculum" — test the subject matter, not the document`,
-        failedIndex: i,
+        reason: 'all_or_none_option',
+        detail: `item ${i} option "${optBody.slice(0, 40)}" is an all-of-the-above / none-of-the-above filler`,
       };
     }
 
-    // Trivia questions about WAEC/NaCCA/the exam board. Same
-    // pedagogical mistake: the question tests the institution
-    // instead of the subject.
-    const triviaHit = TRIVIA_META_PATTERNS.find((r) => r.test(body));
-    if (triviaHit) {
-      return {
-        ok: false,
-        reason: 'trivia_meta_question',
-        detail: `item ${i} stem references the exam institution: ${triviaHit.source}`,
-        failedIndex: i,
-      };
-    }
-
-    const rawOptions = q.options;
-    if (!Array.isArray(rawOptions)) {
-      return {
-        ok: false,
-        reason: 'no_options',
-        detail: `item ${i} missing options array`,
-        failedIndex: i,
-      };
-    }
-    if (rawOptions.length !== EXPECTED_OPTION_COUNT) {
-      return {
-        ok: false,
-        reason: 'wrong_option_count',
-        detail: `item ${i} has ${rawOptions.length} options; expected ${EXPECTED_OPTION_COUNT}`,
-        failedIndex: i,
-      };
-    }
-
-    const options: ParsedOption[] = [];
-    const seenTexts = new Set<string>();
-    let correctCount = 0;
-    for (let j = 0; j < rawOptions.length; j++) {
-      const opt = rawOptions[j] as Record<string, unknown>;
-      if (!opt || typeof opt !== 'object') {
-        return {
-          ok: false,
-          reason: 'schema_invalid',
-          detail: `item ${i} option ${j} not an object`,
-          failedIndex: i,
-        };
-      }
-      const label = typeof opt.label === 'string' ? opt.label.trim() : '';
-      const optBody = typeof opt.body === 'string' ? opt.body.trim() : '';
-      const isCorrect = opt.isCorrect === true;
-      if (!optBody) {
-        return {
-          ok: false,
-          reason: 'empty_option',
-          detail: `item ${i} option ${label || j} has empty body`,
-          failedIndex: i,
-        };
-      }
-      // Rule (d) — duplicate option text. Case-insensitive because
-      // "Water" vs "water" is still a dupe from the student's POV.
-      const key = optBody.toLowerCase();
-      if (seenTexts.has(key)) {
-        return {
-          ok: false,
-          reason: 'duplicate_option_text',
-          detail: `item ${i} has duplicate option text: "${optBody.slice(0, 60)}"`,
-          failedIndex: i,
-        };
-      }
-      seenTexts.add(key);
-
-      // "All of the above" / "None of the above" / "Both A and B" —
-      // banned per system shell. Even if the model gets them factually
-      // right, they read as filler and inflate accuracy for students
-      // who pattern-match without reasoning.
-      if (ALL_OR_NONE.test(optBody)) {
-        return {
-          ok: false,
-          reason: 'all_or_none_option',
-          detail: `item ${i} option "${optBody.slice(0, 40)}" is an all-of-the-above / none-of-the-above filler`,
-          failedIndex: i,
-        };
-      }
-
-      if (isCorrect) correctCount++;
-      options.push({
-        label: label || labelForIndex(j),
-        body: optBody,
-        isCorrect,
-      });
-    }
-
-    // Rule (a) — exactly one correct.
-    if (correctCount === 0) {
-      return {
-        ok: false,
-        reason: 'no_correct',
-        detail: `item ${i} has no option flagged isCorrect`,
-        failedIndex: i,
-      };
-    }
-    if (correctCount > 1) {
-      return {
-        ok: false,
-        reason: 'multiple_correct',
-        detail: `item ${i} has ${correctCount} options flagged isCorrect`,
-        failedIndex: i,
-      };
-    }
-
-    // Rule (e) — if a free-form correct-answer field slipped in,
-    // it must agree with the isCorrect option. Some models add
-    // `correctAnswer` / `answer` / `correct_option` unprompted.
-    const correctOption = options.find((o) => o.isCorrect)!;
-    const wildcardCorrect = firstString(
-      q.correctAnswer,
-      q.answer,
-      q.correct_option,
-      q.correctOption,
-    );
-    if (wildcardCorrect !== undefined) {
-      const nWild = wildcardCorrect.trim().toLowerCase();
-      const nLabel = correctOption.label.toLowerCase();
-      const nBody = correctOption.body.toLowerCase();
-      // Accept either "B" or "B. Cell nucleus" or "Cell nucleus".
-      const bodyContains = nBody.includes(nWild) || nWild.includes(nBody);
-      if (nWild !== nLabel && !bodyContains) {
-        return {
-          ok: false,
-          reason: 'correct_answer_field_mismatch',
-          detail: `item ${i} correctAnswer="${wildcardCorrect}" doesn't match isCorrect option (${correctOption.label}: ${correctOption.body.slice(0, 40)})`,
-          failedIndex: i,
-        };
-      }
-    }
-
-    // Stem-leaks-answer. If 4+ consecutive words of the correct
-    // option appear in the stem, the question tests reading not
-    // knowledge — the model wrapped the answer inside the prompt
-    // and the distractors are cosmetic. Short options (< 4 words)
-    // are exempt because a proper-noun answer like "Chad" can't
-    // trigger this without also matching against the syllabus
-    // context, which is a different failure.
-    if (stemLeaksAnswer(body, correctOption.body)) {
-      return {
-        ok: false,
-        reason: 'stem_leaks_answer',
-        detail: `item ${i} stem contains the correct answer verbatim (4+ words match)`,
-        failedIndex: i,
-      };
-    }
-
-    const difficulty =
-      q.difficulty === 'easy' ||
-      q.difficulty === 'medium' ||
-      q.difficulty === 'hard'
-        ? q.difficulty
-        : 'medium';
-    const explanation = typeof q.explanation === 'string' ? q.explanation : '';
-
-    // Per-question worked-example enforcement. Two paths trigger it:
-    //   1) the whole batch was flagged quantitative by the caller
-    //      (subject allowlist), or
-    //   2) this individual question looks calc-shaped by content —
-    //      calc keywords, LaTeX in stem, numeric options, unit hints.
-    // The check only runs when there's an explanation to inspect —
-    // if the caller opted out of explanations (`includeExplanations:
-    // false`), the field is empty by design and nothing to enforce.
-    if (explanation.trim()) {
-      const isCalc =
-        opts.requireWorkedExampleForBatch ||
-        looksLikeCalcQuestion({ stem: body, options });
-      if (
-        isCalc &&
-        !/^\s*#{1,6}\s+(?:Worked\s+Example|Example)\b/im.test(explanation)
-      ) {
-        return {
-          ok: false,
-          reason: 'missing_worked_example_calc',
-          detail: `item ${i} looks calculation-shaped but its explanation has no \`## Worked Example\` section`,
-          failedIndex: i,
-        };
-      }
-    }
-
-    out.push({ body, difficulty, options, explanation });
+    if (isCorrect) correctCount++;
+    options.push({
+      label: label || labelForIndex(j),
+      body: optBody,
+      isCorrect,
+    });
   }
 
-  return { ok: true, value: out };
+  // Exactly one correct.
+  if (correctCount === 0) {
+    return {
+      ok: false,
+      reason: 'no_correct',
+      detail: `item ${i} has no option flagged isCorrect`,
+    };
+  }
+  if (correctCount > 1) {
+    return {
+      ok: false,
+      reason: 'multiple_correct',
+      detail: `item ${i} has ${correctCount} options flagged isCorrect`,
+    };
+  }
+
+  // If a free-form correct-answer field slipped in, it must agree
+  // with the isCorrect option. Some models add `correctAnswer` /
+  // `answer` / `correct_option` unprompted.
+  const correctOption = options.find((o) => o.isCorrect)!;
+  const wildcardCorrect = firstString(
+    q.correctAnswer,
+    q.answer,
+    q.correct_option,
+    q.correctOption,
+  );
+  if (wildcardCorrect !== undefined) {
+    const nWild = wildcardCorrect.trim().toLowerCase();
+    const nLabel = correctOption.label.toLowerCase();
+    const nBody = correctOption.body.toLowerCase();
+    // Accept either "B" or "B. Cell nucleus" or "Cell nucleus".
+    const bodyContains = nBody.includes(nWild) || nWild.includes(nBody);
+    if (nWild !== nLabel && !bodyContains) {
+      return {
+        ok: false,
+        reason: 'correct_answer_field_mismatch',
+        detail: `item ${i} correctAnswer="${wildcardCorrect}" doesn't match isCorrect option (${correctOption.label}: ${correctOption.body.slice(0, 40)})`,
+      };
+    }
+  }
+
+  // Stem-leaks-answer. If 4+ consecutive words of the correct
+  // option appear in the stem, the question tests reading not
+  // knowledge — the model wrapped the answer inside the prompt
+  // and the distractors are cosmetic. Short options (< 4 words)
+  // are exempt because a proper-noun answer like "Chad" can't
+  // trigger this without also matching against the syllabus
+  // context, which is a different failure.
+  if (stemLeaksAnswer(body, correctOption.body)) {
+    return {
+      ok: false,
+      reason: 'stem_leaks_answer',
+      detail: `item ${i} stem contains the correct answer verbatim (4+ words match)`,
+    };
+  }
+
+  // Option-length ratio — the well-known "correct is longest" LLM
+  // tell. Warn-only (remediation 1.5: soft first, harden once the
+  // reject log shows the rate).
+  const lengths = options.map((o) => o.body.length);
+  const ratio = Math.max(...lengths) / Math.max(1, Math.min(...lengths));
+  if (ratio > OPTION_LENGTH_RATIO_WARN) {
+    const longest = options.reduce((a, b) =>
+      a.body.length >= b.body.length ? a : b,
+    );
+    warnings.push(
+      `item ${i} option-length ratio ${ratio.toFixed(2)} exceeds ${OPTION_LENGTH_RATIO_WARN}${longest.isCorrect ? ' and the CORRECT option is the longest' : ''}`,
+    );
+  }
+
+  // Difficulty: the admin's REQUEST is authoritative (remediation
+  // 1.5) — the old code silently stored the model's self-grade,
+  // letting the model rewrite the requested difficulty mix.
+  const claimed =
+    q.difficulty === 'easy' ||
+    q.difficulty === 'medium' ||
+    q.difficulty === 'hard'
+      ? q.difficulty
+      : undefined;
+  let difficulty: 'easy' | 'medium' | 'hard';
+  if (opts.requestedDifficulty) {
+    difficulty = opts.requestedDifficulty;
+    if (claimed && claimed !== opts.requestedDifficulty) {
+      warnings.push(
+        `item ${i} self-graded "${claimed}" but the batch requested "${opts.requestedDifficulty}" — stored as requested`,
+      );
+    }
+  } else {
+    difficulty = claimed ?? 'medium';
+    if (!claimed)
+      warnings.push(`item ${i} had no valid difficulty; defaulted to medium`);
+  }
+
+  const explanation = rawExplanation;
+
+  // Per-question worked-example enforcement. Two paths trigger it:
+  //   1) the whole batch was flagged quantitative by the caller
+  //      (subject allowlist), or
+  //   2) this individual question looks calc-shaped by content —
+  //      calc keywords, LaTeX in stem, numeric options, unit hints.
+  // The check only runs when there's an explanation to inspect —
+  // if the caller opted out of explanations (`includeExplanations:
+  // false`), the field is empty by design and nothing to enforce.
+  if (explanation.trim()) {
+    const isCalc =
+      opts.requireWorkedExampleForBatch ||
+      looksLikeCalcQuestion({ stem: body, options });
+    if (
+      isCalc &&
+      !/^\s*#{1,6}\s+(?:Worked\s+Example|Example)\b/im.test(explanation)
+    ) {
+      return {
+        ok: false,
+        reason: 'missing_worked_example_calc',
+        detail: `item ${i} looks calculation-shaped but its explanation has no \`## Worked Example\` section`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: { body, difficulty, options, explanation, warnings },
+  };
+}
+
+/**
+ * Server-side answer-position shuffle (remediation 0.7). Fisher–Yates
+ * over the options, then labels reassigned A–D in the new order. Runs
+ * AFTER validation and BEFORE insert — deterministic balance instead
+ * of begging the model (LLM C-bias is well documented). Explanations
+ * are unaffected because the contract bans letter references.
+ */
+export function shuffleOptions(question: ParsedQuestion): ParsedQuestion {
+  const shuffled = question.options.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return {
+    ...question,
+    options: shuffled.map((o, idx) => ({ ...o, label: labelForIndex(idx) })),
+  };
 }
 
 function stripFences(s: string): string {

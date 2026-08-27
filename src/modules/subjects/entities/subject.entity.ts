@@ -43,6 +43,17 @@ export class Subject {
   @Column({ name: 'sort_order', type: 'int', default: 0 })
   sortOrder: number;
 
+  /**
+   * Knowledge-Layer deviation dial (premium plan §4 / migration 2270):
+   * 'anchored' (default) — novel questions on grounded facts;
+   * 'strict' — every generated item is additionally grounding-checked
+   * against retrieved learning material and rejected on unsupported
+   * claims. Reserve 'strict' for hallucination-sensitive humanities
+   * (History, Social Studies, Government, RME).
+   */
+  @Column({ name: 'ai_retrieval_mode', type: 'text', default: 'anchored' })
+  aiRetrievalMode: 'anchored' | 'strict';
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

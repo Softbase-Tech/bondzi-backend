@@ -114,16 +114,26 @@ export class OllamaClient implements AiGenerationClient {
     }
 
     const decoded = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{
+        message?: { content?: string };
+        finish_reason?: string;
+      }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const text = decoded.choices?.[0]?.message?.content?.trim() ?? '';
+    // Map OpenAI-shape finish_reason onto the Anthropic vocabulary the
+    // callers check against: `length` means the completion hit
+    // max_tokens (truncated output — remediation 0.4).
+    const finish = decoded.choices?.[0]?.finish_reason;
+    const stopReason =
+      finish === 'length' ? 'max_tokens' : finish ? 'end_turn' : null;
     return {
       text,
       inputTokens: decoded.usage?.prompt_tokens ?? 0,
       outputTokens: decoded.usage?.completion_tokens ?? 0,
       // Log-friendly provenance tag — see ai_usage_log write path.
       effectiveModel: `ollama:${this.model}`,
+      stopReason,
     };
   }
 

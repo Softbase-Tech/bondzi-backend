@@ -16,6 +16,8 @@ import { GamificationService } from '../gamification/gamification.service';
 import { StreakService } from '../gamification/streak.service';
 import { PartnerCommissionsService } from '../partners/partner-commissions.service';
 import { WeaknessNarrativeService } from '../progress/weakness-narrative.service';
+import { RejectLogService } from '../ai/reject-log.service';
+import { KnowledgeRetrievalService } from '../syllabus/knowledge-retrieval.service';
 import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
@@ -174,6 +176,11 @@ describe('ExamsService', () => {
         { provide: SubscriptionsService, useValue: subscriptions },
         { provide: EntitlementsService, useValue: entitlements },
         { provide: AiService, useValue: { callBedrock: jest.fn() } },
+        { provide: RejectLogService, useValue: { record: jest.fn() } },
+        {
+          provide: KnowledgeRetrievalService,
+          useValue: { retrieveForRemediation: jest.fn().mockResolvedValue([]) },
+        },
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: DataSource, useValue: noop },
         {
@@ -186,6 +193,7 @@ describe('ExamsService', () => {
         {
           provide: WeaknessNarrativeService,
           useValue: {
+            invalidateForToday: jest.fn().mockResolvedValue(undefined),
             invalidateBootstrapForToday: jest.fn().mockResolvedValue(undefined),
           },
         },
