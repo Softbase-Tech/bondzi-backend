@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { accraDateIso } from '../../common/utils/timezone.util';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { UsersService } from './users.service';
@@ -207,6 +208,8 @@ describe('UsersService', () => {
     function stubUserAndAggregate(
       row: Record<string, string> | null,
       userOverrides: Partial<User> = {},
+      /** Distinct Accra days with >=1 answer, newest first. */
+      activeDays: string[] = [],
     ) {
       usersRepo.findOne.mockResolvedValueOnce(
         makeUser({
@@ -226,11 +229,11 @@ describe('UsersService', () => {
         setParameters: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue(row),
       });
-      // activeDaysLast7 reads exam_answers via manager.query — return an
-      // empty day list so the mask defaults to all-false, decoupling
-      // these existing tests from the new field's exact shape.
+      // ONE query now backs both `activeDaysLast7` and `streakDays` —
+      // they are derived from the same rows so they cannot disagree.
+      // Defaults to "no activity"; streak tests pass an explicit list.
       (answersRepo as unknown as { manager: { query: jest.Mock } }).manager = {
-        query: jest.fn().mockResolvedValue([]),
+        query: jest.fn().mockResolvedValue(activeDays.map((day) => ({ day }))),
       };
     }
 
@@ -313,7 +316,18 @@ describe('UsersService', () => {
       expect(out.level).toBe(3);
     });
 
-    it('passes streak fields straight through from the user row', async () => {
+    it('derives the streak from answer history, ignoring a drifted counter', async () => {
+      // THE REPORTED BUG. The persisted counter said 3 while the week
+      // dots showed 5 filled days, because the two read different
+      // sources. They now read the same rows, so the number is the
+      // length of the trailing run in that set — whatever the stale
+      // column happens to say.
+      const today = accraDateIso();
+      const day = (back: number): string => {
+        const d = new Date(`${today}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() - back);
+        return d.toISOString().slice(0, 10);
+      };
       stubUserAndAggregate(
         {
           total: '0',
@@ -323,16 +337,32 @@ describe('UsersService', () => {
           week: '0',
           todayMs: '0',
         },
-        {
-          streakDays: 12,
-          longestStreak: 30,
-          lastStudyDate: '2099-01-01',
-        },
+        { streakDays: 3, longestStreak: 3, lastStudyDate: day(4) },
+        [day(0), day(1), day(2), day(3), day(4)],
       );
       const out = await service.getStats('user-1');
-      expect(out.streakDays).toBe(12);
+      expect(out.streakDays).toBe(5);
+      // The all-time record can't be lower than a run we can see.
+      expect(out.longestStreak).toBe(5);
+      expect(out.lastStudyDate).toBe(day(0));
+      expect(out.streakBroken).toBe(false);
+    });
+
+    it('keeps a persisted longestStreak that exceeds the visible window', async () => {
+      stubUserAndAggregate(
+        {
+          total: '0',
+          correct: '0',
+          timeMs: '0',
+          today: '0',
+          week: '0',
+          todayMs: '0',
+        },
+        { streakDays: 0, longestStreak: 30, lastStudyDate: '2020-01-01' },
+      );
+      const out = await service.getStats('user-1');
+      expect(out.streakDays).toBe(0);
       expect(out.longestStreak).toBe(30);
-      expect(out.lastStudyDate).toBe('2099-01-01');
     });
 
     it('throws NotFound when the user does not exist', async () => {

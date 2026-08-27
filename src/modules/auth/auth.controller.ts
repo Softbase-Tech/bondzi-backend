@@ -312,6 +312,7 @@ export class AuthController {
       examType: dto.examType,
       formLevel: dto.formLevel,
       referralCode: dto.referralCode,
+      attribution: dto,
     });
   }
 

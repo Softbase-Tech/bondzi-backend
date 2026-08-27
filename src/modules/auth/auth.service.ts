@@ -28,6 +28,7 @@ import { RedisService } from '../../common/redis/redis.service';
 import { CacheKeys } from '../../common/utils/cache-keys.util';
 import { generateReferralCode } from '../../common/utils/referral-code.util';
 import { RegisterDto } from './dto/register.dto';
+import { SignupAttributionDto } from './dto/signup-attribution.dto';
 import {
   canonicalUsername,
   validateUsernameFormat,
@@ -368,6 +369,8 @@ export class AuthService {
       emailVerifiedAt: emailOtpVerified ? new Date() : null,
       // Where the account was created (web vs mobile app).
       signupPlatform: req.platform ?? null,
+      // ...and which campaign brought them here.
+      ...this.attributionColumns(dto),
     });
     await this.usersRepo.save(user);
 
@@ -602,6 +605,8 @@ export class AuthService {
       examType?: ExamType;
       formLevel?: number;
       referralCode?: string;
+      // First-touch attribution, forwarded verbatim from GoogleSignInDto.
+      attribution?: SignupAttributionDto;
     },
   ): Promise<{ user: SafeUser; tokens: TokenPair; isNew: boolean }> {
     const profile = await this.google.verify(idToken);
@@ -639,6 +644,7 @@ export class AuthService {
         emailVerifiedAt: new Date(),
         emailUnsubscribeToken: randomBytes(24).toString('hex'),
         signupPlatform: req.platform ?? null,
+        ...this.attributionColumns(req.attribution ?? {}),
       });
       await this.usersRepo.save(user);
       if (req.referralCode) {
@@ -1065,21 +1071,22 @@ export class AuthService {
     user.schoolLevel = schoolLevelFor(examType);
     user.formLevel = resolvedFormLevel;
     await this.usersRepo.save(user);
-    // Subject selections are scoped to the OLD exam type — a WASSCE
-    // student switching to BECE was studying Core Maths SHS, not Core
-    // Maths JHS, and those rows would now point at subjects with the
-    // wrong examType. Wipe them so the user lands on the new level
-    // with a clean "no preference, show everything" default; they can
-    // re-curate via Settings → Subjects.
+    // Subject selections are NOT touched here.
+    //
+    // This used to delete every `user_subjects` row for the user on any
+    // exam-type change. The reasoning was sound — a WASSCE shortlist is
+    // meaningless on BECE — but the remedy destroyed data: a student
+    // who flipped to BECE to look around and came straight back found
+    // their WASSCE picks gone for good, and the confirmation dialog
+    // (which counted the NEW level's selection) cheerfully announced it
+    // was clearing "0 subjects" while wiping all of them.
+    //
+    // Selections are now scoped by level on read and write instead
+    // (`UsersService.selectedSubjectIdsForExam`), so each level keeps
+    // its own shortlist and switching simply shows the other one.
+    // Switching back restores it.
     const examTypeChanged = before.examType !== examType;
     if (examTypeChanged) {
-      await this.dataSource
-        .createQueryBuilder()
-        .delete()
-        .from('user_subjects')
-        .where('user_id = :uid', { uid: userId })
-        .execute();
-
       // Anti-leaderboard-farming defense: a user could otherwise grind
       // to the top of BECE on Monday, switch to WASSCE on Tuesday and
       // accumulate a SECOND bucket, then flip back and continue the
@@ -1183,6 +1190,37 @@ export class AuthService {
     }
 
     return { user: this.toSafeUser(user), tokens };
+  }
+
+  /**
+   * Map the client-supplied UTM fields onto the `signup_*` columns.
+   *
+   * Only ever spread into `usersRepo.create()`, never into an update —
+   * that is what makes the attribution first-touch. Values are already
+   * length-capped by `SignupAttributionDto`; blank strings collapse to
+   * null so "present but empty" and "absent" don't become two different
+   * buckets in the rollup.
+   */
+  private attributionColumns(dto: SignupAttributionDto): {
+    signupSource: string | null;
+    signupMedium: string | null;
+    signupCampaign: string | null;
+    signupContent: string | null;
+    signupTerm: string | null;
+    signupReferrer: string | null;
+  } {
+    const clean = (v?: string): string | null => {
+      const trimmed = (v ?? '').trim();
+      return trimmed.length > 0 ? trimmed : null;
+    };
+    return {
+      signupSource: clean(dto.utmSource),
+      signupMedium: clean(dto.utmMedium),
+      signupCampaign: clean(dto.utmCampaign),
+      signupContent: clean(dto.utmContent),
+      signupTerm: clean(dto.utmTerm),
+      signupReferrer: clean(dto.signupReferrer),
+    };
   }
 
   toSafeUser(user: User): SafeUser {
