@@ -79,6 +79,19 @@ export class PmTestQuestion {
   @Column({ type: 'text', nullable: true })
   explanation: string | null;
 
+  /**
+   * Outcome of the blind second-pass answer verifier (remediation
+   * 0.1): 'agreed' | 'key_mismatch' | 'verifier_error' | null
+   * (pre-verifier rows / verifier disabled). 'key_mismatch' rows must
+   * never be promoted to active without human review.
+   */
+  @Column({ name: 'verification_status', type: 'text', nullable: true })
+  verificationStatus: string | null;
+
+  /** Model that performed the verification pass. */
+  @Column({ name: 'verifier_model', type: 'text', nullable: true })
+  verifierModel: string | null;
+
   @Column({ type: 'enum', enum: Difficulty, default: Difficulty.MEDIUM })
   difficulty: Difficulty;
 

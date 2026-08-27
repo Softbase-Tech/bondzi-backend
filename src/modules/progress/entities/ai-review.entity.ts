@@ -72,6 +72,16 @@ export class AiReview {
   })
   costUsd: string | null;
 
+  /**
+   * Hash of the StudentSignal this review was generated from
+   * (premium plan §6.4). A new POST whose current signal matches the
+   * latest review's fingerprint returns that review instead of
+   * regenerating — no quota unit, no tokens. Null on bootstrap rows
+   * and pre-v2 rows.
+   */
+  @Column({ name: 'signal_fingerprint', type: 'text', nullable: true })
+  signalFingerprint: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }

@@ -7,11 +7,15 @@ import { SyllabusContentStandard } from './entities/syllabus-content-standard.en
 import { SyllabusIndicator } from './entities/syllabus-indicator.entity';
 import { SyllabusAssessmentItem } from './entities/syllabus-assessment-item.entity';
 import { SyllabusPedagogyRef } from './entities/syllabus-pedagogy-ref.entity';
+import { LearningMaterialChunk } from './entities/learning-material-chunk.entity';
 import { SyllabusIngestionService } from './syllabus-ingestion.service';
 import { SyllabusEmbeddingService } from './syllabus-embedding.service';
 import { SyllabusRetrievalService } from './syllabus-retrieval.service';
 import { SyllabusReviewService } from './syllabus-review.service';
 import { SyllabusAdminController } from './syllabus-admin.controller';
+import { KnowledgeRetrievalService } from './knowledge-retrieval.service';
+import { LearningMaterialService } from './learning-material.service';
+import { LearningMaterialAdminController } from './learning-material-admin.controller';
 import { AiModule } from '../ai/ai.module';
 import { SubjectsModule } from '../subjects/subjects.module';
 
@@ -33,17 +37,26 @@ import { SubjectsModule } from '../subjects/subjects.module';
       SyllabusIndicator,
       SyllabusAssessmentItem,
       SyllabusPedagogyRef,
+      LearningMaterialChunk,
     ]),
     AiModule,
     SubjectsModule,
   ],
-  controllers: [SyllabusAdminController],
+  controllers: [SyllabusAdminController, LearningMaterialAdminController],
   providers: [
     SyllabusIngestionService,
     SyllabusEmbeddingService,
     SyllabusRetrievalService,
     SyllabusReviewService,
+    KnowledgeRetrievalService,
+    LearningMaterialService,
   ],
-  exports: [TypeOrmModule, SyllabusIngestionService, SyllabusRetrievalService],
+  exports: [
+    TypeOrmModule,
+    SyllabusIngestionService,
+    SyllabusRetrievalService,
+    KnowledgeRetrievalService,
+    LearningMaterialService,
+  ],
 })
 export class SyllabusModule {}

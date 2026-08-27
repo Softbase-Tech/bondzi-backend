@@ -6,6 +6,7 @@ import {
   AI_EMBEDDING_CLIENT,
   AI_GENERATION_CLIENT,
 } from './clients/ai-generation.factory';
+import { BedrockClient } from './clients/bedrock.client';
 import { AiUsageLog } from './entities/ai-usage-log.entity';
 import { PromptTemplate } from './entities/prompt-template.entity';
 import { RedisService } from '../../common/redis/redis.service';
@@ -57,6 +58,10 @@ describe('AiService', () => {
         { provide: ConfigService, useValue: config },
         { provide: RedisService, useValue: redis },
         { provide: AI_GENERATION_CLIENT, useValue: bedrock },
+        // DPA pin target — STUDENT_DATA_ACTIONS dispatch here directly.
+        // In these specs the same mock backs both tokens, so existing
+        // assertions on `bedrock.invoke` hold on either path.
+        { provide: BedrockClient, useValue: bedrock },
         { provide: AI_EMBEDDING_CLIENT, useValue: embedder },
         { provide: getRepositoryToken(AiUsageLog), useValue: usage },
         { provide: getRepositoryToken(PromptTemplate), useValue: prompts },

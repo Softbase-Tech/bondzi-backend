@@ -9,6 +9,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -21,11 +22,15 @@ import {
   CurrentUser,
 } from '../../common/decorators/current-user.decorator';
 import { EntitlementService } from '../../common/types/enums';
-import { RequiresService } from '../entitlements/requires-service.decorator';
+import { EntitlementsService } from '../entitlements/entitlements.service';
 import { inlineMathInMarkdown } from '../../common/utils/math.util';
 import { splitExplanationSections } from './explanation-sections.util';
 import { Question } from './entities/question.entity';
 import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
+import { ExamAnswer } from '../exams/entities/exam-answer.entity';
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Vote body for POST /explanations/:id/vote. -1 = downvote, 0 = clear, 1 = up.
@@ -64,15 +69,21 @@ export class ExplanationsController {
     private readonly questions: Repository<Question>,
     @InjectRepository(PmTestQuestion)
     private readonly pmTestQuestions: Repository<PmTestQuestion>,
+    @InjectRepository(ExamAnswer)
+    private readonly examAnswers: Repository<ExamAnswer>,
+    private readonly entitlements: EntitlementsService,
   ) {}
 
   @Get(':questionId')
-  @RequiresService(EntitlementService.AI_EXPLANATIONS)
   @ApiOperation({
     summary:
-      'Fetch the inline AI / human explanation for a question. Gated by the AI_EXPLANATIONS entitlement — Free=disabled (403), Plus=20/day (429 on 21st), Pro=unlimited.',
+      'Fetch the inline AI / human explanation for a question. Gated by the AI_EXPLANATIONS entitlement — Free=disabled (403), Plus=20/day (429 on 21st), Pro=unlimited. The quota point is consumed only on a successful fetch. Optional ?examId= marks the exam answer as explanation-viewed.',
   })
-  async get(@Param('questionId', new ParseUUIDPipe()) questionId: string) {
+  async get(
+    @Param('questionId', new ParseUUIDPipe()) questionId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('examId') examId?: string,
+  ) {
     // Question ids can point at either the past-paper `questions` table or
     // the AI-generated `pm_test_questions` table — same UUID namespace,
     // different homes. Try past-paper first, fall back to pm-test on
@@ -118,15 +129,47 @@ export class ExplanationsController {
 
     if (!source) throw new NotFoundException('Question not found');
     if (!source.explanation) {
+      // Quota fairness (remediation C-zero #5): metering happens AFTER
+      // this check, so a missing explanation no longer burns one of a
+      // Plus student's 20 daily points. The old @RequiresService guard
+      // consumed the point before the DB read — 404s and repeat views
+      // both charged.
       throw new NotFoundException(
         'No explanation has been generated for this question yet.',
       );
     }
-    // @RequiresService(AI_EXPLANATIONS) has already run (and consumed one
-    // quota point) by the time this handler executes — see
-    // RequiresServiceGuard. If the user was Free-tier, we returned 403
-    // before reading the DB; if they were Plus at the cap, 429; otherwise
-    // we're through the gate with usedCount already bumped for the day.
+    // Consume-after-success: the content exists, so charge the quota
+    // point now (403 for Free, 429 for Plus at cap — same semantics as
+    // the old guard, minus the charge-on-failure).
+    await this.entitlements.assertAndConsume(
+      user.id,
+      EntitlementService.AI_EXPLANATIONS,
+    );
+
+    // Explanation-viewed instrumentation (premium plan §3.2): when the
+    // client passes the exam context, flip the dead
+    // exam_answers.explanation_viewed flag — ownership-checked via the
+    // exam row so one student can't mark another's answers.
+    if (examId && UUID_RE.test(examId)) {
+      try {
+        await this.examAnswers.query(
+          `update "exam_answers" a
+              set "explanation_viewed" = true
+            from "exams" e
+           where a."exam_id" = e."id"
+             and a."exam_id" = $1
+             and a."question_id" = $2
+             and e."user_id" = $3`,
+          [examId, questionId, user.id],
+        );
+      } catch (err) {
+        // Telemetry, never a failure path for the student.
+        this.logger.warn(
+          `[explanation-viewed] update failed exam=${examId} q=${questionId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
     // Split into the concise solution + the optional worked example so the
     // client can render them on separate surfaces (inline card vs. sheet)
     // and hide the worked-example affordance when there isn't one.

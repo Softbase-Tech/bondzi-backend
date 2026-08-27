@@ -1,4 +1,5 @@
 import { AiReview } from '../entities/ai-review.entity';
+import { inlineMathInMarkdown } from '../../../common/utils/math.util';
 
 export interface AiReviewListItem {
   id: string;
@@ -41,6 +42,11 @@ export function toAiReviewListItem(row: AiReview): AiReviewListItem {
 export function toAiReviewFull(row: AiReview): AiReviewFull {
   return {
     ...toAiReviewListItem(row),
-    content: row.content,
+    // Inline `$...$` LaTeX to the SVG shape the mobile MathMarkdown
+    // renderer expects — the explanations controller does the same
+    // treatment; this serializer was forgetting it, so any math a
+    // review emitted reached the client as literal `\frac{}` text
+    // (remediation C-zero #6).
+    content: inlineMathInMarkdown(row.content),
   };
 }

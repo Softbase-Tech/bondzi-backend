@@ -2,19 +2,28 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { WeaknessNarrative } from './entities/weakness-narrative.entity';
 import {
-  PastPaperWeakTopic,
-  SyllabusWeakTopic,
-  WeaknessService,
-} from './weakness.service';
+  StudentRecommendation,
+  WeaknessNarrative,
+} from './entities/weakness-narrative.entity';
+import { StudentSignalService } from './student-signal.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { AiService } from '../ai/ai.service';
+import { RejectLogService } from '../ai/reject-log.service';
 import { AiAction, EntitlementService } from '../../common/types/enums';
 import { accraDateIso } from '../../common/utils/timezone.util';
+import {
+  buildWeaknessNarrativePrompt,
+  envelopeContextFromSignal,
+  SYSTEM_SHELL_WEAKNESS_NARRATIVE,
+  validateNarrativeEnvelope,
+  WEAKNESS_NARRATIVE_PROMPT_VERSION,
+} from './weakness-narrative.prompt';
 
 export interface WeaknessNarrativeResponse {
   narrative: string;
+  /** Tappable actions the app renders as deep links (premium §6.3). */
+  recommendations: StudentRecommendation[];
   generatedAt: string;
   /**
    * `bootstrap` — the user doesn't have enough signal for a
@@ -24,7 +33,7 @@ export interface WeaknessNarrativeResponse {
    * asked explicitly.
    *
    * `personalised` — Bedrock-generated prose referencing the user's
-   * weak topics.
+   * weak topics, grounded on the StudentSignal bundle.
    */
   mode: 'bootstrap' | 'personalised';
   model: string;
@@ -33,35 +42,37 @@ export interface WeaknessNarrativeResponse {
 }
 
 /**
- * Generates a personalised prose narrative from the user's weakness
- * rollup (`WeaknessService`). Pinned to Bedrock per AiModule's
- * documented policy — for personalised student-facing text, Haiku's
- * fidelity is worth the ~$0.0009/call vs a local 8B model.
+ * Weakness Detector v2 (premium plan §6.3). Grounded on the shared
+ * StudentSignal bundle (weak/strong topics WITH syllabus ids, trend,
+ * recent mistakes, Knowledge-Layer reading citations), validated
+ * before persist, reject-logged on drift — the feature previously ran
+ * with topic titles + raw counts only, no validator, and no telemetry.
+ *
+ * DPA: AiAction.WEAKNESS_NARRATIVE is in AiService's
+ * STUDENT_DATA_ACTIONS set, so this call is pinned to Bedrock in code
+ * regardless of AI_PROVIDER.
  *
  * Persistence semantics
  *   The composite PK on (user_id, day, subject_scope) makes today's
  *   narrative single-writer per scope. A same-day repeat request
  *   returns the cached row WITHOUT touching entitlements — one
  *   AI_WEAKNESS_NARRATIVES point per unique (day, scope), not per
- *   HTTP call.
- *
- *   `subject_scope` is either a subject uuid or the sentinel 'all'
- *   for cross-subject narratives. Kept as TEXT (not FK) so the PK
- *   stays composite — clean dedup beats the referential integrity
- *   check here because subjects are effectively immutable.
+ *   HTTP call. Submitting an exam invalidates today's rows (both
+ *   modes) so the next view reflects the new attempt.
  */
 @Injectable()
 export class WeaknessNarrativeService {
   private readonly logger = new Logger(WeaknessNarrativeService.name);
-  private static readonly MAX_NARRATIVE_TOKENS = 700;
+  private static readonly MAX_NARRATIVE_TOKENS = 900;
   private static readonly ALL_SCOPE = 'all';
 
   constructor(
     @InjectRepository(WeaknessNarrative)
     private readonly narrativesRepo: Repository<WeaknessNarrative>,
-    private readonly weakness: WeaknessService,
+    private readonly signals: StudentSignalService,
     private readonly entitlements: EntitlementsService,
     private readonly ai: AiService,
+    private readonly rejectLog: RejectLogService,
     private readonly config: ConfigService,
   ) {}
 
@@ -79,6 +90,7 @@ export class WeaknessNarrativeService {
     if (cached) {
       return {
         narrative: cached.narrative,
+        recommendations: cached.recommendations ?? [],
         generatedAt: cached.generatedAt.toISOString(),
         mode: cached.mode,
         model: cached.model,
@@ -87,30 +99,28 @@ export class WeaknessNarrativeService {
       };
     }
 
-    // 2. Look up weakness signal FIRST — before touching entitlements
+    // 2. Build the grounded signal FIRST — before touching entitlements
     //    or Bedrock. Zero-signal users get canned bootstrap prose:
     //    no Bedrock call, no entitlement charge, and the Home client
-    //    hides the card because `mode === 'bootstrap'`. This also
-    //    prevents the "stuck welcome" bug where a morning-open cached
-    //    bootstrap prose used to serve for the rest of the day.
-    const data = await this.weakness.forUser(userId, {
+    //    hides the card because `mode === 'bootstrap'`.
+    const signal = await this.signals.forUser(userId, {
       subjectId: filters.subjectId,
     });
-    const hasSignal =
-      data.pastPaperWeakTopics.length > 0 || data.syllabusWeakTopics.length > 0;
 
-    if (!hasSignal) {
+    if (!signal.hasSignal) {
       const row = this.narrativesRepo.create({
         userId,
         day,
         subjectScope: scope,
         narrative: BOOTSTRAP_NARRATIVE,
+        recommendations: null,
         mode: 'bootstrap',
         model: 'canned',
       });
       await this.narrativesRepo.save(row);
       return {
         narrative: BOOTSTRAP_NARRATIVE,
+        recommendations: [],
         generatedAt: row.generatedAt?.toISOString() ?? new Date().toISOString(),
         mode: 'bootstrap',
         model: 'canned',
@@ -127,13 +137,11 @@ export class WeaknessNarrativeService {
       EntitlementService.AI_WEAKNESS_NARRATIVES,
     );
 
-    const prompt = this.buildPrompt(
-      data.pastPaperWeakTopics,
-      data.syllabusWeakTopics,
-    );
+    const prompt = buildWeaknessNarrativePrompt(this.signals.render(signal));
 
+    // `ai.fastModel` honors AI_DEFAULT_MODEL / AI_FAST_MODEL.
     const model =
-      this.config.get<string>('ai.defaultModel') ??
+      this.config.get<string>('ai.fastModel') ??
       'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
 
     const result = await this.ai.callBedrock(prompt, model, {
@@ -141,15 +149,31 @@ export class WeaknessNarrativeService {
       maxTokens: WeaknessNarrativeService.MAX_NARRATIVE_TOKENS,
       action: AiAction.WEAKNESS_NARRATIVE,
       userId,
+      cacheSystemPrompt: true,
+      promptVersion: WEAKNESS_NARRATIVE_PROMPT_VERSION,
+      prefill: '{"narrative":"',
     });
 
-    const narrative = result.content.trim();
-    if (!narrative) {
-      // Empty result from the model — very rare, but if it happens we
-      // do NOT persist (a cached empty string would soft-lock the user
-      // out of narratives for the day since same-day cache reads win).
+    const validation = validateNarrativeEnvelope(
+      result.content,
+      envelopeContextFromSignal(signal),
+    );
+    if (!validation.ok) {
+      // Drift is now visible: the reject lands in the same log the
+      // generation pipeline uses (previously: raw save, no gate).
+      this.logger.warn(
+        `[weakness-narrative] rejected user=${userId} reason=${validation.reason} — ${validation.detail}`,
+      );
+      await this.recordRejectSafely(
+        model,
+        validation.reason,
+        validation.detail,
+        result.content,
+      );
+      // Nothing persisted → the same-day cache stays empty and the
+      // student can simply retry.
       throw new BadRequestException(
-        'The AI returned an empty narrative; try again in a moment.',
+        'The AI narrative came back malformed. Please try again in a moment.',
       );
     }
 
@@ -157,13 +181,15 @@ export class WeaknessNarrativeService {
       userId,
       day,
       subjectScope: scope,
-      narrative,
+      narrative: validation.value.narrative,
+      recommendations: validation.value.recommendations,
       mode: 'personalised',
       model,
     });
     await this.narrativesRepo.save(row);
     return {
-      narrative,
+      narrative: validation.value.narrative,
+      recommendations: validation.value.recommendations,
       generatedAt: row.generatedAt?.toISOString() ?? new Date().toISOString(),
       mode: 'personalised',
       model,
@@ -173,47 +199,43 @@ export class WeaknessNarrativeService {
   }
 
   /**
-   * Drop bootstrap rows for today so the next call recomputes with
-   * fresh signal. Called by ExamsService right after a submission
-   * lands — the user may now have crossed the MIN_SAMPLES threshold
-   * and we want the next Home visit to see the personalised narrative,
-   * not the morning's cached "welcome" prose.
-   *
-   * Only deletes `mode = 'bootstrap'` rows — personalised rows stay
-   * (they already cost a Bedrock call and shouldn't regenerate on
-   * every exam finish, which would burn quota).
+   * Drop today's rows so the next call recomputes with fresh signal.
+   * Called by ExamsService right after a submission lands. v2 drops
+   * BOTH modes (premium §6.3): a personalised narrative describing
+   * yesterday's weaknesses must not survive today's exam. The regen
+   * cost is bounded by the per-(day,scope) entitlement charge.
    */
-  async invalidateBootstrapForToday(userId: string): Promise<void> {
+  async invalidateForToday(userId: string): Promise<void> {
     const day = accraDateIso();
-    await this.narrativesRepo.delete({ userId, day, mode: 'bootstrap' });
+    await this.narrativesRepo.delete({ userId, day });
   }
 
-  private buildPrompt(
-    past: PastPaperWeakTopic[],
-    syllabus: SyllabusWeakTopic[],
-  ): string {
-    const pastList = past
-      .map(
-        (t) =>
-          `- ${t.title} (${t.correct}/${t.answered} correct, ${Math.round(t.accuracy * 100)}%)`,
-      )
-      .join('\n');
-    const syllabusList = syllabus
-      .map(
-        (t) =>
-          `- ${t.title} (${t.correct}/${t.answered} correct, ${Math.round(t.accuracy * 100)}%)`,
-      )
-      .join('\n');
-    return [
-      `You are analysing a Ghanaian secondary-school student's recent WASSCE/BECE practice results.`,
-      pastList ? `\nPast-paper topics they struggle with:\n${pastList}` : '',
-      syllabusList
-        ? `\nSyllabus topics they struggle with:\n${syllabusList}`
-        : '',
-      `\nWrite a 3–5 sentence narrative directly to the student. Tone: warm, specific, honest — like a supportive tutor, NOT a coach reading from a script. Reference at least two of the topics by name. End with ONE concrete next step (e.g. "Start with ${past[0]?.title ?? syllabus[0]?.title ?? 'the weakest topic'} — 10 questions, mixed difficulty."). Do not use markdown or headings. Do not repeat the accuracy percentages back to them.`,
-    ]
-      .filter(Boolean)
-      .join('\n');
+  /** @deprecated v2 alias — kept so existing callers keep compiling. */
+  async invalidateBootstrapForToday(userId: string): Promise<void> {
+    await this.invalidateForToday(userId);
+  }
+
+  private async recordRejectSafely(
+    model: string,
+    reason: string,
+    detail: string,
+    rawOutput: string,
+  ): Promise<void> {
+    try {
+      await this.rejectLog.record({
+        jobId: null,
+        action: 'weakness_narrative',
+        provider: model.startsWith('ollama:') ? 'ollama' : 'bedrock',
+        model,
+        reason,
+        detail,
+        rawOutput,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `[weakness-narrative] reject-log write failed: ${(err as Error).message}`,
+      );
+    }
   }
 }
 
@@ -224,19 +246,3 @@ export class WeaknessNarrativeService {
  * branch on structure — just on `mode`.
  */
 const BOOTSTRAP_NARRATIVE = `Welcome — you're set up and ready. We haven't seen enough of your practice yet to spot where you're strongest or where you're getting stuck. Pick the subject you feel least confident in and try 10–20 questions there; once we see a few topics in a row, today's insight will call out exactly what to work on.`;
-
-/**
- * Weakness-narrative system-shell — kept inline rather than in the
- * instruction-layer/ directory because it's a single, narrow use-case
- * (~5 lines) and doesn't share structure with the question-generation
- * or explanation shells there.
- */
-const SYSTEM_SHELL_WEAKNESS_NARRATIVE = [
-  `You write short, personalised feedback narratives for Ghanaian secondary-school students preparing for WASSCE/BECE.`,
-  `Rules:`,
-  `1. Write in plain prose. Never use markdown, headings, or bullet points.`,
-  `2. Address the student in the second person ("you").`,
-  `3. Never invent topics that weren't in the user prompt.`,
-  `4. Never repeat the raw accuracy percentages back — the student already saw them.`,
-  `5. If the user prompt describes a bootstrap case (no data), do not fabricate weaknesses.`,
-].join('\n');

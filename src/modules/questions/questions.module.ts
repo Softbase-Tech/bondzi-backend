@@ -15,6 +15,8 @@ import { StimuliAdminController } from './stimuli-admin.controller';
 import { StimuliService } from './stimuli.service';
 import { ExplanationsController } from './explanations.controller';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { EntitlementsModule } from '../entitlements/entitlements.module';
+import { ExamAnswer } from '../exams/entities/exam-answer.entity';
 
 @Module({
   imports: [
@@ -28,8 +30,14 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
       UserSubjectProgress,
       AuditLog,
       Topic,
+      // Read/write access for the explanation-viewed instrumentation
+      // (explanations.controller marks exam_answers.explanation_viewed).
+      ExamAnswer,
     ]),
     SubscriptionsModule,
+    // Explanations meter in-handler (consume-after-success) instead of
+    // via the @RequiresService guard — see explanations.controller.
+    EntitlementsModule,
   ],
   controllers: [
     QuestionsController,

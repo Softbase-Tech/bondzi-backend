@@ -15,18 +15,26 @@ import { QUEUE_AI_GENERATION } from '../modules/ai/ai.queues';
 import { NotificationsService } from '../modules/notifications/notifications.service';
 import {
   buildQuestionGenerationPrompt,
+  QUESTION_GENERATION_PROMPT_VERSION,
   type ExemplarForPrompt,
 } from '../modules/ai/instruction-layer/question-generation.prompt';
-import { buildExplanationPrompt } from '../modules/ai/instruction-layer/explanation.prompt';
+import {
+  buildExplanationPrompt,
+  EXPLANATION_PROMPT_VERSION,
+} from '../modules/ai/instruction-layer/explanation.prompt';
 import { SyllabusRetrievalService } from '../modules/syllabus/syllabus-retrieval.service';
+import { KnowledgeRetrievalService } from '../modules/syllabus/knowledge-retrieval.service';
 import { PromptExemplarService } from '../modules/ai/prompt-exemplars.service';
+import { PromptTemplateRuntimeService } from '../modules/ai/prompt-template-runtime.service';
 import { isQuantitativeSubject } from '../common/utils/quantitative-subject.util';
 import { looksLikeCalcQuestion } from '../common/utils/looks-like-calc.util';
 import {
-  validateQuestionBatch,
+  shuffleOptions,
+  validateQuestionBatchSalvage,
   type ParsedQuestion,
 } from '../modules/ai/validation/question.validator';
 import { validateExplanation } from '../modules/ai/validation/explanation.validator';
+import { AnswerVerifierService } from '../modules/ai/verifiers/answer-verifier.service';
 import { RejectLogService } from '../modules/ai/reject-log.service';
 import {
   AiAction,
@@ -105,7 +113,10 @@ export class AiGenerationProcessor extends WorkerHost {
     private readonly notifications: NotificationsService,
     private readonly rejectLog: RejectLogService,
     private readonly syllabusRetrieval: SyllabusRetrievalService,
+    private readonly knowledge: KnowledgeRetrievalService,
     private readonly exemplars: PromptExemplarService,
+    private readonly promptTemplates: PromptTemplateRuntimeService,
+    private readonly answerVerifier: AnswerVerifierService,
   ) {
     super();
   }
@@ -206,8 +217,12 @@ export class AiGenerationProcessor extends WorkerHost {
             : '';
           return `- ${h.statement}${dok}`;
         });
+        // Remediation 0.2: scope, not source — the old "ground the
+        // questions strictly on these" wording contradicted the system
+        // shell and pushed the model into paraphrasing indicator prose
+        // (which the meta-syllabus validator then rejected).
         const block = [
-          'NaCCA syllabus indicators (each is a required learning point — ground the questions strictly on these):',
+          'NaCCA syllabus indicators (these define the SCOPE this batch must cover — source your facts from subject knowledge; do not paraphrase the indicator wording):',
           ...lines,
         ].join('\n');
         grounded = args.legacyContext?.trim()
@@ -221,6 +236,66 @@ export class AiGenerationProcessor extends WorkerHost {
     }
     args.cache.set(key, grounded);
     return grounded;
+  }
+
+  /**
+   * Knowledge Layer retrieval for a generation batch (premium plan §4).
+   * Returns the rendered `<data type="reference_material">` body, or ''
+   * when the subject has no ingested learning material (fallback:
+   * today's subject-knowledge grounding). `retrieval_empty` is recorded
+   * once per (subject, topic) as an informational reject-log row so
+   * coverage improvements are measurable — it is NOT a rejection.
+   */
+  private async fetchReferenceMaterial(args: {
+    subjectId: string;
+    formLevel: number | null;
+    topicTitle: string;
+    jobId: string;
+    modelId: string;
+    cache: Map<string, string>;
+    hasChunksCache: Map<string, boolean>;
+  }): Promise<string> {
+    const key = `${args.subjectId}|${args.formLevel ?? 'any'}|${args.topicTitle}`;
+    const cached = args.cache.get(key);
+    if (cached !== undefined) return cached;
+
+    let hasChunks = args.hasChunksCache.get(args.subjectId);
+    if (hasChunks === undefined) {
+      hasChunks = await this.knowledge
+        .hasChunks(args.subjectId)
+        .catch(() => false);
+      args.hasChunksCache.set(args.subjectId, hasChunks);
+    }
+    if (!hasChunks) {
+      args.cache.set(key, '');
+      return '';
+    }
+
+    let rendered = '';
+    try {
+      const bundle = await this.knowledge.retrieveForGeneration({
+        subjectId: args.subjectId,
+        formLevel: args.formLevel,
+        queryText: args.topicTitle,
+      });
+      if (bundle.empty) {
+        await this.recordRejectSafely({
+          jobId: args.jobId,
+          action: 'question_generation',
+          modelId: args.modelId,
+          reason: 'retrieval_empty',
+          detail: `no learning-material chunks matched subject=${args.subjectId} topic="${args.topicTitle}" — generated on fallback path`,
+        });
+      } else {
+        rendered = this.knowledge.renderReferenceMaterial(bundle);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `[knowledge] retrieval failed for ${args.subjectId}/"${args.topicTitle}": ${(err as Error).message}`,
+      );
+    }
+    args.cache.set(key, rendered);
+    return rendered;
   }
 
   /**
@@ -250,8 +325,9 @@ export class AiGenerationProcessor extends WorkerHost {
           : '';
         return `- ${h.statement}${dok}`;
       });
+      // Remediation 0.2: scope, not source (see groundContext above).
       return [
-        'NaCCA syllabus indicators (ground the explanation strictly on these):',
+        'NaCCA syllabus indicators (the learning outcomes this question serves — scope only; source facts from subject knowledge, never quote the indicator wording):',
         ...lines,
       ].join('\n');
     } catch (err) {
@@ -454,6 +530,12 @@ export class AiGenerationProcessor extends WorkerHost {
     // diverse — one topic × three difficulties gets three distinct
     // sets of exemplars per subject.
     const exemplarCache = new Map<string, ExemplarForPrompt[]>();
+    // Knowledge Layer (premium plan §4): rendered learning-material
+    // bundle per (subject, form, topic) + a per-subject "has any
+    // chunks" skip-guard so un-ingested subjects pay zero retrieval
+    // cost and fall back to today's behavior.
+    const knowledgeCache = new Map<string, string>();
+    const subjectHasChunks = new Map<string, boolean>();
 
     for (const selection of params.selections) {
       if (selection.mode === 'replace') {
@@ -563,6 +645,20 @@ export class AiGenerationProcessor extends WorkerHost {
             difficulty: diff,
             cache: exemplarCache,
           });
+          const referenceMaterial = await this.fetchReferenceMaterial({
+            subjectId: selection.subjectId,
+            formLevel: selection.formLevel,
+            topicTitle,
+            jobId: record.id,
+            modelId,
+            cache: knowledgeCache,
+            hasChunksCache: subjectHasChunks,
+          });
+          // DB-served shell when AI_PROMPT_TEMPLATES_ENABLED (remediation
+          // 1.2). Cached 60s inside the runtime service, so this is one
+          // DB read per job in practice; null → compiled shell.
+          const dbShell =
+            await this.promptTemplates.activeShell('PM_TEST_GENERATION');
           const built = buildQuestionGenerationPrompt({
             examType: params.examType,
             subjectName: subject.name,
@@ -573,27 +669,72 @@ export class AiGenerationProcessor extends WorkerHost {
             syllabusContext,
             pastPaperExemplars,
             includeExplanations: params.includeExplanations,
+            referenceMaterial,
             isQuantitativeSubject: isQuantitativeSubject({
               name: subject.name,
               code: subject.code,
             }),
+            systemShellOverride: dbShell?.shell,
           });
+          const promptVersion =
+            dbShell?.version ?? QUESTION_GENERATION_PROMPT_VERSION;
+
+          const isQuant = isQuantitativeSubject({
+            name: subject.name,
+            code: subject.code,
+          });
+          // Content-aware token budget (remediation 0.4). The old
+          // `200 + n*500` truncated quantitative batches mid-JSON —
+          // a question with the mandated Solution + Worked Example
+          // easily exceeds 500 tokens on its own.
+          const tokenBudget =
+            400 +
+            batch.length * (isQuant ? 1100 : 700) +
+            (params.includeExplanations ? batch.length * 500 : 0);
+
+          const invokeBatch = (
+            userPrompt: string,
+            maxTokens: number,
+          ): ReturnType<typeof this.ai.callBedrock> =>
+            this.callBedrockWithBackoff(
+              () =>
+                this.ai.callBedrock(userPrompt, modelId, {
+                  system: built.system,
+                  action: AiAction.QUESTION_GEN,
+                  jobId: record.id,
+                  maxTokens,
+                  // Prefill + prompt-cache (remediation 1.3): `[`
+                  // structurally kills preamble/fences; the ~1.4k-token
+                  // static shell is billed once per cache window.
+                  prefill: '[',
+                  cacheSystemPrompt: true,
+                  promptVersion,
+                }),
+              `pm-test-batch ${topicTitle}/${diff}`,
+            );
 
           let call: Awaited<ReturnType<typeof this.ai.callBedrock>> | null =
             null;
           try {
             // Spec §4.4: exponential backoff, 3 attempts.
-            call = await this.callBedrockWithBackoff(
-              () =>
-                this.ai.callBedrock(built.user, modelId, {
-                  system: built.system,
-                  action: AiAction.QUESTION_GEN,
-                  jobId: record.id,
-                  maxTokens: 200 + batch.length * 500,
-                }),
-              `pm-test-batch ${topicTitle}/${diff}`,
-            );
+            call = await invokeBatch(built.user, tokenBudget);
             totalCost += call.costUsd;
+
+            // Truncation (remediation 0.4): `max_tokens` means the
+            // JSON tail is missing no matter how it parses. One retry
+            // with 1.5× budget, then give up with a DISTINCT reason so
+            // ops can tell "we cut it off" from "model wrote garbage".
+            if (call.stopReason === 'max_tokens') {
+              this.logger.warn(
+                `pm-test batch (${topicTitle}, ${diff}) truncated at ${tokenBudget} tokens; retrying with 1.5× budget`,
+              );
+              call = await invokeBatch(
+                built.user,
+                Math.ceil(tokenBudget * 1.5),
+              );
+              totalCost += call.costUsd;
+            }
+
             if (this.exceedsJobCostCap(record, totalCost)) {
               this.logger.error(
                 `[ai-job] aborting pm-test ${record.id}: running cost $${totalCost.toFixed(2)} exceeds ${AiGenerationProcessor.JOB_COST_CAP_MULTIPLIER}× estimate ($${record.estimatedCostUsd}).`,
@@ -627,33 +768,16 @@ export class AiGenerationProcessor extends WorkerHost {
             continue;
           }
 
-          // Rule-based validator replaces the inline guard-parse.
-          // Rejections don't insert anything and land in the log so
-          // ops can spot patterns (e.g. one model consistently misses
-          // "exactly one correct answer").
-          //
-          // `requireWorkedExampleForBatch` fires when the subject is
-          // quantitative — an "if the question is calc-shaped, we
-          // still enforce" per-question guard runs inside the
-          // validator so a numeric item in a non-quantitative
-          // subject also gets a Worked Example.
-          const validation = validateQuestionBatch(call.content, {
-            requireWorkedExampleForBatch: isQuantitativeSubject({
-              name: subject.name,
-              code: subject.code,
-            }),
-          });
-          if (!validation.ok) {
+          if (call.stopReason === 'max_tokens') {
+            // Still truncated after the bigger retry — distinct reject
+            // reason (remediation 0.4).
             failed += batch.length;
-            this.logger.warn(
-              `pm-test batch (${topicTitle}, ${diff}) rejected: ${validation.reason} — ${validation.detail}`,
-            );
             await this.recordRejectSafely({
               jobId: record.id,
               action: 'question_generation',
               modelId,
-              reason: validation.reason,
-              detail: validation.detail,
+              reason: 'max_tokens_truncation',
+              detail: `output still truncated at ${Math.ceil(tokenBudget * 1.5)} tokens`,
               rawOutput: call.content,
             });
             await this.jobsRepo.update(record.id, {
@@ -664,9 +788,193 @@ export class AiGenerationProcessor extends WorkerHost {
             continue;
           }
 
-          const generated: ParsedQuestion[] = validation.value;
+          // Per-item validation with salvage (remediation 0.5): good
+          // items are kept; bad items are logged individually and get
+          // ONE reflexion retry. One bad item no longer bills the
+          // whole batch.
+          //
+          // `requireWorkedExampleForBatch` fires when the subject is
+          // quantitative — an "if the question is calc-shaped, we
+          // still enforce" per-question guard runs inside the
+          // validator so a numeric item in a non-quantitative
+          // subject also gets a Worked Example.
+          const validationOpts = {
+            requireWorkedExampleForBatch: isQuant,
+            requestedDifficulty: diff,
+            expectedCount: batch.length,
+          };
+          let salvage = validateQuestionBatchSalvage(
+            call.content,
+            validationOpts,
+          );
+
+          // Reflexion retry (remediation 0.5): tell the model exactly
+          // what was rejected and ask for corrected items only. One
+          // retry per batch, then accept what we have.
+          const needsRetry = !salvage.ok || salvage.rejected.length > 0;
+          if (needsRetry && !this.exceedsJobCostCap(record, totalCost)) {
+            const missing = salvage.ok
+              ? batch.length - salvage.value.length
+              : batch.length;
+            const rejectionNote = salvage.ok
+              ? salvage.rejected
+                  .map((r) => `- item ${r.index}: ${r.reason} — ${r.detail}`)
+                  .join('\n')
+              : `- entire output: ${salvage.reason} — ${salvage.detail}`;
+            const reflexionUser = `${built.user}
+
+Your previous output for this exact request was rejected by an
+automated validator:
+${rejectionNote}
+
+Produce EXACTLY ${Math.max(1, missing)} corrected question(s) that fix the
+problems above. Same schema, same rules. Return ONLY the JSON array.`;
+            try {
+              const retry = await invokeBatch(
+                reflexionUser,
+                400 + Math.max(1, missing) * (isQuant ? 1600 : 1200),
+              );
+              totalCost += retry.costUsd;
+              const retrySalvage = validateQuestionBatchSalvage(retry.content, {
+                ...validationOpts,
+                expectedCount: Math.max(1, missing),
+              });
+              if (retrySalvage.ok) {
+                salvage = salvage.ok
+                  ? {
+                      ...salvage,
+                      value: [...salvage.value, ...retrySalvage.value],
+                      rejected: retrySalvage.rejected,
+                    }
+                  : retrySalvage;
+              }
+            } catch (err) {
+              this.logger.warn(
+                `pm-test reflexion retry (${topicTitle}, ${diff}) failed: ${(err as Error).message}`,
+              );
+            }
+          }
+
+          if (!salvage.ok) {
+            failed += batch.length;
+            this.logger.warn(
+              `pm-test batch (${topicTitle}, ${diff}) rejected: ${salvage.reason} — ${salvage.detail}`,
+            );
+            await this.recordRejectSafely({
+              jobId: record.id,
+              action: 'question_generation',
+              modelId,
+              reason: salvage.reason,
+              detail: salvage.detail,
+              rawOutput: call.content,
+            });
+            await this.jobsRepo.update(record.id, {
+              completedItems: completed,
+              failedItems: failed,
+              actualCostUsd: totalCost.toFixed(4),
+            });
+            continue;
+          }
+
+          // Per-item rejects that survived the reflexion retry — log
+          // each with its own reason (the reject-log already had
+          // failedIndex plumbing; now it gets used).
+          for (const r of salvage.rejected) {
+            await this.recordRejectSafely({
+              jobId: record.id,
+              action: 'question_generation',
+              modelId,
+              reason: r.reason,
+              detail: r.detail,
+              rawOutput: call.content,
+            });
+          }
+          for (const w of salvage.warnings) {
+            this.logger.warn(`pm-test batch (${topicTitle}, ${diff}): ${w}`);
+          }
+
+          const generated: ParsedQuestion[] = salvage.value.slice(
+            0,
+            batch.length,
+          );
           for (let j = 0; j < generated.length; j++) {
-            const spec = generated[j];
+            // Server-side answer-position shuffle (remediation 0.7) —
+            // deterministic A–D balance instead of begging the model.
+            const spec = shuffleOptions(generated[j]);
+            for (const w of spec.warnings) {
+              this.logger.warn(
+                `pm-test item (${topicTitle}, ${diff}) warning: ${w}`,
+              );
+            }
+
+            // Blind second-pass answer verification (remediation 0.1).
+            // Disagreement doesn't discard the item — it lands in the
+            // review queue marked key_mismatch so a human arbitrates.
+            let verificationStatus: string | null = null;
+            let verifierModel: string | null = null;
+            if (this.answerVerifier.enabled) {
+              const correct = spec.options.find((o) => o.isCorrect)!;
+              const outcome = await this.answerVerifier.verify(
+                {
+                  stem: spec.body,
+                  options: spec.options.map((o) => ({
+                    label: o.label,
+                    body: o.body,
+                  })),
+                  // Same retrieval bundle as the generator — the
+                  // verifier grounds its blind solve on the textbook.
+                  referenceMaterial: referenceMaterial || undefined,
+                  jobId: record.id,
+                },
+                correct.label,
+              );
+              totalCost += outcome.costUsd;
+              verificationStatus = outcome.status;
+              verifierModel = outcome.model;
+              if (outcome.status === 'key_mismatch') {
+                await this.recordRejectSafely({
+                  jobId: record.id,
+                  action: 'question_generation',
+                  modelId,
+                  reason: 'verifier_key_mismatch',
+                  detail: `verifier picked ${outcome.pickedLabel} over ${correct.label}: ${outcome.reason}`,
+                  rawOutput: spec.body,
+                });
+              }
+            }
+
+            // Strict-mode grounding check (premium plan §4): for
+            // hallucination-sensitive subjects, an item whose facts the
+            // textbook can't support is REJECTED, not published. Only
+            // runs when reference material was actually retrieved —
+            // with nothing to check against, strict degrades to
+            // anchored rather than rejecting everything.
+            if (
+              subject.aiRetrievalMode === 'strict' &&
+              referenceMaterial &&
+              this.answerVerifier.enabled
+            ) {
+              const correct = spec.options.find((o) => o.isCorrect)!;
+              const grounding = await this.answerVerifier.checkGrounding({
+                stem: spec.body,
+                correctAnswerText: correct.body,
+                referenceMaterial,
+                jobId: record.id,
+              });
+              if (grounding && !grounding.grounded) {
+                failed += 1;
+                await this.recordRejectSafely({
+                  jobId: record.id,
+                  action: 'question_generation',
+                  modelId,
+                  reason: 'retrieval_ungrounded_claim',
+                  detail: grounding.detail || 'unsupported factual claim',
+                  rawOutput: spec.body,
+                });
+                continue;
+              }
+            }
+
             const target = batch[Math.min(j, batch.length - 1)];
             await this.insertPmTestQuestion({
               subjectId: selection.subjectId,
@@ -680,12 +988,11 @@ export class AiGenerationProcessor extends WorkerHost {
                 : null,
               options: spec.options,
               generationBatchId: record.id,
+              verificationStatus,
+              verifierModel,
             });
             completed += 1;
           }
-          // If the validator returned fewer items than requested (the
-          // batch validator is all-or-nothing today, but future rules
-          // may drop individual items), reflect the shortfall.
           failed += Math.max(0, batch.length - generated.length);
 
           await this.jobsRepo.update(record.id, {
@@ -708,6 +1015,8 @@ export class AiGenerationProcessor extends WorkerHost {
     explanation: string | null;
     options: Array<{ label: string; body: string; isCorrect: boolean }>;
     generationBatchId: string;
+    verificationStatus?: string | null;
+    verifierModel?: string | null;
   }): Promise<void> {
     const q = this.pmTestQRepo.create({
       subjectId: input.subjectId,
@@ -719,6 +1028,8 @@ export class AiGenerationProcessor extends WorkerHost {
       explanation: input.explanation,
       status: QuestionStatus.PENDING_REVIEW,
       generationBatchId: input.generationBatchId,
+      verificationStatus: input.verificationStatus ?? null,
+      verifierModel: input.verifierModel ?? null,
     });
     const saved = await this.pmTestQRepo.save(q);
     const opts = input.options.map((o) =>
@@ -772,6 +1083,8 @@ export class AiGenerationProcessor extends WorkerHost {
     // indicator. Subjects with none never trigger an embedding query, so
     // un-ingested subjects pay zero grounding cost/latency.
     const embeddedSubjectCache = new Map<string, boolean>();
+    // Same skip-guard for learning-material chunks (Knowledge Layer).
+    const chunkSubjectCache = new Map<string, boolean>();
 
     // Spec §5.2 step 1: fetch question ids in batches of 50. Each DB round-trip
     // hydrates 50 questions + options + subjects; AI calls remain per-question.
@@ -816,6 +1129,36 @@ export class AiGenerationProcessor extends WorkerHost {
           }
         }
 
+        // Knowledge Layer: retrieve textbook chunks by the question stem
+        // so the explanation teaches the method in the book's own voice.
+        let referenceMaterial: string | undefined;
+        if (subjId) {
+          let hasChunks = chunkSubjectCache.get(subjId);
+          if (hasChunks === undefined) {
+            hasChunks = await this.knowledge
+              .hasChunks(subjId)
+              .catch(() => false);
+            chunkSubjectCache.set(subjId, hasChunks);
+          }
+          if (hasChunks) {
+            try {
+              const bundle = await this.knowledge.retrieveForGeneration({
+                subjectId: subjId,
+                formLevel: null,
+                queryText: q.body,
+              });
+              if (!bundle.empty) {
+                referenceMaterial =
+                  this.knowledge.renderReferenceMaterial(bundle);
+              }
+            } catch (err) {
+              this.logger.warn(
+                `[knowledge] explanation retrieval failed q=${q.id}: ${(err as Error).message}`,
+              );
+            }
+          }
+        }
+
         // Subject allowlist OR per-question content heuristic — same
         // "either signal wins" pattern used at the pm-test regen
         // site so a calc-shaped item outside a quantitative subject
@@ -830,6 +1173,7 @@ export class AiGenerationProcessor extends WorkerHost {
             stem: q.body,
             options: q.options,
           });
+        const dbShell = await this.promptTemplates.activeShell('EXPLANATION');
         const built = buildExplanationPrompt({
           examType: q.examType,
           subjectName:
@@ -840,7 +1184,9 @@ export class AiGenerationProcessor extends WorkerHost {
           options: q.options.map((o) => ({ label: o.label, body: o.body })),
           correctLabel: correct.label,
           syllabusContext,
+          referenceMaterial,
           isQuantitativeSubject: quantitative,
+          systemShellOverride: dbShell?.shell,
         });
 
         let call: Awaited<ReturnType<typeof this.ai.callBedrock>> | null = null;
@@ -849,7 +1195,11 @@ export class AiGenerationProcessor extends WorkerHost {
             system: built.system,
             action: AiAction.EXPLANATION,
             jobId: record.id,
-            maxTokens: quantitative ? 1200 : 600,
+            // Budgets sized for the contract's upper bound (~600 words
+            // ≈ 850+ tokens with LaTeX) — remediation 0.4.
+            maxTokens: quantitative ? 1600 : 900,
+            cacheSystemPrompt: true,
+            promptVersion: dbShell?.version ?? EXPLANATION_PROMPT_VERSION,
           });
         } catch (err) {
           failed += 1;
@@ -875,6 +1225,7 @@ export class AiGenerationProcessor extends WorkerHost {
         // Validator gate — students never see a malformed explanation.
         const validation = validateExplanation(call.content, q.body, {
           requireWorkedExample: quantitative,
+          correctOptionText: correct.body,
         });
         if (!validation.ok) {
           failed += 1;
@@ -889,6 +1240,22 @@ export class AiGenerationProcessor extends WorkerHost {
             detail: validation.detail,
             rawOutput: call.content,
           });
+          // Key-mismatch (remediation B1): the model solved the
+          // question independently and DISAGREES with the stored key.
+          // That's a data-quality signal about the QUESTION, not a
+          // generation failure — pull the item from circulation into
+          // the review queue and keep its previous explanation intact.
+          if (
+            validation.reason === 'key_mismatch' ||
+            validation.reason === 'ambiguous_question'
+          ) {
+            await this.questionsRepo.update(q.id, {
+              status: QuestionStatus.PENDING_REVIEW,
+            });
+            this.logger.warn(
+              `question ${q.id} routed to PENDING_REVIEW: ${validation.reason} — ${validation.detail}`,
+            );
+          }
           await this.jobsRepo.update(record.id, {
             completedItems: completed,
             failedItems: failed,
