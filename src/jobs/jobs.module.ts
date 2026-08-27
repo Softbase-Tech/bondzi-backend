@@ -29,6 +29,8 @@ import { AiRejectRetentionJob } from './ai-reject-retention.job';
 import { DailyReminderJob } from './daily-reminder.job';
 import { WeeklyLeaderboardPushJob } from './weekly-leaderboard-push.job';
 import { AccountDeletionJob } from './account-deletion.job';
+import { AiEvalJob } from './ai-eval.job';
+import { ItemCalibrationJob } from './item-calibration.job';
 import { NotificationsModule } from '../modules/notifications/notifications.module';
 import { AccountDeletionsModule } from '../modules/account-deletions/account-deletions.module';
 import { LeaderboardModule } from '../modules/leaderboard/leaderboard.module';
@@ -87,6 +89,8 @@ import { QUEUE_AI_GENERATION, QUEUE_EMAIL } from '../modules/ai/ai.queues';
     DailyReminderJob,
     WeeklyLeaderboardPushJob,
     AccountDeletionJob,
+    AiEvalJob,
+    ItemCalibrationJob,
     EmailProcessor,
   ],
 })

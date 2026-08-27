@@ -14,6 +14,7 @@ import { PmTestQuestion } from './entities/pm-test-question.entity';
 import { PmTestOption } from './entities/pm-test-option.entity';
 import { AiGenerationJob } from '../admin-ai-gen/entities/ai-generation-job.entity';
 import { AiService } from '../ai/ai.service';
+import { PromptTemplateRuntimeService } from '../ai/prompt-template-runtime.service';
 import { RedisService } from '../../common/redis/redis.service';
 import { QUEUE_AI_GENERATION } from '../ai/ai.queues';
 import {
@@ -33,7 +34,10 @@ import {
 } from '../admin-ai-gen/estimates.util';
 import { validateQuestionBatch } from '../ai/validation/question.validator';
 import { validateExplanation } from '../ai/validation/explanation.validator';
-import { buildExplanationPrompt } from '../ai/instruction-layer/explanation.prompt';
+import {
+  buildExplanationPrompt,
+  EXPLANATION_PROMPT_VERSION,
+} from '../ai/instruction-layer/explanation.prompt';
 import { AiAction } from '../../common/types/enums';
 import { isQuantitativeSubject } from '../../common/utils/quantitative-subject.util';
 import { looksLikeCalcQuestion } from '../../common/utils/looks-like-calc.util';
@@ -91,6 +95,7 @@ export class AdminPmTestService {
     private readonly redis: RedisService,
     private readonly config: ConfigService,
     private readonly ai: AiService,
+    private readonly promptTemplates: PromptTemplateRuntimeService,
   ) {}
 
   /** Spec §9.3: reject jobs whose estimated cost exceeds AI_MAX_JOB_COST_USD. */
@@ -593,6 +598,7 @@ export class AdminPmTestService {
         stem: row.body,
         options: row.options,
       });
+    const dbShell = await this.promptTemplates.activeShell('EXPLANATION');
     const built = buildExplanationPrompt({
       examType: row.examType,
       subjectName: row.subject?.name ?? '',
@@ -602,21 +608,41 @@ export class AdminPmTestService {
       correctLabel: correct.label,
       syllabusContext: '',
       isQuantitativeSubject: quantitative,
+      systemShellOverride: dbShell?.shell,
     });
 
     const call = await this.ai.callBedrock(built.user, modelId, {
       system: built.system,
       action: AiAction.EXPLANATION,
       maxTokens: 1400,
+      cacheSystemPrompt: true,
+      promptVersion: dbShell?.version ?? EXPLANATION_PROMPT_VERSION,
     });
 
     const val = validateExplanation(call.content, row.body, {
       requireWorkedExample: quantitative,
+      correctOptionText: correct.body,
     });
     if (!val.ok) {
       this.logger.warn(
         `[regen-explanation] pm-test ${id} rejected: ${val.reason} — ${val.detail}`,
       );
+      // Key-mismatch (remediation B1): the model solved the question
+      // and disagrees with the stored key — that's about the QUESTION,
+      // not the generation. Mark the row and pull it from circulation
+      // so the admin arbitrates the key instead of retrying prompts.
+      if (
+        val.reason === 'key_mismatch' ||
+        val.reason === 'ambiguous_question'
+      ) {
+        row.verificationStatus = 'key_mismatch';
+        row.status = QuestionStatus.PENDING_REVIEW;
+        await this.qRepo.save(row);
+        throw new BadRequestException(
+          `The model disagrees with this question's answer key (${val.detail}). ` +
+            `The question has been moved to pending review — check the key before regenerating the explanation.`,
+        );
+      }
       throw new BadRequestException(
         `Model output failed validation: ${val.reason}. Try Sonnet if you were on Haiku, or edit the explanation manually.`,
       );

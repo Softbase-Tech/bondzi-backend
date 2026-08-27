@@ -90,16 +90,46 @@ describe('buildQuestionGenerationPrompt', () => {
       pastPaperExemplars: [],
     });
     expect(system).toContain('SCOPE vs SOURCE');
-    expect(system).toMatch(
-      /Draw the FACTS in your questions from your general knowledge/,
-    );
+    expect(system).toMatch(/draw on your\s+general knowledge of the\s+subject/);
+    // Reference material, when retrieved, is the primary fact source.
+    expect(system).toContain('reference_material');
   });
 
-  it('the system shell requires evenly distributed correct answers', () => {
-    const { user } = buildQuestionGenerationPrompt({
+  it('does NOT beg the model for answer-position balance (shuffled server-side)', () => {
+    // Remediation 0.7: position balance is enforced in code after
+    // validation — the old prompt rule is deliberately gone from both
+    // the shell and the user turn.
+    const { system, user } = buildQuestionGenerationPrompt({
       ...base,
       pastPaperExemplars: [],
     });
-    expect(user).toMatch(/Distribute the correct answers roughly evenly/);
+    expect(user).not.toMatch(/Distribute the correct answers roughly evenly/);
+    expect(system).not.toMatch(/Distribute correct answers roughly evenly/);
+    expect(user).toContain('shuffled after generation');
+  });
+
+  it('ships explanation rules only when inline explanations are requested (remediation 0.6)', () => {
+    const withExpl = buildQuestionGenerationPrompt({
+      ...base,
+      includeExplanations: true,
+      pastPaperExemplars: [],
+    });
+    const withoutExpl = buildQuestionGenerationPrompt({
+      ...base,
+      includeExplanations: false,
+      pastPaperExemplars: [],
+    });
+    expect(withExpl.system).toContain('Explanation rules:');
+    expect(withoutExpl.system).not.toContain('Explanation rules:');
+  });
+
+  it('wraps untrusted interpolations in <data> blocks (remediation 1.8)', () => {
+    const { system, user } = buildQuestionGenerationPrompt({
+      ...base,
+      pastPaperExemplars: [],
+    });
+    expect(user).toContain('<data type="syllabus_context">');
+    expect(system).toContain('never');
+    expect(system).toContain('Data-block rules');
   });
 });

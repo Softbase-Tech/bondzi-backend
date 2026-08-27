@@ -39,6 +39,25 @@ export class WeaknessNarrative {
   @Column({ type: 'text' })
   model: string;
 
+  /**
+   * Machine-readable actions the app renders as deep links
+   * ("Read now" / "Practice 5 questions") — premium plan §6.3.
+   * Null on bootstrap rows and rows generated before v2.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  recommendations: StudentRecommendation[] | null;
+
   @CreateDateColumn({ name: 'generated_at', type: 'timestamptz' })
   generatedAt: Date;
+}
+
+export interface StudentRecommendation {
+  syllabusTopicId: string;
+  action: 'read' | 'practice';
+  /** Present when action='read' — a learning_material_chunks id. */
+  chunkId?: string;
+  /** Human label, e.g. "Vectors and Scalars — Key Ideas (p. 41)". */
+  label?: string;
+  /** Present when action='practice'. */
+  count?: number;
 }

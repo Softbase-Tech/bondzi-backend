@@ -313,6 +313,8 @@ export enum AiAction {
   AI_REVIEW = 'ai_review',
   EMBEDDING = 'embedding',
   SYLLABUS_EXTRACTION = 'syllabus_extraction',
+  /** Blind second-pass answer verification (remediation 0.1). */
+  ANSWER_VERIFY = 'answer_verify',
 }
 
 // v2: admin-triggered AI job lifecycle.

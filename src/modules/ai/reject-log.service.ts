@@ -12,7 +12,14 @@ const RAW_OUTPUT_MAX_CHARS = 16 * 1024;
 
 export interface RecordRejectInput {
   jobId?: string | null;
-  action: 'question_generation' | 'explanation';
+  action:
+    | 'question_generation'
+    | 'explanation'
+    // Student-facing features gained validators in the premium-quality
+    // rebuild — their drift now lands in the same log (plan §6.3–6.5).
+    | 'weakness_narrative'
+    | 'ai_review'
+    | 'post_exam_breakdown';
   provider: 'bedrock' | 'ollama';
   model: string;
   reason: string;

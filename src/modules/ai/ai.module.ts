@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AiUsageLog } from './entities/ai-usage-log.entity';
+import { AiEvalRun } from './entities/ai-eval-run.entity';
 import { PromptTemplate } from './entities/prompt-template.entity';
 import { AiGenerationRejectLog } from './entities/ai-generation-reject-log.entity';
 import { AiGenerationRejectAgg } from './entities/ai-generation-reject-agg.entity';
@@ -16,25 +17,27 @@ import {
 } from './clients/ai-generation.factory';
 import { AdminRejectLogController } from './admin-reject-log.controller';
 import { PromptExemplarService } from './prompt-exemplars.service';
+import { PromptTemplateRuntimeService } from './prompt-template-runtime.service';
+import { AnswerVerifierService } from './verifiers/answer-verifier.service';
 import { Question } from '../questions/entities/question.entity';
 import { Option } from '../questions/entities/option.entity';
 import { SyllabusTopic } from '../subjects/entities/syllabus-topic.entity';
 
 /**
  * Both concrete clients (Bedrock, Ollama) are registered as
- * providers so future services can inject either directly when
- * they need to bypass the factory — weakness narratives and
- * post-exam breakdowns pin to Bedrock regardless of AI_PROVIDER
- * (quality + cost — Haiku's fidelity on personalized text beats
- * a local 8B by a wide margin at ~$0.0009/call).
- *
- * Everything else injects `@Inject(AI_GENERATION_CLIENT)` and gets
- * whichever client the factory picked at boot.
+ * providers. The DPA pin for per-student prompts (weakness
+ * narratives, AI reviews, post-exam breakdowns, chat tutor) is
+ * ENFORCED IN CODE inside AiService.callBedrock via
+ * STUDENT_DATA_ACTIONS — those actions dispatch to BedrockClient
+ * directly regardless of AI_PROVIDER. Everything else goes through
+ * `@Inject(AI_GENERATION_CLIENT)` and gets whichever client the
+ * factory picked at boot.
  */
 @Module({
   imports: [
     TypeOrmModule.forFeature([
       AiUsageLog,
+      AiEvalRun,
       PromptTemplate,
       AiGenerationRejectLog,
       AiGenerationRejectAgg,
@@ -52,6 +55,8 @@ import { SyllabusTopic } from '../subjects/entities/syllabus-topic.entity';
     aiGenerationClientProvider,
     aiEmbeddingClientProvider,
     PromptExemplarService,
+    PromptTemplateRuntimeService,
+    AnswerVerifierService,
   ],
   exports: [
     AiService,
@@ -60,6 +65,8 @@ import { SyllabusTopic } from '../subjects/entities/syllabus-topic.entity';
     AI_GENERATION_CLIENT,
     AI_EMBEDDING_CLIENT,
     PromptExemplarService,
+    PromptTemplateRuntimeService,
+    AnswerVerifierService,
     TypeOrmModule,
   ],
 })

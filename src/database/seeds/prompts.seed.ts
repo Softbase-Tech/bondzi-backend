@@ -1,68 +1,46 @@
 import { DataSource } from 'typeorm';
 import { PromptTemplate } from '../../modules/ai/entities/prompt-template.entity';
+import {
+  SYSTEM_SHELL_EXPLANATION,
+  SYSTEM_SHELL_QUESTION_GENERATION,
+} from '../../modules/ai/instruction-layer/system-shell';
+import {
+  QUESTION_GENERATION_SCHEMA,
+  QUESTION_GENERATION_PROMPT_VERSION,
+} from '../../modules/ai/instruction-layer/question-generation.prompt';
+import {
+  EXPLANATION_OUTPUT_CONTRACT,
+  EXPLANATION_PROMPT_VERSION as EXPLANATION_RUNTIME_VERSION,
+} from '../../modules/ai/instruction-layer/explanation.prompt';
 
 /**
- * v2 prompt templates — seeded into prompt_templates. The workers in
- * `jobs/ai-generation.processor.ts` build their final prompts inline so these
- * rows are a source of truth for the admin dashboard ("what prompt will the
- * next run use?") and can be A/B-swapped by admins later without a deploy.
+ * Prompt templates — seeded into prompt_templates.
+ *
+ * Remediation 1.2: each row's `content` is EXACTLY the system shell
+ * the generation call runs with. When AI_PROMPT_TEMPLATES_ENABLED=true
+ * the runtime (PromptTemplateRuntimeService) serves the active row's
+ * content to the builders in place of the compiled shell — an admin
+ * can hot-swap or roll back shell wording without a deploy, and
+ * ai_usage_log.prompt_version records `<name>:<version>` so reject
+ * rates segment by template. With the flag off, these rows are the
+ * dashboard's source of truth for "what will the next run use?".
+ *
+ * The USER TURN (JSON schema, <data> wrapping, retrieval blocks, the
+ * explanation output contract) stays code-owned — it is structural.
+ * `QUESTION_GENERATION_SCHEMA` and `EXPLANATION_OUTPUT_CONTRACT` are
+ * referenced here so a seed re-run fails to compile if the contracts
+ * move, keeping this file honest.
  */
+void QUESTION_GENERATION_SCHEMA;
+void EXPLANATION_OUTPUT_CONTRACT;
 
 export const EXPLANATION_PROMPT_NAME = 'EXPLANATION';
-export const EXPLANATION_PROMPT_VERSION = 'v3';
-
-export const EXPLANATION_PROMPT_V3 = `You are a patient, encouraging tutor helping a Ghanaian
-{schoolLevel} student (Form {formLevel}) prepare for their {examType} examination.
-
-Question ({subjectName}):
-{questionBody}
-
-Options:
-A. {optionA}  B. {optionB}  C. {optionC}  D. {optionD}
-
-Correct answer: {correctLabel}. {correctBody}
-
-Write a clear explanation (maximum 150 words) that:
-1. States why the correct answer is right, simply and directly.
-2. Explains why the wrong options are incorrect.
-3. Uses language appropriate for Form {formLevel} {schoolLevel} level.
-
-Write in plain paragraphs. No bullet points. No headers.
-Do not mention 'WAEC' or 'exam'. Address the student directly.
-
-When mathematical notation is needed, write it as LaTeX inside dollar
-delimiters — inline math uses single dollars (e.g. $5^7$, $\\dfrac{a}{b}$,
-$\\sqrt{x^2 + y^2}$), block math uses double dollars. Never use Unicode
-superscripts (5⁷), Unicode fractions (½), or ASCII art for math; the
-renderer needs the LaTeX form so it can display crisp glyphs.`;
-
-// Kept exported under the old name so any worker still importing
-// EXPLANATION_PROMPT_V2 keeps compiling — points at the v3 content.
-export const EXPLANATION_PROMPT_V2 = EXPLANATION_PROMPT_V3;
+export const EXPLANATION_PROMPT_VERSION = EXPLANATION_RUNTIME_VERSION;
+export const EXPLANATION_PROMPT_CURRENT = SYSTEM_SHELL_EXPLANATION;
 
 export const PM_TEST_PROMPT_NAME = 'PM_TEST_GENERATION';
-export const PM_TEST_PROMPT_VERSION = 'v1';
-
-export const PM_TEST_PROMPT_V1 = `You are an expert {examType} exam question writer for Ghanaian students.
-You create high-quality {difficulty} multiple-choice questions for {subjectName}
-at {formLevel} level ({schoolLevel}).
-
-Generate exactly {count} unique MCQ questions on the topic: {topicTitle}.
-Each question must:
-- Be answerable by a {formLevel} {schoolLevel} student in Ghana
-- Follow WAEC question format and style
-- Have exactly 4 options (A, B, C, D)
-- Have exactly one correct answer
-- Include a concise explanation (2-3 sentences) of why the answer is correct
-
-Math formatting: write all mathematical notation as LaTeX inside dollar
-delimiters (e.g. $5^7$, $\\dfrac{a}{b}$, $\\sqrt{x}$). Do NOT use Unicode
-superscripts (5⁷), Unicode fractions, or ASCII art — the renderer requires
-LaTeX. Inside JSON, escape backslashes as \\\\ so $\\dfrac{a}{b}$ becomes
-"$\\\\dfrac{a}{b}$".
-
-Return ONLY a valid JSON array. No preamble. No markdown fences. No commentary.
-Format: [{"body":"...","options":[{"label":"...","body":"...","isCorrect":true}],"explanation":"...","difficulty":"..."}]`;
+export const PM_TEST_PROMPT_VERSION = QUESTION_GENERATION_PROMPT_VERSION;
+export const PM_TEST_PROMPT_CURRENT = SYSTEM_SHELL_QUESTION_GENERATION;
 
 export const HINT_PROMPT_NAME = 'HINT';
 export const HINT_PROMPT_VERSION = 'v1';
@@ -82,13 +60,13 @@ export async function seedPrompts(ds: DataSource): Promise<void> {
     {
       name: EXPLANATION_PROMPT_NAME,
       version: EXPLANATION_PROMPT_VERSION,
-      content: EXPLANATION_PROMPT_V3,
+      content: EXPLANATION_PROMPT_CURRENT,
       isActive: true,
     },
     {
       name: PM_TEST_PROMPT_NAME,
       version: PM_TEST_PROMPT_VERSION,
-      content: PM_TEST_PROMPT_V1,
+      content: PM_TEST_PROMPT_CURRENT,
       isActive: true,
     },
     {

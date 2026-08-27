@@ -25,6 +25,22 @@ export interface AiInvokeParams {
   userPrompt: string;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * Assistant-turn prefill (remediation 1.3). Bedrock/Claude: seeds
+   * the assistant message so the completion continues from it — e.g.
+   * `[` for a JSON-array batch kills preamble and markdown fences
+   * structurally. The client PREPENDS the prefill to the returned
+   * `text` so callers always see the full output. IGNORED by
+   * OllamaClient (no reliable prefill on the OpenAI-compat endpoint;
+   * the reactive fence-strip downstream still covers that path).
+   */
+  prefill?: string;
+  /**
+   * Mark the system prompt as a Bedrock prompt-cache block
+   * (`cache_control: ephemeral`) — remediation 1.3. Worth it for the
+   * static ~1.4k-token shells on bulk jobs; a no-op on Ollama.
+   */
+  cacheSystemPrompt?: boolean;
 }
 
 export interface AiInvokeResult {
@@ -37,6 +53,15 @@ export interface AiInvokeResult {
    * log carries a clean provenance tag.
    */
   effectiveModel: string;
+  /**
+   * Why generation stopped (remediation 0.4). Bedrock/Anthropic:
+   * `end_turn` | `max_tokens` | `stop_sequence`. Ollama's OpenAI
+   * shape maps `finish_reason: length` → `max_tokens`, everything
+   * else → `end_turn`. `null` when the provider didn't report.
+   * Callers MUST treat `max_tokens` as truncation — the output is
+   * incomplete no matter how parseable it looks.
+   */
+  stopReason: string | null;
 }
 
 export interface AiEmbedParams {

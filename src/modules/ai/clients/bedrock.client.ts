@@ -30,9 +30,14 @@ import type {
  */
 /** Bedrock per-request timeouts. AWS SDK's default socket timeout is */
 /** effectively infinite — a hung Bedrock call would otherwise hold the */
-/** worker (and the BullMQ slot) indefinitely. 30s is a generous ceiling */
-/** even for max_tokens=4096 generations. */
-const BEDROCK_REQUEST_TIMEOUT_MS = 30_000;
+/** worker (and the BullMQ slot) indefinitely. Default raised from 30s */
+/** to 120s (remediation 0.4): a 10-question quantitative batch at */
+/** ~10k max_tokens takes 60–90s of non-streamed Sonnet generation, and */
+/** the old 30s ceiling aborted those batches at the transport layer */
+/** before token truncation even mattered. Override via env. */
+const BEDROCK_REQUEST_TIMEOUT_MS = Number(
+  process.env.AI_BEDROCK_REQUEST_TIMEOUT_MS ?? 120_000,
+);
 const BEDROCK_CONNECTION_TIMEOUT_MS = 5_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -193,13 +198,38 @@ export class BedrockClient implements AiGenerationClient {
   }
 
   private async sendOnce(params: AiInvokeParams): Promise<AiInvokeResult> {
+    // Assistant prefill (remediation 1.3): seeding the assistant turn
+    // makes Claude CONTINUE from it — `[` for a JSON batch structurally
+    // eliminates preamble and markdown fences. The prefill is prepended
+    // to the returned text so callers always see the complete output.
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+      { role: 'user', content: params.userPrompt },
+    ];
+    if (params.prefill) {
+      messages.push({ role: 'assistant', content: params.prefill });
+    }
+
     const body: Record<string, unknown> = {
       anthropic_version: 'bedrock-2023-05-31',
       max_tokens: params.maxTokens ?? 1024,
       temperature: params.temperature ?? 0.3,
-      messages: [{ role: 'user', content: params.userPrompt }],
+      messages,
     };
-    if (params.system) body.system = params.system;
+    if (params.system) {
+      // Prompt caching (remediation 1.3): the static system shell is
+      // ~1.4k tokens and identical across every item of a bulk job —
+      // marking it ephemeral bills it once and serves it from cache on
+      // subsequent calls within the TTL.
+      body.system = params.cacheSystemPrompt
+        ? [
+            {
+              type: 'text',
+              text: params.system,
+              cache_control: { type: 'ephemeral' },
+            },
+          ]
+        : params.system;
+    }
 
     const cmd = new InvokeModelCommand({
       modelId: params.modelId,
@@ -212,18 +242,21 @@ export class BedrockClient implements AiGenerationClient {
     const decoded = JSON.parse(new TextDecoder().decode(res.body)) as {
       content?: Array<{ type: string; text?: string }>;
       usage?: { input_tokens?: number; output_tokens?: number };
+      stop_reason?: string;
     };
-    const text =
+    const completion =
       (decoded.content ?? [])
         .filter((c) => c.type === 'text' && typeof c.text === 'string')
         .map((c) => c.text as string)
         .join('\n')
         .trim() ?? '';
+    const text = params.prefill ? `${params.prefill}${completion}` : completion;
     return {
       text,
       inputTokens: decoded.usage?.input_tokens ?? 0,
       outputTokens: decoded.usage?.output_tokens ?? 0,
       effectiveModel: params.modelId,
+      stopReason: decoded.stop_reason ?? null,
     };
   }
 }

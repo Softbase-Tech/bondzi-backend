@@ -40,8 +40,15 @@ export const TOKEN_ESTIMATES = {
   // maxTokens=600 and real math explanations routinely fill it, so the output
   // estimate tracks that ceiling; input covers a question + options + system
   // prompt. Recalibrate from /admin/ai/calibration once there are samples.
-  explanation: { input: 500, output: 600 },
-  pmTestQuestion: { input: 300, output: 450 },
+  // Raised alongside the content-aware generation budgets (remediation
+  // 0.4): explanations now run with maxTokens 900/1600 (plain/quant)
+  // and questions with ~700–1600 per item incl. inline explanations.
+  // The estimate is the denominator of the runaway-cost circuit
+  // breaker, so it tracks the CEILING, not the average — and note the
+  // per-item answer-verifier call (~200 output tokens on Haiku) rides
+  // inside the same job budget.
+  explanation: { input: 700, output: 1200 },
+  pmTestQuestion: { input: 400, output: 1100 },
 } as const;
 
 export type ModelChoice = 'claude-haiku' | 'claude-sonnet';

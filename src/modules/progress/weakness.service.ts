@@ -71,9 +71,26 @@ export class WeaknessService {
     return { pastPaperWeakTopics, syllabusWeakTopics };
   }
 
+  /**
+   * Mirror rollup ordered by HIGHEST accuracy — the "what's going
+   * well" half the AI Review/Insights signal needs (premium plan
+   * §6.2). Same MIN_SAMPLES floor and shapes as forUser.
+   */
+  async strongestFor(
+    userId: string,
+    filters: { subjectId?: string },
+  ): Promise<WeaknessBySourceResponse> {
+    const [pastPaperWeakTopics, syllabusWeakTopics] = await Promise.all([
+      this.pastPaperWeakness(userId, filters.subjectId, 'DESC'),
+      this.syllabusWeakness(userId, filters.subjectId, 'DESC'),
+    ]);
+    return { pastPaperWeakTopics, syllabusWeakTopics };
+  }
+
   private async pastPaperWeakness(
     userId: string,
     subjectId: string | undefined,
+    order: 'ASC' | 'DESC' = 'ASC',
   ): Promise<PastPaperWeakTopic[]> {
     const qb = this.answersRepo
       .createQueryBuilder('a')
@@ -100,7 +117,7 @@ export class WeaknessService {
       .having(`COUNT(a.id) >= ${MIN_SAMPLES}`)
       .orderBy(
         `SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END)::float / COUNT(a.id)`,
-        'ASC',
+        order,
       )
       .limit(TOP_N);
     if (subjectId) {
@@ -128,6 +145,7 @@ export class WeaknessService {
   private async syllabusWeakness(
     userId: string,
     subjectId: string | undefined,
+    order: 'ASC' | 'DESC' = 'ASC',
   ): Promise<SyllabusWeakTopic[]> {
     const qb = this.answersRepo
       .createQueryBuilder('a')
@@ -156,7 +174,7 @@ export class WeaknessService {
       .having(`COUNT(a.id) >= ${MIN_SAMPLES}`)
       .orderBy(
         `SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END)::float / COUNT(a.id)`,
-        'ASC',
+        order,
       )
       .limit(TOP_N);
     if (subjectId) {

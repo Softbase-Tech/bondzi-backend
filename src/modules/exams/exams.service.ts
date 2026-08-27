@@ -27,6 +27,15 @@ import { ReferralsService } from '../referrals/referrals.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { AiService } from '../ai/ai.service';
+import { RejectLogService } from '../ai/reject-log.service';
+import { KnowledgeRetrievalService } from '../syllabus/knowledge-retrieval.service';
+import { validateNarrativeEnvelope } from '../ai/validation/narrative-envelope.validator';
+import {
+  STUDENT_CITATION_RULES,
+  STUDENT_DATA_RULES,
+  STUDENT_JSON_ENVELOPE,
+  STUDENT_TONE_RULES,
+} from '../ai/instruction-layer/student-facing.shell';
 import { ConfigService } from '@nestjs/config';
 import {
   AccountType,
@@ -86,6 +95,8 @@ export class ExamsService {
     private readonly subscriptions: SubscriptionsService,
     private readonly entitlements: EntitlementsService,
     private readonly ai: AiService,
+    private readonly rejectLog: RejectLogService,
+    private readonly knowledge: KnowledgeRetrievalService,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
     private readonly partnerCommissions: PartnerCommissionsService,
@@ -829,14 +840,11 @@ export class ExamsService {
 
     await this.updateSubjectProgress(userId, exam, answers);
 
-    // If today's Home narrative was a bootstrap placeholder, drop it —
-    // the user may have just crossed the MIN_SAMPLES threshold and
-    // deserves the personalised prose on their next Home visit.
-    // Personalised rows are untouched so we don't burn quota by
-    // regenerating on every exam finish.
-    void this.weaknessNarratives
-      .invalidateBootstrapForToday(userId)
-      .catch(() => void 0);
+    // Drop today's narrative rows (both modes — premium plan §6.3):
+    // a personalised narrative describing pre-exam weaknesses must not
+    // survive this submission. Regeneration cost stays bounded by the
+    // per-(day, scope) entitlement charge.
+    void this.weaknessNarratives.invalidateForToday(userId).catch(() => void 0);
 
     // Build the result-page payload (same shape GET /exams/:id/result
     // returns) so the mobile can render the score screen directly
@@ -994,6 +1002,7 @@ export class ExamsService {
     examId: string,
   ): Promise<{
     breakdown: string;
+    recommendations: Array<Record<string, unknown>>;
     generatedAt: string;
     model: string;
     cached: boolean;
@@ -1011,6 +1020,7 @@ export class ExamsService {
     if (exam.aiBreakdown) {
       return {
         breakdown: exam.aiBreakdown,
+        recommendations: exam.aiBreakdownRecommendations ?? [],
         generatedAt:
           exam.aiBreakdownGeneratedAt?.toISOString() ??
           new Date().toISOString(),
@@ -1024,50 +1034,185 @@ export class ExamsService {
       EntitlementService.POST_EXAM_AI_BREAKDOWN,
     );
 
-    // Read the answers we're going to summarise. Kept lean —
-    // stem + is_correct + option label is enough for the model to
-    // spot patterns; no need to send the full option bodies.
-    const answers = await this.answersRepo.find({
-      where: { examId },
-      relations: ['question'],
-    });
-    const summary = answers
-      .map((a, i) => {
-        const stem = (a.question?.body ?? '').slice(0, 200);
-        return `${i + 1}. [${a.isCorrect ? '✓' : '✗'}] ${stem}`;
-      })
-      .join('\n');
+    // v2 (premium plan §6.5): resolve every answer to its TOPIC via
+    // the two-branch pool join — the old prompt sent truncated stems
+    // and asked the model to guess topics it had no way of knowing.
+    const topicRows: Array<{
+      topic_title: string | null;
+      syllabus_topic_id: string | null;
+      answered: number;
+      correct: number;
+    }> = await this.dataSource.query(
+      `SELECT coalesce(t.title, st.title)  AS topic_title,
+              q2.syllabus_topic_id         AS syllabus_topic_id,
+              count(*)::int                AS answered,
+              sum(CASE WHEN a.is_correct THEN 1 ELSE 0 END)::int AS correct
+         FROM exam_answers a
+         LEFT JOIN questions q1         ON a.question_pool = 'past_paper' AND q1.id = a.question_id
+         LEFT JOIN pm_test_questions q2 ON a.question_pool = 'pm_test'   AND q2.id = a.question_id
+         LEFT JOIN topics t             ON t.id = q1.topic_id
+         LEFT JOIN syllabus_topics st   ON st.id = q2.syllabus_topic_id
+        WHERE a.exam_id = $1
+        GROUP BY 1, 2
+        ORDER BY sum(CASE WHEN a.is_correct THEN 1 ELSE 0 END)::float / count(*) ASC`,
+      [examId],
+    );
+    const named = topicRows.filter((r) => r.topic_title);
+    const missed = named.filter((r) => r.correct < r.answered);
+    const strongest = [...named].reverse().slice(0, 2);
+
+    // The 3 most instructive wrong answers, with chosen vs correct text.
+    const mistakes: Array<{
+      stem: string;
+      chosen: string | null;
+      correct: string | null;
+      topic_title: string | null;
+    }> = await this.dataSource.query(
+      `SELECT left(coalesce(q1.body, q2.body), 160) AS stem,
+              coalesce(o1.body, o2.body)            AS chosen,
+              coalesce(c1.body, c2.body)            AS correct,
+              coalesce(t.title, st.title)           AS topic_title
+         FROM exam_answers a
+         LEFT JOIN questions q1         ON a.question_pool = 'past_paper' AND q1.id = a.question_id
+         LEFT JOIN pm_test_questions q2 ON a.question_pool = 'pm_test'   AND q2.id = a.question_id
+         LEFT JOIN topics t             ON t.id = q1.topic_id
+         LEFT JOIN syllabus_topics st   ON st.id = q2.syllabus_topic_id
+         LEFT JOIN options o1           ON a.question_pool = 'past_paper' AND o1.id = a.selected_option_id
+         LEFT JOIN pm_test_options o2   ON a.question_pool = 'pm_test'   AND o2.id = a.selected_option_id
+         LEFT JOIN options c1           ON a.question_pool = 'past_paper' AND c1.question_id = q1.id AND c1.is_correct
+         LEFT JOIN pm_test_options c2   ON a.question_pool = 'pm_test'   AND c2.question_id = q2.id AND c2.is_correct
+        WHERE a.exam_id = $1 AND a.is_correct = false
+        ORDER BY a.answered_at ASC
+        LIMIT 3`,
+      [examId],
+    );
+
+    // Knowledge-Layer reading citations for the top-2 missed syllabus
+    // topics (best-effort — past-paper legacy topics have no chunks).
+    const missedSyllabusIds = missed
+      .map((r) => r.syllabus_topic_id)
+      .filter((id): id is string => Boolean(id))
+      .slice(0, 2);
+    let remediation: Array<{
+      syllabusTopicId: string;
+      chunks: Array<{
+        id: string;
+        sectionTitle: string;
+        sourcePage: number | null;
+      }>;
+    }> = [];
+    try {
+      remediation = await this.knowledge.retrieveForRemediation({
+        syllabusTopicIds: missedSyllabusIds,
+      });
+    } catch {
+      // reading citations are an enhancement, never a failure path
+    }
+
+    const topicById = new Map(
+      named
+        .filter((r) => r.syllabus_topic_id)
+        .map((r) => [r.syllabus_topic_id as string, r.topic_title as string]),
+    );
+    const dataBlock = [
+      `<data type="exam_answers">`,
+      `Score: ${exam.percentScore ?? '?'}% (${exam.mode} exam).`,
+      named.length
+        ? `Per-topic results (weakest first):\n${named
+            .map(
+              (r) =>
+                `- ${r.topic_title}: ${r.correct}/${r.answered} correct${r.syllabus_topic_id ? ` [topicId ${r.syllabus_topic_id}]` : ''}`,
+            )
+            .join('\n')}`
+        : `No topic tags available for this exam's questions.`,
+      mistakes.length
+        ? `Wrong answers:\n${mistakes
+            .map(
+              (m) =>
+                `- [${m.topic_title ?? 'unknown topic'}] "${m.stem}" — chose "${m.chosen ?? '—'}", correct was "${m.correct ?? '—'}"`,
+            )
+            .join('\n')}`
+        : ``,
+      remediation.length
+        ? `Recommended reading (cite these EXACTLY when recommending):\n${remediation
+            .flatMap((r) =>
+              r.chunks.map(
+                (c) =>
+                  `- [chunkId ${c.id}] "${c.sectionTitle}"${c.sourcePage ? ` (p. ${c.sourcePage})` : ''} — for topic "${topicById.get(r.syllabusTopicId) ?? r.syllabusTopicId}"`,
+              ),
+            )
+            .join('\n')}`
+        : ``,
+      `</data>`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
 
     const prompt = [
-      `A Ghanaian student just finished a ${exam.mode} exam scoring ${exam.percentScore ?? '?'}%.`,
-      `Answers (200-char excerpts):`,
-      summary,
+      dataBlock,
       ``,
-      `Write a 4-6 sentence breakdown addressed to the student. Highlight two topics they got right and two they missed. End with one specific next step (e.g. "Redo topic X, focus on...").`,
-      `No markdown, no headings, no bullet lists — plain prose only.`,
+      `Write the post-exam review JSON for this student: 4–6 sentences of`,
+      `narrative naming what went well (up to two topics: ${strongest.map((s) => s.topic_title).join(', ') || 'none stood out'})`,
+      `and what to fix (the weakest topics), grounded in the wrong answers`,
+      `shown. Include 1–3 recommendations: "read" actions citing the`,
+      `reading list where available, "practice" actions (count 5–15)`,
+      `otherwise.`,
     ].join('\n');
 
+    // `ai.fastModel` honors AI_DEFAULT_MODEL / AI_FAST_MODEL.
     const model =
-      this.config.get<string>('ai.defaultModel') ??
+      this.config.get<string>('ai.fastModel') ??
       'eu.anthropic.claude-haiku-4-5-20251001-v1:0';
     const result = await this.ai.callBedrock(prompt, model, {
-      maxTokens: 800,
+      maxTokens: 900,
       action: AiAction.POST_EXAM_BREAKDOWN,
       userId,
+      system: SYSTEM_SHELL_POST_EXAM_BREAKDOWN,
+      cacheSystemPrompt: true,
+      promptVersion: POST_EXAM_BREAKDOWN_PROMPT_VERSION,
+      prefill: '{"narrative":"',
     });
-    const breakdown = result.content.trim();
-    if (!breakdown) {
+
+    const validation = validateNarrativeEnvelope(result.content, {
+      requiredTitles: missed
+        .map((r) => r.topic_title as string)
+        .filter(Boolean)
+        .slice(0, 4),
+      validTopicIds: named
+        .map((r) => r.syllabus_topic_id)
+        .filter((id): id is string => Boolean(id)),
+      validChunkIds: remediation.flatMap((r) => r.chunks.map((c) => c.id)),
+    });
+    if (!validation.ok) {
+      this.logger.warn(
+        `[post-exam] rejected exam=${examId} reason=${validation.reason} — ${validation.detail}`,
+      );
+      try {
+        await this.rejectLog.record({
+          jobId: null,
+          action: 'post_exam_breakdown',
+          provider: model.startsWith('ollama:') ? 'ollama' : 'bedrock',
+          model,
+          reason: validation.reason,
+          detail: validation.detail,
+          rawOutput: result.content,
+        });
+      } catch {
+        /* best-effort */
+      }
       throw new BadRequestException(
-        'The AI returned an empty breakdown; try again in a moment.',
+        'The AI breakdown came back malformed; try again in a moment.',
       );
     }
 
-    exam.aiBreakdown = breakdown;
+    exam.aiBreakdown = validation.value.narrative;
+    exam.aiBreakdownRecommendations = validation.value.recommendations;
     exam.aiBreakdownModel = model;
     exam.aiBreakdownGeneratedAt = new Date();
     await this.examsRepo.save(exam);
     return {
-      breakdown,
+      breakdown: validation.value.narrative,
+      recommendations: validation.value.recommendations,
       generatedAt: exam.aiBreakdownGeneratedAt.toISOString(),
       model,
       cached: false,
@@ -1237,3 +1382,30 @@ export class ExamsService {
     await this.progressRepo.save(toSave, { chunk: 50 });
   }
 }
+
+/** Recorded on ai_usage_log.prompt_version. */
+const POST_EXAM_BREAKDOWN_PROMPT_VERSION = 'postexam-v2';
+
+/**
+ * System shell for the post-exam AI review v2 (premium plan §6.5).
+ * v1 ran with NO system turn at all — the only bare model call in the
+ * codebase — and asked the model to guess topics from truncated stems.
+ * v2 composes the shared student-facing blocks (injection guard, tone,
+ * citation rule) and returns the JSON envelope the app renders as
+ * narrative + tappable recommendations.
+ */
+const SYSTEM_SHELL_POST_EXAM_BREAKDOWN = [
+  `You write short post-exam reviews for Ghanaian secondary-school
+students preparing for WASSCE/BECE, based on one exam's per-topic
+results and wrong answers.`,
+  STUDENT_DATA_RULES,
+  STUDENT_TONE_RULES,
+  STUDENT_CITATION_RULES,
+  `Narrative rules:
+- 4–6 sentences of plain prose (no markdown, headings, or bullets).
+- Name what went well (up to two topics) and what to fix (the weakest
+  topics), using the wrong answers shown as concrete evidence.
+- End the narrative by pointing at the FIRST recommendation ("Start
+  with…") so prose and buttons agree.`,
+  STUDENT_JSON_ENVELOPE,
+].join('\n\n');
