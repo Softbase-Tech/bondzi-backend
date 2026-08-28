@@ -86,6 +86,18 @@ export interface ExplanationPromptArgs {
    */
   referenceMaterial?: string;
   /**
+   * Shared stimulus the question refers to (question_stimuli row) —
+   * the comprehension passage / table / data block behind grouped
+   * items ("Use the table below to answer Questions 15 and 16").
+   * English and Biology lean on these heavily; without it the model
+   * cannot solve the question and the key-verification guard would
+   * wrongly fire. Callers with an IMAGE-ONLY stimulus (image_url set,
+   * no usable body text) must NOT call this builder — a text model
+   * cannot see the image (skip with reason stimulus_image_unsupported
+   * instead).
+   */
+  stimulus?: { title?: string | null; body: string };
+  /**
    * Quantitative subject flag — Physics, Chemistry, Mathematics,
    * Additional Mathematics, Statistics, Accounting, Economics, etc.
    * When true, the explanation MUST contain both `## Solution` and
@@ -160,12 +172,23 @@ ${args.referenceMaterial}
 `
     : '';
 
+  const stimulusBlock = args.stimulus?.body?.trim()
+    ? `Shared stimulus (the passage / table / data the question refers
+to — solve and explain USING this; quote from it where it helps the
+student see the evidence):
+<data type="stimulus">
+${args.stimulus.title ? `${args.stimulus.title}\n` : ''}${args.stimulus.body}
+</data>
+
+`
+    : '';
+
   const user = `Exam: ${args.examType.toUpperCase()}
 Subject: ${args.subjectName}
 Student level: ${levelLabel}
 Quantitative subject: ${args.isQuantitativeSubject ? 'true' : 'false'}
 
-${contextBlock}${referenceBlock}Question:
+${contextBlock}${referenceBlock}${stimulusBlock}Question:
 <data type="question">
 ${args.questionBody}
 </data>

@@ -197,7 +197,13 @@ export class PromptExemplarService {
       .andWhere('q.is_verified = true')
       .andWhere('q.flag_count = 0')
       .andWhere('length(q.body) >= 30')
-      .andWhere("coalesce(q.explanation, '') <> ''");
+      .andWhere("coalesce(q.explanation, '') <> ''")
+      // Stimulus-bearing questions make TOXIC style models: rendered
+      // without their passage/table, the stem visibly references
+      // content that isn't there — teaching the generator to write
+      // phantom-stimulus stems (the exact failure the validator's
+      // references_missing_stimulus rule rejects).
+      .andWhere('q.stimulus_id IS NULL');
 
     if (difficulty) qb.andWhere('q.difficulty = :d', { d: difficulty });
 
@@ -221,7 +227,9 @@ export class PromptExemplarService {
       .andWhere('q.is_verified = true')
       .andWhere('q.flag_count = 0')
       .andWhere('length(q.body) >= 30')
-      .andWhere("coalesce(q.explanation, '') <> ''");
+      .andWhere("coalesce(q.explanation, '') <> ''")
+      // Same stimulus exclusion as the topic-scoped tier above.
+      .andWhere('q.stimulus_id IS NULL');
     if (difficulty) qb.andWhere('q.difficulty = :d', { d: difficulty });
     qb.orderBy('random()').limit(limit);
     return qb.getMany();

@@ -535,6 +535,20 @@ envelope validation, `ai_breakdown_recommendations`). Migration 2280.
   PM-Test review page now shows the `verificationStatus` badge
   (agreed / key_mismatch / verifier_error).
 
+**Stimulus-awareness pass (2026-08-25):** the AI pipeline previously had
+zero awareness of `question_stimuli` (shared comprehension passages /
+data tables — heavy in English and Biology). Fixed end-to-end:
+explanation prompts and the answer verifier now receive the stimulus as
+`<data type="stimulus">` (bulk job loads the relation; the eval job's
+probes too); IMAGE-ONLY stimuli are skipped with the new
+`stimulus_image_unsupported` reject reason instead of hallucinating or
+false-tripping the key-mismatch guard; the exemplar picker excludes
+stimulus-bearing questions (a stem referencing an invisible table is a
+toxic style model); and generation gained a self-containment shell rule
+plus the `references_missing_stimulus` validator reason — phantom
+"According to the passage…" / "In the diagram below…" stems are
+rejected (inline markdown tables in the stem remain allowed).
+
 **Still open (small):**
 - 0.9a admin-console generation batch-size default (frontend repo, one
   constant — raise ~5 → 8–10 now that salvage + budgets landed).
