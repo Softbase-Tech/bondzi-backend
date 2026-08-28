@@ -1094,7 +1094,10 @@ problems above. Same schema, same rules. Return ONLY the JSON array.`;
       const slice = ids.slice(start, start + BATCH);
       const batch = await this.questionsRepo.find({
         where: slice.map((id) => ({ id })),
-        relations: ['options', 'subject'],
+        // `stimulus` = the shared passage/table block behind grouped
+        // items — English comprehension and Biology data questions are
+        // unsolvable (and un-explainable) without it.
+        relations: ['options', 'subject', 'stimulus'],
       });
       const byId = new Map(batch.map((row) => [row.id, row]));
 
@@ -1108,6 +1111,30 @@ problems above. Same schema, same rules. Return ONLY the JSON array.`;
         if (!correct) {
           failed += 1;
           this.logger.warn(`question ${id} has no correct option; skipping`);
+          continue;
+        }
+
+        // Stimulus handling: text stimuli ride into the prompt; an
+        // IMAGE-ONLY stimulus (image_url with no usable body text)
+        // cannot be seen by a text model — generating anyway would
+        // hallucinate or trip the key-mismatch guard and wrongly pull
+        // a good question into review. Skip with a distinct reason so
+        // ops can see how much of the bank needs image transcription.
+        const stimulusBody = q.stimulus?.body?.trim() ?? '';
+        if (q.stimulus && !stimulusBody && q.stimulus.imageUrl) {
+          failed += 1;
+          await this.recordRejectSafely({
+            jobId: record.id,
+            action: 'explanation',
+            modelId,
+            reason: 'stimulus_image_unsupported',
+            detail: `question ${q.id} has an image-only stimulus (${q.stimulus.id}) — text models cannot see it; add a text transcription to the stimulus body to enable AI explanations`,
+          });
+          await this.jobsRepo.update(record.id, {
+            completedItems: completed,
+            failedItems: failed,
+            actualCostUsd: totalCost.toFixed(4),
+          });
           continue;
         }
 
@@ -1185,6 +1212,9 @@ problems above. Same schema, same rules. Return ONLY the JSON array.`;
           correctLabel: correct.label,
           syllabusContext,
           referenceMaterial,
+          stimulus: stimulusBody
+            ? { title: q.stimulus?.title ?? null, body: stimulusBody }
+            : undefined,
           isQuantitativeSubject: quantitative,
           systemShellOverride: dbShell?.shell,
         });
