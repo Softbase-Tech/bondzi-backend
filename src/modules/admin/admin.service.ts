@@ -20,6 +20,7 @@ import {
   ExamType,
   QuestionStatus,
   SubscriptionStatus,
+  UserRole,
 } from '../../common/types/enums';
 import { XpTransaction } from '../xp-economy/entities/xp-transaction.entity';
 import { XpRedemption } from '../xp-economy/entities/xp-redemption.entity';
@@ -385,8 +386,28 @@ export class AdminService {
   /**
    * Auth analytics — signups and login events sliced by platform.
    *
-   *   • `signups.byPlatform` — all-time distribution across the entire
-   *     users table. Answers "which surface has produced the most
+   * **Students only.** Every aggregate below is filtered to
+   * `role = 'student'`. This is a product-growth surface: it answers
+   * "how are students reaching us, and on what?" Operator traffic
+   * (admin / superadmin / teacher) is not acquisition — a handful of
+   * staff signing into the console several times a day would otherwise
+   * sit in the same bars as real signups and inflate the 'web' and
+   * 'admin-web' buckets against a much larger student denominator.
+   *
+   * Operator activity is not lost, just kept out of the growth numbers:
+   * it is still visible per-account in `userDetail().loginEvents`, which
+   * is deliberately unfiltered because that view is a support tool.
+   *
+   * Second-order effect, and a desirable one: the login aggregates reach
+   * `role` by joining `users`, and `User` is soft-deletable, so TypeORM
+   * appends `u.deleted_at IS NULL` to that join. Sign-ins belonging to
+   * deleted accounts therefore drop out too. That is the consistent
+   * answer — the signup aggregates read `users` directly and have always
+   * excluded them, so before this the two halves of the page disagreed
+   * about whether a deleted account counted.
+   *
+   *   • `signups.byPlatform` — all-time distribution across student
+   *     accounts. Answers "which surface has produced the most
    *     accounts to date?"
    *   • `signups.last30d` — daily counts per platform for the last 30
    *     days, so growth-side stakeholders can see cadence, not just
@@ -416,6 +437,7 @@ export class AdminService {
           .createQueryBuilder('u')
           .select('u.signup_platform', 'platform')
           .addSelect('COUNT(*)', 'count')
+          .where('u.role = :role', { role: UserRole.STUDENT })
           .groupBy('u.signup_platform')
           .getRawMany<Row>(),
         this.usersRepo
@@ -423,6 +445,7 @@ export class AdminService {
           .select('u.signup_platform', 'platform')
           .addSelect('COUNT(*)', 'count')
           .where('u.created_at >= :start', { start: thirtyDaysAgo })
+          .andWhere('u.role = :role', { role: UserRole.STUDENT })
           .groupBy('u.signup_platform')
           .getRawMany<Row>(),
         this.loginEventsRepo
@@ -430,7 +453,9 @@ export class AdminService {
           .select('e.platform', 'platform')
           .addSelect('e.event_type', 'event_type')
           .addSelect('COUNT(*)', 'count')
+          .innerJoin(User, 'u', 'u.id = e.user_id')
           .where('e.created_at >= :start', { start: thirtyDaysAgo })
+          .andWhere('u.role = :role', { role: UserRole.STUDENT })
           .groupBy('e.platform')
           .addGroupBy('e.event_type')
           .getRawMany<EventRow>(),
@@ -442,7 +467,9 @@ export class AdminService {
           )
           .addSelect('e.platform', 'platform')
           .addSelect('COUNT(*)', 'count')
+          .innerJoin(User, 'u', 'u.id = e.user_id')
           .where('e.created_at >= :start', { start: thirtyDaysAgo })
+          .andWhere('u.role = :role', { role: UserRole.STUDENT })
           .groupBy('day')
           .addGroupBy('e.platform')
           .orderBy('day', 'ASC')
