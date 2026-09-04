@@ -67,6 +67,22 @@ export enum MailEvent {
   REFERRAL_QUALIFIED = 'referral_qualified',
   /** Sunday digest: this week's points, questions answered, rank delta. */
   WEEKLY_DIGEST = 'weekly_digest',
+  /**
+   * Re-engagement study reminder — the EMAIL fallback of the daily
+   * reminder push, sent ONLY to users with no push-capable device and
+   * on a capped cadence (every 3rd day per user, hard per-run cap) so
+   * mail volume can never balloon the Resend bill the way daily push
+   * can't. Gated on email_streak_nudges_enabled (the "study nudges"
+   * category).
+   */
+  STUDY_REMINDER = 'study_reminder',
+  /**
+   * Admin broadcast / marketing announcement — the EMAIL leg of the
+   * notifications broadcast (NotificationChannel.EMAIL). Gated on
+   * email_marketing_enabled; template always carries an unsubscribe
+   * link.
+   */
+  ANNOUNCEMENT = 'announcement',
 
   // --- Account lifecycle -------------------------------------------------
   /** Heads-up that the account is scheduled for deletion (T-14 / T-7). */
@@ -271,6 +287,20 @@ export interface ReferralQualifiedPayload extends BasePayload {
   rewardXp: number;
 }
 
+export interface StudyReminderPayload extends BasePayload {
+  /** Current streak — 0 renders the "get started" variant. */
+  streakDays: number;
+  unsubscribeUrl?: string;
+}
+
+export interface AnnouncementPayload extends BasePayload {
+  /** Broadcast title (plain text — escaped at render). */
+  title: string;
+  /** Broadcast body (plain text — escaped at render, newlines kept). */
+  body: string;
+  unsubscribeUrl?: string;
+}
+
 export interface WeeklyDigestPayload extends BasePayload {
   questionsAnswered: number;
   correctRate: number; // 0..1
@@ -416,6 +446,8 @@ export interface MailPayloadByEvent {
   [MailEvent.LEVEL_UP]: LevelUpPayload;
   [MailEvent.REFERRAL_QUALIFIED]: ReferralQualifiedPayload;
   [MailEvent.WEEKLY_DIGEST]: WeeklyDigestPayload;
+  [MailEvent.STUDY_REMINDER]: StudyReminderPayload;
+  [MailEvent.ANNOUNCEMENT]: AnnouncementPayload;
   [MailEvent.ACCOUNT_DELETION_WARNING]: AccountDeletionWarningPayload;
   [MailEvent.ACCOUNT_DELETED]: AccountDeletedPayload;
   [MailEvent.ADMIN_ACCOUNT_DELETION_DIGEST]: AdminAccountDeletionDigestPayload;

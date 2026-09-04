@@ -36,8 +36,10 @@ import {
   buildLevelUp,
   buildReferralQualified,
   buildStreakAtRisk,
+  buildStudyReminder,
   buildWeeklyDigest,
 } from './templates/engagement';
+import { buildAnnouncement } from './templates/announcement';
 import {
   buildPartnerAgreement,
   buildPartnerApproved,
@@ -277,10 +279,14 @@ export class MailService implements OnModuleInit {
       case MailEvent.WEEKLY_DIGEST:
         return user.emailWeeklyDigestEnabled ? null : 'pref_disabled';
       case MailEvent.STREAK_AT_RISK:
+      case MailEvent.STUDY_REMINDER:
+        // Study reminders share the "study nudges" preference category
+        // with streak-at-risk — one toggle governs both nudge flavours.
         return user.emailStreakNudgesEnabled ? null : 'pref_disabled';
       case MailEvent.LEVEL_UP:
         return user.emailLevelUpEnabled ? null : 'pref_disabled';
       case MailEvent.REFERRAL_QUALIFIED:
+      case MailEvent.ANNOUNCEMENT:
         return user.emailMarketingEnabled ? null : 'pref_disabled';
       default:
         return null;
@@ -376,6 +382,16 @@ export class MailService implements OnModuleInit {
       case MailEvent.WEEKLY_DIGEST:
         return buildWeeklyDigest(
           payload as MailPayloadByEvent[MailEvent.WEEKLY_DIGEST],
+          this.webUrl,
+        );
+      case MailEvent.STUDY_REMINDER:
+        return buildStudyReminder(
+          payload as MailPayloadByEvent[MailEvent.STUDY_REMINDER],
+          this.webUrl,
+        );
+      case MailEvent.ANNOUNCEMENT:
+        return buildAnnouncement(
+          payload as MailPayloadByEvent[MailEvent.ANNOUNCEMENT],
           this.webUrl,
         );
       case MailEvent.ACCOUNT_DELETION_WARNING:

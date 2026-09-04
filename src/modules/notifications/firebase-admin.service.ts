@@ -116,12 +116,26 @@ export class FirebaseAdminService implements OnModuleInit {
     if (!this.app || tokens.length === 0) {
       return { successCount: 0, invalidTokens: [] };
     }
+    // Browser tokens (DevicePlatform.WEB) ride the same multicast — the
+    // webpush block gives them a click-through target (FCM web ignores
+    // the bare notification tap otherwise). data.link, when a caller
+    // sets it, wins over the site root.
+    const clickLink =
+      message.data?.link ||
+      process.env.WEB_PUSH_CLICK_URL ||
+      process.env.MAIL_WEB_URL ||
+      process.env.APP_URL ||
+      'https://bondzi.online';
     const sendPromise = this.app.messaging().sendEachForMulticast({
       tokens,
       notification: { title: message.title, body: message.body },
       data: message.data ?? {},
       android: { priority: 'high' },
       apns: { payload: { aps: { sound: 'default' } } },
+      webpush: {
+        fcmOptions: { link: clickLink },
+        headers: { Urgency: 'normal' },
+      },
     });
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
       const t = setTimeout(() => {

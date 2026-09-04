@@ -4,10 +4,13 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Job } from 'bullmq';
 import { Repository } from 'typeorm';
 import { Notification } from '../modules/notifications/entities/notification.entity';
+import { User } from '../modules/users/entities/user.entity';
 import { NotificationChannel } from '../common/types/enums';
 import { QUEUE_NOTIFICATIONS } from '../modules/ai/ai.queues';
 import { NotificationsService } from '../modules/notifications/notifications.service';
 import { FirebaseAdminService } from '../modules/notifications/firebase-admin.service';
+import { MailService } from '../modules/mail/mail.service';
+import { MailEvent } from '../modules/mail/mail.types';
 
 interface DispatchPayload {
   notificationId: string;
@@ -40,8 +43,11 @@ export class NotificationsProcessor extends WorkerHost {
   constructor(
     @InjectRepository(Notification)
     private readonly notificationsRepo: Repository<Notification>,
+    @InjectRepository(User)
+    private readonly usersRepo: Repository<User>,
     private readonly notifications: NotificationsService,
     private readonly firebase: FirebaseAdminService,
+    private readonly mail: MailService,
   ) {
     super();
   }
@@ -71,6 +77,11 @@ export class NotificationsProcessor extends WorkerHost {
         attemptedAt = result.attemptedAt;
         break;
       }
+      case NotificationChannel.EMAIL: {
+        delivered = await this.sendEmail(row);
+        attemptedAt = new Date();
+        break;
+      }
       case NotificationChannel.SMS:
         // Stub channels — record the attempt but do NOT stamp sent_at.
         // Surfacing these as "sent" in dashboards would lie about
@@ -89,6 +100,52 @@ export class NotificationsProcessor extends WorkerHost {
       await this.notificationsRepo.save(row);
     }
     return { ok: delivered };
+  }
+
+  /**
+   * EMAIL channel — the reach-everyone leg for push-unreachable users
+   * (web signups with no device token). Rides MailService's
+   * ANNOUNCEMENT event, so per-user gating (email_marketing_enabled,
+   * bounce state) and the email_sends audit ledger apply; the
+   * notification-row dedup key makes BullMQ retries replay-safe.
+   * Every send carries the user's one-click unsubscribe link.
+   */
+  private async sendEmail(row: Notification): Promise<boolean> {
+    const user = await this.usersRepo.findOne({
+      where: { id: row.userId },
+      select: ['id', 'email', 'fullName', 'emailUnsubscribeToken'],
+    });
+    if (!user?.email) {
+      this.logger.log(
+        `[notify] email → ${row.userId} has no email address; skipping`,
+      );
+      return false;
+    }
+    try {
+      await this.mail.send(
+        MailEvent.ANNOUNCEMENT,
+        user.email,
+        {
+          recipientName: user.fullName ?? undefined,
+          title: row.title,
+          body: row.body,
+          unsubscribeUrl: user.emailUnsubscribeToken
+            ? this.mail.buildUnsubscribeUrl(user.emailUnsubscribeToken)
+            : undefined,
+        },
+        {
+          userId: row.userId,
+          dedupKey: `notif:${row.id}`,
+          sync: true,
+        },
+      );
+      return true;
+    } catch (err) {
+      this.logger.warn(
+        `[notify] email → ${row.userId} send failed: ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 
   private async sendPush(

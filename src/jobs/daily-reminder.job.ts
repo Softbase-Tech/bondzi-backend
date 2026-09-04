@@ -4,6 +4,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { User } from '../modules/users/entities/user.entity';
 import { NotificationsService } from '../modules/notifications/notifications.service';
+import { MailService } from '../modules/mail/mail.service';
+import { MailEvent } from '../modules/mail/mail.types';
 import { NotificationChannel } from '../common/types/enums';
 import { accraDateIso } from '../common/utils/timezone.util';
 
@@ -36,6 +38,7 @@ export class DailyReminderJob {
   constructor(
     @InjectRepository(User) private readonly usersRepo: Repository<User>,
     private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -51,6 +54,7 @@ export class DailyReminderJob {
         return;
       }
       await this.scan();
+      await this.scanEmailFallback();
     });
   }
 
@@ -101,6 +105,102 @@ export class DailyReminderJob {
     if (queued > 0) {
       this.logger.log(`[daily-reminder] queued ${queued} push notifications`);
     }
+  }
+
+  /**
+   * EMAIL fallback for push-unreachable users (premium re-engagement
+   * plan): the push scan above deliberately requires a user_devices
+   * row, which excludes every web signup with no app install — exactly
+   * the users re-engagement exists for. This leg reaches them by mail,
+   * with COST as the first-class constraint (Resend free tier is
+   * 3k/month):
+   *
+   *   • per-user cadence: at most every 3rd day — a stable hash of the
+   *     user id spreads users across a 3-day rota, so daily runs never
+   *     email the same person twice in the window and load stays even.
+   *   • hard per-run cap: REENGAGEMENT_EMAIL_DAILY_CAP (default 150) —
+   *     a growth spike raises the backlog, never the bill.
+   *   • per-user gates ride MailService: email_streak_nudges_enabled
+   *     (the "study nudges" category), bounce state, and a same-day
+   *     dedup key.
+   *
+   * Reachability, not signup platform, is the routing rule: the moment
+   * a web user grants browser push (or installs the app), a device row
+   * appears and they graduate from this leg to the push leg above.
+   */
+  private async scanEmailFallback(): Promise<void> {
+    const today = accraDateIso();
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 3600 * 1000);
+    const cap = Math.max(
+      0,
+      Number(process.env.REENGAGEMENT_EMAIL_DAILY_CAP ?? 150),
+    );
+    if (cap === 0) return; // env kill switch
+
+    const candidates = await this.usersRepo
+      .createQueryBuilder('u')
+      .where('u.is_active = true')
+      .andWhere('u.deleted_at IS NULL')
+      .andWhere('u.email IS NOT NULL')
+      .andWhere('u.email_bounced_at IS NULL')
+      .andWhere('u.email_streak_nudges_enabled = true')
+      .andWhere('(u.streak_days > 0 OR u.last_active_at >= :threeDaysAgo)', {
+        threeDaysAgo,
+      })
+      .andWhere('(u.last_study_date IS NULL OR u.last_study_date < :today)', {
+        today,
+      })
+      // The inverse of the push scan: ONLY users we cannot push to.
+      .andWhere(
+        `NOT EXISTS (SELECT 1 FROM user_devices d WHERE d.user_id = u.id)`,
+      )
+      .take(cap * 4) // headroom before the rota filter thins the set
+      .getMany();
+
+    // 3-day rota: stable per-user bucket vs today's bucket.
+    const dayIndex = Math.floor(Date.now() / 86_400_000) % 3;
+    const due = candidates
+      .filter((u) => DailyReminderJob.rotaBucket(u.id) === dayIndex)
+      .slice(0, cap);
+
+    let queued = 0;
+    for (const user of due) {
+      if (!user.email) continue;
+      await this.mail
+        .send(
+          MailEvent.STUDY_REMINDER,
+          user.email,
+          {
+            recipientName: user.fullName ?? undefined,
+            streakDays: user.streakDays ?? 0,
+            unsubscribeUrl: user.emailUnsubscribeToken
+              ? this.mail.buildUnsubscribeUrl(user.emailUnsubscribeToken)
+              : undefined,
+          },
+          {
+            userId: user.id,
+            dedupKey: `study_reminder:${user.id}:${today}`,
+            sync: false,
+          },
+        )
+        .catch(() => void 0);
+      queued += 1;
+    }
+    if (queued > 0) {
+      this.logger.log(
+        `[daily-reminder] queued ${queued} fallback emails (cap=${cap}, rota=${dayIndex})`,
+      );
+    }
+  }
+
+  /** Stable 0–2 bucket from the uuid (FNV-1a over the string). */
+  private static rotaBucket(userId: string): number {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < userId.length; i++) {
+      h ^= userId.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0) % 3;
   }
 
   private async tryAcquireAdvisoryLock(em: {

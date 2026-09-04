@@ -17,7 +17,7 @@ import { NotificationChannel } from '../../common/types/enums';
 
 describe('AdminNotificationsService', () => {
   let service: AdminNotificationsService;
-  let usersRepo: { createQueryBuilder: jest.Mock };
+  let usersRepo: { createQueryBuilder: jest.Mock; query: jest.Mock };
   let subsRepo: { createQueryBuilder: jest.Mock };
   let notifications: { send: jest.Mock };
 
@@ -44,7 +44,10 @@ describe('AdminNotificationsService', () => {
   }
 
   beforeEach(async () => {
-    usersRepo = { createQueryBuilder: jest.fn() };
+    usersRepo = {
+      createQueryBuilder: jest.fn(),
+      query: jest.fn().mockResolvedValue([]),
+    };
     subsRepo = { createQueryBuilder: jest.fn() };
     notifications = { send: jest.fn().mockResolvedValue(undefined) };
 
@@ -77,6 +80,64 @@ describe('AdminNotificationsService', () => {
       ],
     }).compile();
     service = moduleRef.get(AdminNotificationsService);
+  });
+
+  it('EMAIL alongside PUSH defaults to fallback-only: push-reachable users get no email', async () => {
+    stubUsersQb([{ id: 'u1' }, { id: 'u2' }, { id: 'u3' }]);
+    // u1 and u3 have device tokens; u2 is the web signup with none.
+    usersRepo.query.mockResolvedValueOnce([
+      { user_id: 'u1' },
+      { user_id: 'u3' },
+    ]);
+    await service.broadcast({
+      segment: BroadcastSegment.ALL,
+      channels: [NotificationChannel.PUSH, NotificationChannel.EMAIL],
+      title: 't',
+      body: 'b',
+    } as never);
+    const calls = notifications.send.mock.calls.map(
+      (c: unknown[]) =>
+        c[0] as { userId: string; channel: NotificationChannel },
+    );
+    // Everyone gets push…
+    expect(
+      calls.filter((c) => c.channel === NotificationChannel.PUSH),
+    ).toHaveLength(3);
+    // …but only the unreachable user gets the email leg.
+    const emails = calls.filter((c) => c.channel === NotificationChannel.EMAIL);
+    expect(emails).toHaveLength(1);
+    expect(emails[0].userId).toBe('u2');
+  });
+
+  it('emailFallbackOnly=false emails the whole segment', async () => {
+    stubUsersQb([{ id: 'u1' }, { id: 'u2' }]);
+    await service.broadcast({
+      segment: BroadcastSegment.ALL,
+      channels: [NotificationChannel.PUSH, NotificationChannel.EMAIL],
+      emailFallbackOnly: false,
+      title: 't',
+      body: 'b',
+    } as never);
+    const emails = notifications.send.mock.calls
+      .map((c: unknown[]) => c[0] as { channel: NotificationChannel })
+      .filter((c) => c.channel === NotificationChannel.EMAIL);
+    expect(emails).toHaveLength(2);
+    // No reachability lookup needed on the full-blast path.
+    expect(usersRepo.query).not.toHaveBeenCalled();
+  });
+
+  it('EMAIL as the only channel emails everyone (no fallback filtering)', async () => {
+    stubUsersQb([{ id: 'u1' }, { id: 'u2' }]);
+    await service.broadcast({
+      segment: BroadcastSegment.ALL,
+      channels: [NotificationChannel.EMAIL],
+      title: 't',
+      body: 'b',
+    } as never);
+    const emails = notifications.send.mock.calls
+      .map((c: unknown[]) => c[0] as { channel: NotificationChannel })
+      .filter((c) => c.channel === NotificationChannel.EMAIL);
+    expect(emails).toHaveLength(2);
   });
 
   it('fans out one Notification per (user, channel) for an ALL broadcast', async () => {
