@@ -22,7 +22,7 @@ import {
   CurrentUser,
 } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
-import { PaginationDto } from '../../common/dto/pagination.dto';
+import { ListTicketsQueryDto } from './dto/list-tickets-query.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { UserRole } from '../../common/types/enums';
@@ -49,17 +49,11 @@ export class SupportAdminController {
 
   @Get()
   @ApiOperation({ summary: 'Support queue for triage.' })
-  list(
-    @Query() p: PaginationDto,
-    @Query('status') status?: 'open' | 'closed',
-    @Query('category')
-    category?: 'feedback' | 'wrong_question' | 'payment' | 'general',
-    @Query('search') search?: string,
-  ) {
+  list(@Query() p: ListTicketsQueryDto) {
     return this.svc.listForAdmin({
-      status,
-      category,
-      search,
+      status: p.status,
+      category: p.category,
+      search: p.search,
       page: p.page ?? 1,
       limit: p.limit ?? 25,
     });
