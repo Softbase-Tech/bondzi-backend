@@ -24,7 +24,6 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import {
-  PartnerAppealStatus,
   PartnerCommissionStatus,
   PartnerCommissionType,
   PartnerFraudSeverity,
@@ -37,6 +36,7 @@ import { CreateTermsVersionDto } from './dto/create-terms-version.dto';
 import { MarkPayoutFailedDto } from './dto/mark-payout-failed.dto';
 import { MarkPayoutPaidDto } from './dto/mark-payout-paid.dto';
 import { ResolveAppealDto } from './dto/resolve-appeal.dto';
+import { ListAppealsQueryDto } from './dto/list-appeals-query.dto';
 import { SuspendPartnerDto } from './dto/suspend-partner.dto';
 import { CreateBannerDto, UpdateBannerDto } from './dto/upsert-banner.dto';
 import { PartnerAppealsService } from './partner-appeals.service';
@@ -183,14 +183,10 @@ export class PartnersAdminController {
   // --------------------------------------------------------------------
 
   @Get('appeals/list')
-  listAppeals(
-    @Query() p: PaginationDto,
-    @Query('partnerId') partnerId?: string,
-    @Query('status') status?: PartnerAppealStatus,
-  ) {
+  listAppeals(@Query() p: ListAppealsQueryDto) {
     return this.appeals.listAll({
-      partnerId,
-      status,
+      partnerId: p.partnerId,
+      status: p.status,
       page: p.page ?? 1,
       limit: p.limit ?? 50,
     });

@@ -222,7 +222,10 @@ export class PaymentAttemptsService {
       .createQueryBuilder('pa')
       .leftJoinAndSelect('pa.plan', 'plan')
       .leftJoinAndSelect('pa.user', 'user')
-      .orderBy('pa.created_at', 'DESC')
+      // Property path, not the raw column: with joins + take/skip,
+      // TypeORM paginates through a DISTINCT subquery where raw
+      // snake_case columns don't exist — Postgres rejects the query.
+      .orderBy('pa.createdAt', 'DESC')
       .take(limit)
       .skip(offset);
     if (opts.status) qb.andWhere('pa.status = :st', { st: opts.status });

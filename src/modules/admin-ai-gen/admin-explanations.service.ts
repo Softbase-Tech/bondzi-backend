@@ -403,7 +403,9 @@ export class AdminExplanationsService {
     if (params.subjectId)
       qb.andWhere('q.subject_id = :sid', { sid: params.subjectId });
 
-    qb.orderBy('q.created_at', 'DESC')
+    // Property path, not the raw column — joins + take/skip paginate
+    // through a DISTINCT subquery where raw snake_case columns fail.
+    qb.orderBy('q.createdAt', 'DESC')
       .skip((page - 1) * limit)
       .take(limit);
 
