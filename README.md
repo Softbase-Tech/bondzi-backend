@@ -126,3 +126,6 @@ The runtime image is Alpine-based, non-root, and includes a healthcheck. The pro
 - Every admin mutation writes an `audit_log` row with previous + new values and IP.
 
 See the full spec in [`docs/PassMaster_Backend_Engineering_Prompt.docx`](../docs/PassMaster_Backend_Engineering_Prompt.docx) §7 for the complete checklist.
+
+<!-- Keep deploy linear going forward — update it with a squash instead of a merge next time:
+git checkout deploy && git merge --squash origin/develop && git commit -m "sync: develop → deploy" -->

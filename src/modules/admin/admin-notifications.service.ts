@@ -104,7 +104,9 @@ export class AdminNotificationsService {
     const qb = this.notificationsRepo
       .createQueryBuilder('n')
       .leftJoinAndSelect('n.user', 'user')
-      .orderBy('n.created_at', 'DESC')
+      // Property path, not the raw column — joins + take/skip paginate
+      // through a DISTINCT subquery where raw snake_case columns fail.
+      .orderBy('n.createdAt', 'DESC')
       .take(limit)
       .skip(offset);
     if (opts.userId) qb.andWhere('n.user_id = :uid', { uid: opts.userId });
