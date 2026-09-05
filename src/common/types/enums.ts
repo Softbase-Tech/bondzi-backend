@@ -294,6 +294,14 @@ export enum NotificationChannel {
   SMS = 'sms',
   WHATSAPP = 'whatsapp',
   IN_APP = 'in_app',
+  /**
+   * Email delivery through MailService (Resend). Added so broadcasts
+   * and re-engagement can reach push-unreachable users (web signups
+   * with no device token). Gated per user by email prefs + bounce
+   * state inside MailService — a notification row on this channel is
+   * an ATTEMPT, the mail layer decides deliverability.
+   */
+  EMAIL = 'email',
 }
 
 export enum SchoolRole {

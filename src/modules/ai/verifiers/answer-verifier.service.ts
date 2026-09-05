@@ -33,6 +33,13 @@ export interface VerifierInput {
    * the verifier receives the SAME retrieval bundle as the generator).
    */
   referenceMaterial?: string;
+  /**
+   * Shared stimulus text (comprehension passage / data table) the
+   * question refers to. Without it a blind solve of a passage-based
+   * English/Biology item is impossible and would false-flag the key.
+   * Image-only stimuli cannot be verified — callers skip those.
+   */
+  stimulus?: string;
   /** For usage-log attribution of bulk runs. */
   jobId?: string;
 }
@@ -110,7 +117,10 @@ export class AnswerVerifierService {
     const referenceBlock = input.referenceMaterial?.trim()
       ? `Reference material:\n<data type="reference_material">\n${input.referenceMaterial}\n</data>\n\n`
       : '';
-    const user = `${referenceBlock}Question:
+    const stimulusBlock = input.stimulus?.trim()
+      ? `Shared stimulus the question refers to:\n<data type="stimulus">\n${input.stimulus}\n</data>\n\n`
+      : '';
+    const user = `${referenceBlock}${stimulusBlock}Question:
 <data type="question">
 ${input.stem}
 </data>

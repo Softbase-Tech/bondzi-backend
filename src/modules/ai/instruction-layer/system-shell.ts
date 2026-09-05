@@ -176,6 +176,13 @@ const QUESTION_TASK_RULES = `Multiple-choice question rules:
   option text exactly. Never refer to options by letter ("option C",
   "the answer is B") — option order is shuffled after generation, so
   letter references go stale.
+- Every question must be fully SELF-CONTAINED. This format has no
+  attached passage, diagram, figure, map, graph, or data table —
+  never write a stem that refers to one ("According to the passage",
+  "In the diagram below", "Use the table above"). If a concept needs
+  data, put the data INSIDE the stem itself (a short inline list or
+  values); if it genuinely needs a picture or a reading passage,
+  write a different question on the same outcome instead.
 - Stem length: at least 6 words, at most 60. Below 6 words the
   question is likely trivial; above 60 you're probably testing
   reading comprehension not the subject.

@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsOptional,
   IsString,
@@ -41,6 +42,20 @@ export class BroadcastNotificationDto {
   @ApiProperty({ enum: BroadcastSegment })
   @IsEnum(BroadcastSegment)
   segment: BroadcastSegment;
+
+  @ApiProperty({
+    required: false,
+    default: true,
+    description:
+      'When the EMAIL channel is selected alongside PUSH: true (default) sends ' +
+      'email ONLY to users with no push-capable device (the fallback pattern — ' +
+      'no double-notification, minimal Resend volume); false emails every user ' +
+      'in the segment regardless of push reachability. Ignored when EMAIL is ' +
+      'the only channel.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  emailFallbackOnly?: boolean;
 
   @ApiProperty({ required: false })
   @IsOptional()

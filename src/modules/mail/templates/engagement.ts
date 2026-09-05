@@ -12,6 +12,7 @@ import {
   LevelUpPayload,
   ReferralQualifiedPayload,
   StreakAtRiskPayload,
+  StudyReminderPayload,
   WeeklyDigestPayload,
 } from '../mail.types';
 import {
@@ -56,6 +57,62 @@ export function buildStreakAtRisk(
       `Your ${payload.streakDays}-day Bondzi streak is about to reset. ` +
       `Answer one question before ${formatDate(payload.expiresAt)} to keep it alive.\n\n` +
       `Open Bondzi: ${webUrl}`,
+  };
+}
+
+/**
+ * Study-reminder email — the fallback channel for users with no
+ * push-capable device (web signups). Deliberately gentler than the
+ * daily push: it arrives at most every 3rd day per user, so the copy
+ * reads like a nudge, not a nag.
+ */
+export function buildStudyReminder(
+  payload: StudyReminderPayload,
+  webUrl: string,
+): BuiltMail {
+  const hasStreak = payload.streakDays > 0;
+  const headline = hasStreak
+    ? `Keep your ${payload.streakDays}-day streak going`
+    : 'A few questions today goes a long way';
+  const line = hasStreak
+    ? `Your <strong>${payload.streakDays}-day</strong> streak is waiting — one short practice session today keeps it alive.`
+    : `Pick one subject and try a short practice set — ten questions is enough to see where you stand.`;
+  const unsub = payload.unsubscribeUrl
+    ? `<p style="margin:18px 0 0;font-size:12px;color:${brand.muted};">
+         Not helpful? <a href="${escapeAttr(payload.unsubscribeUrl)}" style="color:${brand.muted};">Unsubscribe from study reminders</a>
+       </p>`
+    : '';
+  const body = `
+    <p style="margin:0 0 14px;font-size:20px;font-weight:700;color:${brand.navy};">
+      📚 ${headline}
+    </p>
+    <p style="margin:0 0 14px;">${greet(payload.recipientName)}</p>
+    <p style="margin:0 0 14px;">${line}</p>
+    <p style="margin:0 0 6px;">— The Bondzi team</p>
+    ${unsub}
+  `;
+  return {
+    subject: hasStreak
+      ? `📚 Your ${payload.streakDays}-day streak is waiting`
+      : '📚 Ready for a quick practice session?',
+    html: renderLayout({
+      title: 'Study reminder',
+      preheader: hasStreak
+        ? `One session keeps your ${payload.streakDays}-day streak alive.`
+        : 'A short practice set today goes a long way.',
+      body,
+      cta: { label: 'Practise now', url: webUrl },
+      webUrl,
+    }),
+    text:
+      `${greet(payload.recipientName).replace(/<[^>]+>/g, '')}\n\n` +
+      (hasStreak
+        ? `Your ${payload.streakDays}-day Bondzi streak is waiting — one short practice session today keeps it alive.\n\n`
+        : `Pick one subject and try a short practice set — ten questions is enough to see where you stand.\n\n`) +
+      `Open Bondzi: ${webUrl}` +
+      (payload.unsubscribeUrl
+        ? `\n\nUnsubscribe from study reminders: ${payload.unsubscribeUrl}`
+        : ''),
   };
 }
 

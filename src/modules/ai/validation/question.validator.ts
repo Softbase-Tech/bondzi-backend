@@ -48,6 +48,7 @@ export type QuestionRejectReason =
   | 'stem_too_short'
   | 'stem_too_long'
   | 'trivia_meta_question'
+  | 'references_missing_stimulus'
   | 'all_or_none_option'
   | 'missing_worked_example_calc'
   | 'model_refused';
@@ -91,6 +92,34 @@ const TRIVIA_META_PATTERNS: RegExp[] = [
   /\bchief examiner\b/i,
   /\bexam board\b/i,
 ];
+
+/**
+ * Phantom-stimulus references. Generated PM-Test items have NO
+ * attached stimulus (no passage, no image, no shared table — the
+ * pm_test schema has no stimulus support), so a stem that points at
+ * one is broken for the student the moment it renders. English and
+ * Biology are the high-risk subjects: comprehension and diagram
+ * framing is the models' default register there.
+ *
+ * Passages/extracts/poems are ALWAYS phantom — a real passage cannot
+ * fit inside the 60-word stem cap. Diagram/figure/graph/map/chart
+ * references are always phantom too — models cannot draw, and ASCII
+ * art is banned. Table references are checked separately: a stem may
+ *legitimately contain its own inline markdown table.
+ */
+const PHANTOM_STIMULUS_PATTERNS: RegExp[] = [
+  /\b(?:the|this|a) (?:passage|extract|poem|comprehension)\b/i,
+  /\baccording to the (?:passage|extract|poem|text|diagram|figure|graph|map|chart)\b/i,
+  /\b(?:the|this) (?:diagram|figure|graph|map|chart|illustration|picture|image)s? (?:above|below|shown|provided|given)\b/i,
+  /\b(?:in|from|on) the (?:diagram|figure|graph|map|chart|illustration|picture|image)\b/i,
+  /\buse the .{0,40}(?:above|below) to answer\b/i,
+  /\b(?:shown|given|provided) (?:above|below)\b/i,
+];
+/** Table references are phantom only when no inline table follows. */
+const TABLE_REFERENCE: RegExp =
+  /\b(?:the|this) table (?:above|below|shown|provided|given)\b|\b(?:in|from) the table\b/i;
+/** Crude-but-sufficient inline markdown table detector (a pipe row). */
+const INLINE_TABLE: RegExp = /\|.+\|/;
 
 /**
  * "All of the above" / "None of the above" — banned per the system
@@ -374,6 +403,26 @@ function validateSingleQuestion(
       ok: false,
       reason: 'meta_syllabus_reference',
       detail: `item ${i} stem references "syllabus" or "curriculum" — test the subject matter, not the document`,
+    };
+  }
+
+  // Phantom-stimulus stems — the item references a passage / diagram /
+  // table that does not exist in the generated format. Checked on the
+  // stem only; explanations may legitimately discuss e.g. "a diagram"
+  // in the abstract.
+  const phantomHit = PHANTOM_STIMULUS_PATTERNS.find((r) => r.test(body));
+  if (phantomHit) {
+    return {
+      ok: false,
+      reason: 'references_missing_stimulus',
+      detail: `item ${i} stem references a stimulus that does not exist (${phantomHit.source.slice(0, 60)}) — generated items must be self-contained`,
+    };
+  }
+  if (TABLE_REFERENCE.test(body) && !INLINE_TABLE.test(body)) {
+    return {
+      ok: false,
+      reason: 'references_missing_stimulus',
+      detail: `item ${i} stem references a table but contains no inline table`,
     };
   }
 

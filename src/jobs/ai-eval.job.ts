@@ -80,6 +80,7 @@ export class AiEvalJob {
       .createQueryBuilder('q')
       .leftJoinAndSelect('q.options', 'o')
       .leftJoinAndSelect('q.subject', 's')
+      .leftJoinAndSelect('q.stimulus', 'st')
       .where('q.status = :st', { st: 'active' })
       .andWhere('q.is_verified = true')
       .andWhere("coalesce(q.explanation, '') <> ''")
@@ -109,17 +110,28 @@ export class AiEvalJob {
       avgClarity: 0,
       lowIds: [] as string[],
     };
+    // Image-only stimuli (image_url, no body text) are invisible to a
+    // text model — probing those items would produce false key
+    // mismatches on perfectly good questions. Skipped + counted.
+    let skippedImageStimulus = 0;
 
     const model = resolveModelId('claude-haiku');
     for (const q of sample) {
       const correct = q.options?.find((o) => o.isCorrect);
       if (!correct || !q.options || q.options.length !== 4) continue;
+      const stimulusBody = q.stimulus?.body?.trim() ?? '';
+      if (q.stimulus && !stimulusBody && q.stimulus.imageUrl) {
+        skippedImageStimulus += 1;
+        continue;
+      }
 
-      // Probe 1 — blind key agreement.
+      // Probe 1 — blind key agreement (with the shared stimulus, when
+      // the question has one — a passage item is unsolvable without it).
       const verdict = await this.verifier.verify(
         {
           stem: q.body,
           options: q.options.map((o) => ({ label: o.label, body: o.body })),
+          stimulus: stimulusBody || undefined,
         },
         correct.label,
       );
@@ -144,6 +156,9 @@ export class AiEvalJob {
           questionBody: q.body,
           options: q.options.map((o) => ({ label: o.label, body: o.body })),
           correctLabel: correct.label,
+          stimulus: stimulusBody
+            ? { title: q.stimulus?.title ?? null, body: stimulusBody }
+            : undefined,
           isQuantitativeSubject: quantitative,
         });
         const res = await this.ai.callBedrock(built.user, model, {
@@ -180,9 +195,17 @@ export class AiEvalJob {
     for (const q of sample.slice(0, 5)) {
       const correct = q.options?.find((o) => o.isCorrect);
       if (!correct || !q.explanation) continue;
+      // Same stimulus rules as the solve probes: judging accuracy of a
+      // passage question without its passage is unfair; image-only is
+      // unjudgeable by a text model.
+      const judgeStimulus = q.stimulus?.body?.trim() ?? '';
+      if (q.stimulus && !judgeStimulus && q.stimulus.imageUrl) continue;
+      const judgeStimulusBlock = judgeStimulus
+        ? `Shared stimulus the question refers to:\n<data type="stimulus">\n${judgeStimulus.slice(0, 4000)}\n</data>\n\n`
+        : '';
       try {
         const res = await this.ai.callBedrock(
-          `Question:\n<data type="question">\n${q.body}\n</data>\n\nCorrect answer: "${correct.body}"\n\nStored explanation:\n<data type="explanation">\n${q.explanation.slice(0, 4000)}\n</data>\n\nScore the explanation for a Ghanaian WASSCE student. Return ONLY:\n{"accuracy": 1-5, "clarity": 1-5, "note": "<one sentence>"}`,
+          `${judgeStimulusBlock}Question:\n<data type="question">\n${q.body}\n</data>\n\nCorrect answer: "${correct.body}"\n\nStored explanation:\n<data type="explanation">\n${q.explanation.slice(0, 4000)}\n</data>\n\nScore the explanation for a Ghanaian WASSCE student. Return ONLY:\n{"accuracy": 1-5, "clarity": 1-5, "note": "<one sentence>"}`,
           model,
           {
             system:
@@ -216,7 +239,12 @@ export class AiEvalJob {
     judge.avgAccuracy = judge.n ? Number((accSum / judge.n).toFixed(2)) : 0;
     judge.avgClarity = judge.n ? Number((claritySum / judge.n).toFixed(2)) : 0;
 
-    const metrics = { keyAgreement, explanationEval, judge };
+    const metrics = {
+      keyAgreement,
+      explanationEval,
+      judge,
+      skippedImageStimulus,
+    };
     const row = await this.runsRepo.save(
       this.runsRepo.create({
         runDate: accraDateIso(),

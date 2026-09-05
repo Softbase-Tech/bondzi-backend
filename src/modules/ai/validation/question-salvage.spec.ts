@@ -102,6 +102,76 @@ describe('validateQuestionBatchSalvage (remediation 0.5)', () => {
     expect(res.rejected).toHaveLength(0);
   });
 
+  it('rejects stems referencing a passage that does not exist (English trap)', () => {
+    const raw = JSON.stringify([
+      item({
+        body: 'According to the passage, why did Kofi refuse to sell the family land?',
+        options: [
+          { label: 'A', body: 'It held his ancestors', isCorrect: true },
+          { label: 'B', body: 'It was too small', isCorrect: false },
+          { label: 'C', body: 'The price was low', isCorrect: false },
+          { label: 'D', body: 'He feared the chief', isCorrect: false },
+        ],
+      }),
+    ]);
+    const res = validateQuestionBatchSalvage(raw, {});
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.rejected[0]?.reason).toBe('references_missing_stimulus');
+  });
+
+  it('rejects stems referencing a diagram that does not exist (Biology trap)', () => {
+    const raw = JSON.stringify([
+      item({
+        body: 'In the diagram below, which labelled part of the flower produces pollen grains?',
+        options: [
+          { label: 'A', body: 'The anther structure', isCorrect: true },
+          { label: 'B', body: 'The stigma surface', isCorrect: false },
+          { label: 'C', body: 'The ovary wall', isCorrect: false },
+          { label: 'D', body: 'The petal base', isCorrect: false },
+        ],
+      }),
+    ]);
+    const res = validateQuestionBatchSalvage(raw, {});
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.rejected[0]?.reason).toBe('references_missing_stimulus');
+  });
+
+  it('rejects a table reference with no inline table, accepts one WITH an inline table', () => {
+    const noTable = JSON.stringify([
+      item({
+        body: 'From the table above, which town recorded the highest rainfall in June?',
+        options: [
+          { label: 'A', body: 'Kumasi town', isCorrect: true },
+          { label: 'B', body: 'Tamale town', isCorrect: false },
+          { label: 'C', body: 'Accra city', isCorrect: false },
+          { label: 'D', body: 'Takoradi port', isCorrect: false },
+        ],
+      }),
+    ]);
+    const resNo = validateQuestionBatchSalvage(noTable, {});
+    expect(resNo.ok).toBe(true);
+    if (!resNo.ok) return;
+    expect(resNo.rejected[0]?.reason).toBe('references_missing_stimulus');
+
+    const withTable = JSON.stringify([
+      item({
+        body: 'From the table | Kumasi: 210mm | Tamale: 90mm | Accra: 140mm | which town recorded the highest rainfall?',
+        options: [
+          { label: 'A', body: 'Kumasi town', isCorrect: true },
+          { label: 'B', body: 'Tamale town', isCorrect: false },
+          { label: 'C', body: 'Accra city', isCorrect: false },
+          { label: 'D', body: 'Takoradi port', isCorrect: false },
+        ],
+      }),
+    ]);
+    const resYes = validateQuestionBatchSalvage(withTable, {});
+    expect(resYes.ok).toBe(true);
+    if (!resYes.ok) return;
+    expect(resYes.rejected).toHaveLength(0);
+  });
+
   it('warns (not rejects) when the correct option is much longer than the rest', () => {
     const raw = JSON.stringify([
       item({

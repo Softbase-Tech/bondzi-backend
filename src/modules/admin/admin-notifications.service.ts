@@ -143,9 +143,37 @@ export class AdminNotificationsService {
 
   async broadcast(dto: BroadcastNotificationDto): Promise<BroadcastResult> {
     const userIds = await this.resolveSegment(dto);
+
+    // Cost guard for the EMAIL channel: when it accompanies PUSH, the
+    // default is FALLBACK-ONLY — email goes only to users with no
+    // push-capable device (web signups without the app). That reaches
+    // the previously-unreachable without double-notifying everyone
+    // else, and keeps Resend volume proportional to the gap rather
+    // than the whole segment. `emailFallbackOnly: false` opts into a
+    // full email blast deliberately.
+    const emailSelected = dto.channels.includes(NotificationChannel.EMAIL);
+    const pushSelected = dto.channels.includes(NotificationChannel.PUSH);
+    const fallbackOnly =
+      emailSelected && pushSelected && dto.emailFallbackOnly !== false;
+    let pushReachable = new Set<string>();
+    if (fallbackOnly && userIds.length > 0) {
+      const rows: Array<{ user_id: string }> = await this.usersRepo.query(
+        `SELECT DISTINCT user_id FROM user_devices WHERE user_id = ANY($1::uuid[])`,
+        [userIds],
+      );
+      pushReachable = new Set(rows.map((r) => r.user_id));
+    }
+
     let queued = 0;
     for (const userId of userIds) {
       for (const channel of dto.channels) {
+        if (
+          channel === NotificationChannel.EMAIL &&
+          fallbackOnly &&
+          pushReachable.has(userId)
+        ) {
+          continue; // push will reach them; no email needed
+        }
         await this.notifications
           .send({
             userId,
