@@ -34,6 +34,7 @@ import { BillingLogService } from '../payments/billing-log.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { BroadcastNotificationDto } from './dto/broadcast-notification.dto';
 import { SendUserPushDto } from './dto/send-user-push.dto';
+import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { UpdateUserContactDto } from './dto/update-user-contact.dto';
 
 @ApiTags('admin')
@@ -58,8 +59,8 @@ export class AdminController {
   }
 
   @Get('users')
-  listUsers(@Query() p: PaginationDto, @Query('search') search?: string) {
-    return this.admin.listUsers({ ...p, search });
+  listUsers(@Query() p: ListUsersQueryDto) {
+    return this.admin.listUsers(p);
   }
 
   @Get('users/:id')

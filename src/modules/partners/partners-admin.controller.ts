@@ -20,23 +20,21 @@ import {
   CurrentUser,
 } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
-import { PaginationDto } from '../../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
-import {
-  PartnerCommissionStatus,
-  PartnerCommissionType,
-  PartnerFraudSeverity,
-  PartnerPayoutStatus,
-  PartnerStatus,
-  UserRole,
-} from '../../common/types/enums';
+import { UserRole } from '../../common/types/enums';
 import { BanPartnerDto } from './dto/ban-partner.dto';
 import { CreateTermsVersionDto } from './dto/create-terms-version.dto';
 import { MarkPayoutFailedDto } from './dto/mark-payout-failed.dto';
 import { MarkPayoutPaidDto } from './dto/mark-payout-paid.dto';
 import { ResolveAppealDto } from './dto/resolve-appeal.dto';
 import { ListAppealsQueryDto } from './dto/list-appeals-query.dto';
+import {
+  ListCommissionsQueryDto,
+  ListFraudEventsQueryDto,
+  ListPartnersQueryDto,
+  ListPayoutsQueryDto,
+} from './dto/admin-list-queries.dto';
 import { SuspendPartnerDto } from './dto/suspend-partner.dto';
 import { CreateBannerDto, UpdateBannerDto } from './dto/upsert-banner.dto';
 import { PartnerAppealsService } from './partner-appeals.service';
@@ -72,14 +70,10 @@ export class PartnersAdminController {
   // --------------------------------------------------------------------
 
   @Get()
-  listPartners(
-    @Query() p: PaginationDto,
-    @Query('status') status?: PartnerStatus,
-    @Query('search') search?: string,
-  ) {
+  listPartners(@Query() p: ListPartnersQueryDto) {
     return this.admin.listPartners({
-      status,
-      search,
+      status: p.status,
+      search: p.search,
       page: p.page ?? 1,
       limit: p.limit ?? 20,
     });
@@ -148,17 +142,16 @@ export class PartnersAdminController {
   // --------------------------------------------------------------------
 
   @Get('fraud-events/list')
-  listFraudEvents(
-    @Query() p: PaginationDto,
-    @Query('partnerId') partnerId?: string,
-    @Query('severity') severity?: PartnerFraudSeverity,
-    @Query('resolved') resolved?: string,
-  ) {
+  listFraudEvents(@Query() p: ListFraudEventsQueryDto) {
     return this.admin.listFraudEvents({
-      partnerId,
-      severity,
+      partnerId: p.partnerId,
+      severity: p.severity,
       resolved:
-        resolved === 'true' ? true : resolved === 'false' ? false : undefined,
+        p.resolved === 'true'
+          ? true
+          : p.resolved === 'false'
+            ? false
+            : undefined,
       page: p.page ?? 1,
       limit: p.limit ?? 50,
     });
@@ -269,16 +262,11 @@ export class PartnersAdminController {
   // --------------------------------------------------------------------
 
   @Get('commissions/list')
-  listCommissions(
-    @Query() p: PaginationDto,
-    @Query('partnerId') partnerId?: string,
-    @Query('status') status?: PartnerCommissionStatus,
-    @Query('type') type?: PartnerCommissionType,
-  ) {
+  listCommissions(@Query() p: ListCommissionsQueryDto) {
     return this.admin.listCommissions({
-      partnerId,
-      status,
-      type,
+      partnerId: p.partnerId,
+      status: p.status,
+      type: p.type,
       page: p.page ?? 1,
       limit: p.limit ?? 50,
     });
@@ -333,14 +321,10 @@ export class PartnersAdminController {
   }
 
   @Get('payouts/list')
-  listPayouts(
-    @Query() p: PaginationDto,
-    @Query('partnerId') partnerId?: string,
-    @Query('status') status?: PartnerPayoutStatus,
-  ) {
+  listPayouts(@Query() p: ListPayoutsQueryDto) {
     return this.admin.listPayouts({
-      partnerId,
-      status,
+      partnerId: p.partnerId,
+      status: p.status,
       page: p.page ?? 1,
       limit: p.limit ?? 50,
     });
