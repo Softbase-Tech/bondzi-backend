@@ -673,11 +673,12 @@ export class AdminService {
 
     // Dual-pool hydration: an answer's question_id / selected_option_id
     // point into `questions`+`options` (past_paper pool) OR
-    // `pm_test_questions`+`pm_test_options` (pm_test pool). The old
-    // query joined only the past-paper tables, so every quiz answer
-    // rendered as "(question stem unavailable)" with an empty subject
-    // and a false "(skipped)" — the data was always there. Mirrors the
-    // student-side review query in exams.service.
+    // `pm_test_questions`+`pm_test_options` (pm_test pool). Joins are
+    // by ID ONLY — deliberately NOT filtered on a.question_pool: that
+    // column was mis-stamped 'past_paper' on every quiz answer until
+    // the submitAnswer fix (+ migration 2330 repairs history), and
+    // UUIDs can't collide across the tables, so id-joins are both safe
+    // and immune to bad discriminators.
     const answers: Array<{
       id: string;
       question_id: string;
@@ -707,14 +708,14 @@ export class AdminService {
               coalesce(co1.label, co2.label) AS cor_label,
               coalesce(co1.body,  co2.body)  AS cor_body
          FROM exam_answers a
-         LEFT JOIN questions q1         ON a.question_pool = 'past_paper' AND q1.id = a.question_id
-         LEFT JOIN pm_test_questions q2 ON a.question_pool = 'pm_test'    AND q2.id = a.question_id
+         LEFT JOIN questions q1         ON q1.id = a.question_id
+         LEFT JOIN pm_test_questions q2 ON q2.id = a.question_id
          LEFT JOIN subjects s1          ON s1.id = q1.subject_id
          LEFT JOIN subjects s2          ON s2.id = q2.subject_id
-         LEFT JOIN options so1          ON a.question_pool = 'past_paper' AND so1.id = a.selected_option_id
-         LEFT JOIN pm_test_options so2  ON a.question_pool = 'pm_test'    AND so2.id = a.selected_option_id
-         LEFT JOIN options co1          ON a.question_pool = 'past_paper' AND co1.question_id = q1.id AND co1.is_correct
-         LEFT JOIN pm_test_options co2  ON a.question_pool = 'pm_test'    AND co2.question_id = q2.id AND co2.is_correct
+         LEFT JOIN options so1          ON so1.id = a.selected_option_id
+         LEFT JOIN pm_test_options so2  ON so2.id = a.selected_option_id
+         LEFT JOIN options co1          ON co1.question_id = q1.id AND co1.is_correct
+         LEFT JOIN pm_test_options co2  ON co2.question_id = q2.id AND co2.is_correct
         WHERE a.exam_id = $1
         ORDER BY a.answered_at ASC`,
       [examId],
@@ -749,9 +750,7 @@ export class AdminService {
     ): string | null => {
       if (!label && !body) return null;
       const snippet = body ? body.slice(0, 120) : '';
-      return label && snippet
-        ? `${label}. ${snippet}`
-        : (label ?? snippet);
+      return label && snippet ? `${label}. ${snippet}` : (label ?? snippet);
     };
 
     const answered = answers.length;
