@@ -42,6 +42,9 @@ export enum FinancialEventType {
 
 export type FinancialEventSource =
   | 'webhook'
+  // Client-driven /subscriptions/verify activation — recorded so the
+  // ledger doesn't depend on webhook delivery (same dedup key).
+  | 'verify'
   | 'admin'
   | 'system'
   | 'user'

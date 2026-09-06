@@ -496,10 +496,13 @@ export class WebhookHandlerService {
       amountMinor: event.amountMinor ?? null,
       currency: event.currency ?? null,
       source: 'webhook',
-      // Dedup key: a retried delivery of the same charge.success
-      // event id is absorbed by the partial unique index instead of
-      // writing a second ACTIVATION row.
-      providerEventId: event.eventId,
+      // Dedup key: ONE deterministic key per charge, shared with the
+      // client-verify path (subscriptions.service) — whichever path
+      // records first wins and the partial unique index absorbs the
+      // other, so a payment yields exactly one ACTIVATION row whether
+      // the webhook, the client verify, or an admin reconcile did the
+      // activating. Also absorbs retried deliveries of the same event.
+      providerEventId: `activation:${event.reference}`,
       metadata: {
         provider: 'paystack',
         providerEventId: event.eventId,

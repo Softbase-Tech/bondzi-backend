@@ -14,6 +14,7 @@ import { PlansService } from './plans/plans.service';
 import { PaymentProviderRegistry } from '../payments/providers/payment-provider.registry';
 import { PartnerCommissionsService } from '../partners/partner-commissions.service';
 import { PaymentAttemptsService } from '../payments/payment-attempts.service';
+import { FinancialAuditService } from '../payments/financial-audit.service';
 import { RedisService } from '../../common/redis/redis.service';
 import {
   AccountType,
@@ -173,6 +174,10 @@ describe('SubscriptionsService', () => {
         { provide: MailService, useValue: mail },
         { provide: PromoCodesService, useValue: promoCodes },
         { provide: PaymentAttemptsService, useValue: paymentAttempts },
+        {
+          provide: FinancialAuditService,
+          useValue: { record: jest.fn().mockResolvedValue(undefined) },
+        },
         {
           provide: PartnerCommissionsService,
           useValue: {

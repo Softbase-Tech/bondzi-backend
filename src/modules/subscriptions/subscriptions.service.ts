@@ -30,6 +30,8 @@ import { MailService } from '../mail/mail.service';
 import { MailEvent } from '../mail/mail.types';
 import { PromoCodesService } from '../promo-codes/promo-codes.service';
 import { PaymentAttemptsService } from '../payments/payment-attempts.service';
+import { FinancialAuditService } from '../payments/financial-audit.service';
+import { FinancialEventType } from '../payments/entities/financial-event.entity';
 import { PaymentAttempt } from '../payments/entities/payment-attempt.entity';
 
 /**
@@ -155,6 +157,7 @@ export class SubscriptionsService {
     private readonly promoCodes: PromoCodesService,
     private readonly paymentAttempts: PaymentAttemptsService,
     private readonly partnerCommissions: PartnerCommissionsService,
+    private readonly financialAudit: FinancialAuditService,
   ) {}
 
   /**
@@ -939,6 +942,46 @@ export class SubscriptionsService {
    * Idempotent: if the sub is already ACTIVE, we short-circuit instead
    * of re-hitting Paystack on spam-retries.
    */
+  /**
+   * Ledger write for a verify-path activation. Shares one
+   * deterministic dedup key per charge (`activation:<reference>`)
+   * with the webhook handler, so a payment yields exactly ONE
+   * ACTIVATION row no matter which path activates first — the
+   * financial ledger no longer depends on webhook delivery.
+   * Best-effort: a ledger hiccup must never fail the user's verify.
+   */
+  private async recordActivationLedger(
+    attempt: PaymentAttempt,
+    plan: SubscriptionPlanEntity,
+    subscriptionId: string | null,
+  ): Promise<void> {
+    try {
+      await this.financialAudit.record({
+        eventType: FinancialEventType.ACTIVATION,
+        userId: attempt.userId,
+        subscriptionId,
+        amountMinor: attempt.amountMinor,
+        currency: attempt.currency,
+        source: 'verify',
+        providerEventId: `activation:${attempt.providerReference}`,
+        metadata: {
+          provider: attempt.provider,
+          providerReference: attempt.providerReference,
+          planId: plan.id,
+          interval: attempt.billingInterval ?? null,
+          account: plan.account,
+          level: plan.level,
+          paymentKind: plan.paymentKind,
+          isRenewal: false,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `[verify] activation ledger write failed ref=${attempt.providerReference}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   async verify(
     userId: string,
     reference: string,
@@ -998,6 +1041,7 @@ export class SubscriptionsService {
         attempt,
         plan,
       );
+      await this.recordActivationLedger(attempt, plan, repaired.id);
       const reloaded = await this.subsRepo.findOne({
         where: { id: repaired.id },
         relations: ['plan'],
@@ -1064,6 +1108,7 @@ export class SubscriptionsService {
       providerCustomerId: result.customerId ?? undefined,
       amountDisplay: paidMinor / 100,
     });
+    await this.recordActivationLedger(refreshed, plan, subscription.id);
     const reloaded = await this.subsRepo.findOne({
       where: { id: subscription.id },
       relations: ['plan'],
