@@ -793,6 +793,24 @@ export class ExamsService {
     const answers = await this.answersRepo.find({ where: { examId } });
     const correct = answers.filter((a) => a.isCorrect).length;
     const total = exam.questionIds.length;
+
+    // Product rule: a session can only be SUBMITTED once every question
+    // is answered — no skips. The one exception is a timed session whose
+    // clock has run out (the client auto-submits at expiry; rejecting
+    // that would trap the student with an unfinishable exam). Abandoning
+    // remains available through its own endpoint. 5s of skew grace so a
+    // client firing exactly at expiry never loses the race.
+    const answeredDistinct = new Set(answers.map((a) => a.questionId)).size;
+    const timerExpired =
+      exam.durationSeconds != null &&
+      Date.now() >=
+        exam.startedAt.getTime() + exam.durationSeconds * 1000 - 5_000;
+    if (!timerExpired && answeredDistinct < total) {
+      throw new BadRequestException(
+        `Answer every question before submitting — ${total - answeredDistinct} of ${total} still unanswered.`,
+      );
+    }
+
     const percent =
       total > 0 ? Number(((correct / total) * 100).toFixed(2)) : 0;
 
