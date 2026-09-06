@@ -94,10 +94,11 @@ export class EntitlementsService {
         `This feature isn't available on your current tier.`,
       );
     }
-    // Config-driven gates. requiresFormLevel refuses NOVDEC students
-    // (formLevel=null) without hardcoding an exam-type list — if the
-    // product ever adds a second no-form-level level (SHS Remedial
-    // variants, etc.), the same flag catches them.
+    // Config-driven gates. requiresFormLevel refuses users with no
+    // form level for genuinely form-scoped features. NOTE: level_tests
+    // deliberately does NOT set it any more (migration 2320) — the
+    // PM-test pool handles NULL form levels (NOVDEC) natively, and the
+    // NOVDEC Pro plan sells quiz access.
     if (policy.config?.requiresFormLevel === true && user.formLevel == null) {
       throw new ForbiddenException(
         'This feature requires a form level, which your current exam type does not have.',
