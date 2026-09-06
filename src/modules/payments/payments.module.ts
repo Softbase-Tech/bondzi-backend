@@ -10,6 +10,7 @@ import { BillingLog } from './entities/billing-log.entity';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 import { PaymentAttemptsService } from './payment-attempts.service';
+import { PaymentReconcileService } from './payment-reconcile.service';
 import { BillingLogService } from './billing-log.service';
 import { FinancialAuditService } from './financial-audit.service';
 import { PAYMENT_PROVIDERS } from './providers/payment-provider.interface';
@@ -41,6 +42,7 @@ import { WebhookHandlerService } from './webhooks/webhook-handler.service';
   providers: [
     PaymentsService,
     PaymentAttemptsService,
+    PaymentReconcileService,
     BillingLogService,
     WebhookHandlerService,
     FinancialAuditService,
@@ -55,6 +57,7 @@ import { WebhookHandlerService } from './webhooks/webhook-handler.service';
   exports: [
     PaymentsService,
     PaymentAttemptsService,
+    PaymentReconcileService,
     BillingLogService,
     PaymentProviderRegistry,
     WebhookHandlerService,

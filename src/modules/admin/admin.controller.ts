@@ -9,6 +9,8 @@ import {
   Query,
   Req,
   UseGuards,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiExcludeController, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -30,10 +32,12 @@ import { AdminJobsService } from './admin-jobs.service';
 import { AdminNotificationsService } from './admin-notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PaymentAttemptsService } from '../payments/payment-attempts.service';
+import { PaymentReconcileService } from '../payments/payment-reconcile.service';
 import { BillingLogService } from '../payments/billing-log.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { BroadcastNotificationDto } from './dto/broadcast-notification.dto';
 import { SendUserPushDto } from './dto/send-user-push.dto';
+import { ReconcilePaymentDto } from './dto/reconcile-payment.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { UpdateUserContactDto } from './dto/update-user-contact.dto';
 
@@ -50,6 +54,7 @@ export class AdminController {
     private readonly adminNotifications: AdminNotificationsService,
     private readonly payments: PaymentsService,
     private readonly paymentAttempts: PaymentAttemptsService,
+    private readonly paymentReconcile: PaymentReconcileService,
     private readonly billingLog: BillingLogService,
   ) {}
 
@@ -164,6 +169,22 @@ export class AdminController {
       status,
       alarm: alarm === 'duplicate_plus' ? 'duplicate_plus' : undefined,
     });
+  }
+
+  /**
+   * Reconcile a Paystack transaction that has money at the provider
+   * but no record here (popup channel-switch retries, missed
+   * webhooks). Verifies server-to-server, synthesises the missing
+   * payment_attempt at catalogue price, then drives the normal verify
+   * → activation path so MRR / audit / receipt all stay truthful.
+   */
+  @Post('payments/reconcile')
+  @HttpCode(HttpStatus.OK)
+  reconcilePayment(
+    @CurrentUser() admin: AuthenticatedUser,
+    @Body() dto: ReconcilePaymentDto,
+  ) {
+    return this.paymentReconcile.reconcile(admin.id, dto);
   }
 
   /**

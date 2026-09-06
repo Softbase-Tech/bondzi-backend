@@ -6,6 +6,7 @@ import { AdminNotificationsService } from './admin-notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { PaymentAttemptsService } from '../payments/payment-attempts.service';
 import { BillingLogService } from '../payments/billing-log.service';
+import { PaymentReconcileService } from '../payments/payment-reconcile.service';
 import { PaymentAttemptStatus } from '../../common/types/enums';
 
 /**
@@ -62,6 +63,10 @@ describe('AdminController', () => {
         { provide: AdminNotificationsService, useValue: adminNotifications },
         { provide: PaymentsService, useValue: payments },
         { provide: PaymentAttemptsService, useValue: paymentAttempts },
+        {
+          provide: PaymentReconcileService,
+          useValue: { reconcile: jest.fn() },
+        },
         { provide: BillingLogService, useValue: billingLog },
       ],
     }).compile();
