@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { BillingLog } from './entities/billing-log.entity';
 import { BillingLogProcessStatus } from '../../common/types/enums';
+import { AdminAlertService } from '../mail/admin-alert.service';
 
 export interface RecordBillingLogInput {
   provider: string;
@@ -40,6 +41,7 @@ export class BillingLogService {
   constructor(
     @InjectRepository(BillingLog)
     private readonly repo: Repository<BillingLog>,
+    private readonly adminAlert: AdminAlertService,
   ) {}
 
   /**
@@ -149,6 +151,25 @@ export class BillingLogService {
       this.logger.warn(
         `[billing-log] no_matching_payment id=${id} — Paystack webhook references a payment we never initiated`,
       );
+      // Money-shaped event with no matching checkout is exactly the
+      // "user paid, nothing recorded" incident class — page the
+      // operator instead of waiting for the student to complain.
+      void this.adminAlert
+        .send(
+          'Payment webhook with NO matching checkout',
+          [
+            'A provider webhook referenced a payment this backend never initiated.',
+            `billing_log id: ${id}`,
+            `error: ${opts.error ?? 'n/a'}`,
+            '',
+            'Likely causes: payment made via a Paystack payment page/link,',
+            'an old deployment initialized the charge, or the mobile app is',
+            'pointing at a different API. Triage in /admin/billing-log.',
+          ].join('\n'),
+        )
+        .catch((err: Error) =>
+          this.logger.error(`[billing-log] alert send failed: ${err.message}`),
+        );
     } else if (status === BillingLogProcessStatus.ERROR) {
       this.logger.error(
         `[billing-log] processing error id=${id} error=${opts.error ?? 'unknown'}`,

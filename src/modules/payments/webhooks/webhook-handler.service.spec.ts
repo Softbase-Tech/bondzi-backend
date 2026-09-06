@@ -129,6 +129,9 @@ describe('WebhookHandlerService', () => {
     const mail = { send: jest.fn().mockResolvedValue(undefined) };
     const { User } = await import('../../users/entities/user.entity');
     const { MailService } = await import('../../mail/mail.service');
+    const { AdminAlertService } = await import(
+      '../../mail/admin-alert.service'
+    );
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -139,6 +142,10 @@ describe('WebhookHandlerService', () => {
         { provide: PlansService, useValue: plans },
         { provide: FinancialAuditService, useValue: financialAudit },
         { provide: MailService, useValue: mail },
+        {
+          provide: AdminAlertService,
+          useValue: { send: jest.fn().mockResolvedValue(undefined) },
+        },
         { provide: BillingLogService, useValue: billingLog },
         { provide: PaymentAttemptsService, useValue: paymentAttempts },
         // Auto-refund path uses the provider registry to call Paystack's

@@ -124,6 +124,12 @@ export interface NormalizedWebhookEvent {
   reference?: string;
   providerPlanCode?: string;
   customerId?: string;
+  /** Customer email as reported by the provider (signed body). */
+  customerEmail?: string;
+  /** Our catalogue plan UUID when the charge metadata carried one. */
+  planId?: string;
+  /** Cadence hint from charge metadata ('monthly'/'six_month'/'annual'). */
+  intervalHint?: string;
   subscriptionId?: string;
   amountMinor?: number;
   currency?: string;

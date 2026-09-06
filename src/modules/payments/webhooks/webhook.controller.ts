@@ -10,7 +10,9 @@ import {
 import { ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
+import { Logger } from '@nestjs/common';
 import { Public } from '../../../common/decorators/public.decorator';
+import { AdminAlertService } from '../../mail/admin-alert.service';
 import { PaymentProviderRegistry } from '../providers/payment-provider.registry';
 import { WebhookHandlerService } from './webhook-handler.service';
 
@@ -38,9 +40,14 @@ interface RawBodyRequest extends Request {
 @ApiTags('payments-webhooks')
 @Controller('payments/webhooks')
 export class WebhookController {
+  private readonly logger = new Logger(WebhookController.name);
+  /** Last signature-rejection alert per provider — 1 email/hour cap. */
+  private lastSigAlertAt = new Map<string, number>();
+
   constructor(
     private readonly providers: PaymentProviderRegistry,
     private readonly handler: WebhookHandlerService,
+    private readonly adminAlert: AdminAlertService,
   ) {}
 
   @Public()
@@ -64,6 +71,35 @@ export class WebhookController {
     if (!rawBody) throw new ForbiddenException('Missing raw body');
 
     if (!provider.verifyWebhookSignature(rawBody, req.headers)) {
+      // A rejected signature is rejected BEFORE anything is persisted,
+      // which historically made a misconfigured secret completely
+      // silent: the provider kept sending money events and this
+      // endpoint kept 403ing them into the void. Keep the 403 (never
+      // process an unverified payload) but make the condition loudly
+      // visible — logged every time, emailed at most once an hour.
+      this.logger.error(
+        `[webhook] ${providerName} signature REJECTED — payload ${rawBody.length}B. ` +
+          `If this is Paystack, the configured secret key does not match the ` +
+          `account sending events (or someone is probing the endpoint).`,
+      );
+      const now = Date.now();
+      const last = this.lastSigAlertAt.get(providerName) ?? 0;
+      if (now - last > 60 * 60 * 1000) {
+        this.lastSigAlertAt.set(providerName, now);
+        void this.adminAlert
+          .send(
+            `Webhook signature rejected (${providerName})`,
+            [
+              `A ${providerName} webhook was rejected for an invalid signature.`,
+              'No payment events are being processed while this persists.',
+              '',
+              'Check: the deployed PAYSTACK_SECRET_KEY_GH must be the SAME',
+              'live secret key as the Paystack account sending webhooks, and',
+              'the dashboard webhook URL must point at this environment.',
+            ].join('\n'),
+          )
+          .catch(() => undefined);
+      }
       throw new ForbiddenException('Invalid signature');
     }
 

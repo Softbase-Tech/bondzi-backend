@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { WebhookController } from './webhook.controller';
 import { PaymentProviderRegistry } from '../providers/payment-provider.registry';
 import { WebhookHandlerService } from './webhook-handler.service';
+import { AdminAlertService } from '../../mail/admin-alert.service';
 
 /**
  * The controller is the security gate. Three things must hold:
@@ -38,6 +39,10 @@ describe('WebhookController', () => {
       providers: [
         { provide: PaymentProviderRegistry, useValue: providers },
         { provide: WebhookHandlerService, useValue: handler },
+        {
+          provide: AdminAlertService,
+          useValue: { send: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
     controller = moduleRef.get(WebhookController);
