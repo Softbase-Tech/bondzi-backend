@@ -23,6 +23,8 @@ import { AccountType, ExamType } from '../../common/types/enums';
  * Rewarded frequency is capped per-user per-UTC-day via a Redis counter
  * keyed by `ads:rewarded:{userId}:{YYYY-MM-DD}`.
  */
+const WEB_ADS_CACHE_KEY = 'ads:web-config:v1';
+
 @Injectable()
 export class AdsService {
   private readonly logger = new Logger(AdsService.name);
@@ -52,8 +54,74 @@ export class AdsService {
 
   async updateAdminConfig(patch: UpdateAdConfigDto): Promise<AdConfig> {
     const row = await this.getAdminConfig();
-    Object.assign(row, patch);
-    return this.configRepo.save(row);
+    const { webAds, ...rest } = patch;
+    Object.assign(row, rest);
+    if (webAds !== undefined) {
+      // Merge rather than replace so the admin UI can PATCH one
+      // placement without carrying the whole map.
+      const current = row.webAds ?? {};
+      row.webAds = {
+        ...current,
+        ...(webAds.enabled !== undefined ? { enabled: webAds.enabled } : {}),
+        ...(webAds.publisherId !== undefined
+          ? { publisherId: webAds.publisherId }
+          : {}),
+        placements: {
+          ...(current.placements ?? {}),
+          ...(webAds.placements ?? {}),
+        } as AdConfig['webAds']['placements'],
+      };
+    }
+    const saved = await this.configRepo.save(row);
+    // The public web config is cached; a config change must be visible
+    // to the website within seconds, not a TTL.
+    await this.redis.del(WEB_ADS_CACHE_KEY).catch(() => void 0);
+    return saved;
+  }
+
+  /**
+   * Public config for the WEBSITE's ad slots (blog first). No auth —
+   * blog readers are anonymous — and nothing sensitive: publisher and
+   * slot ids are visible in any ad-carrying page's source anyway.
+   * Only enabled placements with a slot id are returned, so the
+   * website renders nothing for half-configured rows.
+   */
+  async getWebConfig(): Promise<{
+    enabled: boolean;
+    publisherId: string | null;
+    placements: Record<string, { slotId: string; afterBlock?: number }>;
+  }> {
+    const cached = await this.redis
+      .getJson<{
+        enabled: boolean;
+        publisherId: string | null;
+        placements: Record<string, { slotId: string; afterBlock?: number }>;
+      }>(WEB_ADS_CACHE_KEY)
+      .catch(() => null);
+    if (cached) return cached;
+
+    const row = await this.getAdminConfig();
+    const cfg = row.webAds ?? {};
+    const out: {
+      enabled: boolean;
+      publisherId: string | null;
+      placements: Record<string, { slotId: string; afterBlock?: number }>;
+    } = {
+      enabled: cfg.enabled === true,
+      publisherId: cfg.publisherId ?? null,
+      placements: {},
+    };
+    if (out.enabled && out.publisherId) {
+      for (const [key, p] of Object.entries(cfg.placements ?? {})) {
+        if (!p?.enabled || !p.slotId) continue;
+        out.placements[key] = {
+          slotId: p.slotId,
+          ...(p.afterBlock ? { afterBlock: p.afterBlock } : {}),
+        };
+      }
+    }
+    await this.redis.setJson(WEB_ADS_CACHE_KEY, out, 60).catch(() => void 0);
+    return out;
   }
 
   /**

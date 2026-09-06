@@ -22,6 +22,7 @@ import {
   CurrentUser,
 } from '../../common/decorators/current-user.decorator';
 import { UserRole } from '../../common/types/enums';
+import { Public } from '../../common/decorators/public.decorator';
 import { AdsService } from './ads.service';
 import { UpdateAdConfigDto } from './dto/update-ad-config.dto';
 
@@ -31,6 +32,18 @@ import { UpdateAdConfigDto } from './dto/update-ad-config.dto';
 @Controller()
 export class AdsController {
   constructor(private readonly ads: AdsService) {}
+
+  // ---- Public (website) --------------------------------------------------
+
+  @Public()
+  @Get('ads/web-config')
+  @ApiOperation({
+    summary:
+      'Website AdSense placements (blog etc.). Public — blog readers are anonymous.',
+  })
+  webConfig() {
+    return this.ads.getWebConfig();
+  }
 
   // ---- Student-facing --------------------------------------------------
 

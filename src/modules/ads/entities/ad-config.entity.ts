@@ -5,9 +5,23 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
+export interface WebAdPlacement {
+  enabled: boolean;
+  slotId: string;
+  /** blog_inline only: insert after the Nth top-level content block. */
+  afterBlock?: number;
+}
+
+export interface WebAdsConfig {
+  enabled?: boolean;
+  publisherId?: string;
+  placements?: Record<string, WebAdPlacement>;
+}
+
 /**
  * v2 Phase 2 ads config. One row — admin toggles `adsEnabled` to go live. Only
  * free-tier students ever hit the ads endpoints; subscribers skip entirely.
+ * `web_ads` carries the website AdSense side (blog first).
  */
 @Entity({ name: 'ad_config' })
 export class AdConfig {
@@ -37,6 +51,15 @@ export class AdConfig {
 
   @Column({ name: 'trigger_event', type: 'text', default: 'exam_complete' })
   triggerEvent: string;
+
+  /**
+   * Website AdSense config (blog/landing/web-app placements). Shape:
+   * { enabled, publisherId, placements: { <key>: { enabled, slotId,
+   * afterBlock? } } }. jsonb so placements can grow without
+   * migrations; the admin UI is the schema's source of truth.
+   */
+  @Column({ name: 'web_ads', type: 'jsonb', default: () => "'{}'::jsonb" })
+  webAds: WebAdsConfig;
 
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
