@@ -292,6 +292,12 @@ export class PaystackProvider implements PaymentProvider {
         (plan.plan_code as string | undefined) ??
         (metadata.providerPlanCode as string | undefined),
       customerId: (customer.customer_code as string | undefined) ?? undefined,
+      customerEmail: (customer.email as string | undefined) ?? undefined,
+      planId: (metadata.planId as string | undefined) ?? undefined,
+      intervalHint:
+        (metadata.interval as string | undefined) ??
+        (metadata.cadence as string | undefined) ??
+        undefined,
       subscriptionId:
         (data.subscription_code as string | undefined) ??
         (subscription.subscription_code as string | undefined),

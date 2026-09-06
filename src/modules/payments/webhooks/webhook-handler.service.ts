@@ -7,6 +7,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
   AccountType,
+  BillingInterval,
   BillingLogProcessStatus,
   PaymentKind,
   SubscriptionStatus,
@@ -14,10 +15,12 @@ import {
 import { PlansService } from '../../subscriptions/plans/plans.service';
 import { SubscriptionsService } from '../../subscriptions/subscriptions.service';
 import { PaymentEvent } from '../entities/payment-event.entity';
+import { PaymentAttempt } from '../entities/payment-attempt.entity';
 import { FinancialEventType } from '../entities/financial-event.entity';
 import { FinancialAuditService } from '../financial-audit.service';
 import { NormalizedWebhookEvent } from '../providers/payment-provider.interface';
 import { MailService } from '../../mail/mail.service';
+import { AdminAlertService } from '../../mail/admin-alert.service';
 import { MailEvent } from '../../mail/mail.types';
 import { User } from '../../users/entities/user.entity';
 import { SubscriptionPlanEntity } from '../../subscriptions/plans/entities/subscription-plan.entity';
@@ -73,6 +76,7 @@ export class WebhookHandlerService {
     private readonly plans: PlansService,
     private readonly financialAudit: FinancialAuditService,
     private readonly mail: MailService,
+    private readonly adminAlert: AdminAlertService,
     private readonly billingLog: BillingLogService,
     private readonly paymentAttempts: PaymentAttemptsService,
     private readonly providers: PaymentProviderRegistry,
@@ -371,6 +375,20 @@ export class WebhookHandlerService {
           );
         }
       }
+    }
+
+    if (!attempt) {
+      // Last-resort recovery for a real Paystack behaviour: when a
+      // student's first charge attempt in the Inline popup fails and
+      // they switch channel (card → momo), the popup initializes a
+      // FRESH transaction under a Paystack-generated T… reference we
+      // never initiated. The money is real; only the reference is
+      // foreign. If the signed body still identifies the user and our
+      // plan AND the amount matches the catalogue price exactly, we
+      // synthesise the missing attempt and let the normal activation
+      // path run. Anything less than a full match falls through to
+      // the alarm below.
+      attempt = await this.tryRecoverUnmatchedCharge(event);
     }
 
     if (!attempt) {
@@ -1025,11 +1043,130 @@ export class WebhookHandlerService {
     return undefined;
   }
 
+  /**
+   * Recover a charge.success whose reference we never issued (Inline
+   * popup channel-switch retries). Hard guards — ALL must hold:
+   *   1. The user is identifiable: metadata.userId, or a unique user
+   *      matching the provider-reported customer email.
+   *   2. The plan resolves from the signed body (plan code or our
+   *      plan UUID in metadata).
+   *   3. Recurring plans must carry a valid cadence hint.
+   *   4. The paid amount equals the catalogue price for that cadence
+   *      EXACTLY, and the currency matches.
+   * On success: synthesises a PENDING attempt under the foreign
+   * reference (activation promotes it), alerts ops, returns it.
+   */
+  private async tryRecoverUnmatchedCharge(
+    event: NormalizedWebhookEvent,
+  ): Promise<PaymentAttempt | null> {
+    if (!event.reference || event.amountMinor === undefined) return null;
+
+    let userId: string | null = null;
+    if (event.userId) {
+      const user = await this.usersRepo.findOne({
+        where: { id: event.userId },
+        select: ['id'],
+      });
+      userId = user?.id ?? null;
+    }
+    if (!userId && event.customerEmail) {
+      const user = await this.usersRepo.findOne({
+        where: { email: event.customerEmail.trim().toLowerCase() },
+        select: ['id'],
+      });
+      userId = user?.id ?? null;
+    }
+    if (!userId) return null;
+
+    const plan = await this.resolvePlan(event);
+    if (!plan) return null;
+
+    const isOneTime = plan.paymentKind === PaymentKind.ONE_TIME;
+    let interval: BillingInterval | null = null;
+    if (!isOneTime) {
+      const hint = event.intervalHint;
+      if (hint === 'monthly' || hint === 'six_month' || hint === 'annual') {
+        interval = hint as BillingInterval;
+      } else {
+        return null;
+      }
+    }
+
+    const expectedGhs = isOneTime
+      ? Number(plan.monthlyPrice)
+      : interval === BillingInterval.MONTHLY
+        ? Number(plan.monthlyPrice)
+        : interval === BillingInterval.SIX_MONTH
+          ? Number(plan.sixMonthPrice)
+          : Number(plan.annualPrice);
+    const expectedMinor = Math.round(expectedGhs * 100);
+    if (!(expectedMinor > 0) || event.amountMinor !== expectedMinor) {
+      this.logger.warn(
+        `[webhook] recovery declined ref=${event.reference}: amount ${event.amountMinor} != expected ${expectedMinor}`,
+      );
+      return null;
+    }
+    if (
+      event.currency &&
+      plan.currency &&
+      event.currency.toUpperCase() !== plan.currency.toUpperCase()
+    ) {
+      return null;
+    }
+
+    const attempt = await this.paymentAttempts.createPending({
+      userId,
+      planId: plan.id,
+      billingInterval: interval,
+      amountMinor: event.amountMinor,
+      amountGhs: event.amountMinor / 100,
+      currency: plan.currency,
+      provider: 'paystack',
+      providerReference: event.reference,
+      metadata: {
+        recoveredUnmatchedReference: true,
+        providerEventId: event.eventId,
+        account: plan.account,
+        level: plan.level,
+        paymentKind: plan.paymentKind,
+      },
+    });
+    this.logger.warn(
+      `[webhook] RECOVERED unmatched charge ref=${event.reference} → user=${userId} plan=${plan.id} interval=${interval ?? 'one_time'}`,
+    );
+    void this.adminAlert
+      .send(
+        'Unmatched charge auto-recovered',
+        [
+          'A charge.success arrived with a reference this backend never',
+          'issued (typically an Inline-popup channel-switch retry). The',
+          'signed body identified the user and plan, and the amount',
+          'matched the catalogue price exactly, so it was activated.',
+          '',
+          `reference: ${event.reference}`,
+          `user: ${userId}`,
+          `plan: ${plan.name} (${plan.id})`,
+          `interval: ${interval ?? 'one_time'}`,
+          `amount: ${(event.amountMinor / 100).toFixed(2)} ${plan.currency}`,
+        ].join('\n'),
+      )
+      .catch(() => undefined);
+    return attempt;
+  }
+
   private async resolvePlan(event: NormalizedWebhookEvent) {
     if (event.providerPlanCode) {
       const plan = await this.plans.findByProviderPlanCode(
         event.providerPlanCode,
       );
+      if (plan) return plan;
+    }
+    // Charge metadata carries our catalogue plan UUID on every
+    // transaction the app initializes (server-side AND the Inline
+    // popup's own config) — the recovery path for popup-created
+    // retry references depends on this.
+    if (event.planId) {
+      const plan = await this.plans.getById(event.planId).catch(() => null);
       if (plan) return plan;
     }
     // Fallback: pull the plan off the matching subscription row.
