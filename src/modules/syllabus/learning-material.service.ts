@@ -83,14 +83,19 @@ export class LearningMaterialService {
     }
 
     if (args.replace) {
+      // Scope the replace to THIS payload's source PDFs. A subject
+      // holds multiple learner materials (main book + topic booklets),
+      // ingested one book at a time — replacing by subject+form alone
+      // would wipe every other book's chunks on each re-ingest.
       const forms = [...new Set(args.chunks.map((c) => c.formLevel))];
+      const sourcePdfs = [...new Set(args.chunks.map((c) => c.sourcePdf))];
       await this.chunksRepo
         .createQueryBuilder()
         .delete()
-        .where('subject_id = :sid AND form_level IN (:...forms)', {
-          sid: args.subjectId,
-          forms,
-        })
+        .where(
+          'subject_id = :sid AND form_level IN (:...forms) AND source_pdf IN (:...sourcePdfs)',
+          { sid: args.subjectId, forms, sourcePdfs },
+        )
         .execute();
     }
 
