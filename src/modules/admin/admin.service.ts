@@ -647,6 +647,7 @@ export class AdminService {
       answeredCount: number;
       correctCount: number;
       accuracy: number;
+      subjectNames: string[];
     };
     answers: Array<{
       id: string;
@@ -670,40 +671,91 @@ export class AdminService {
     });
     if (!exam) throw new NotFoundException('Exam not found for this user');
 
-    // Pull answers with the joined question + selected option. We
-    // include the options array off the question so the "correct
-    // option label" column can be filled without a third query.
-    const answers = await this.answersRepo
-      .createQueryBuilder('a')
-      .leftJoinAndSelect('a.question', 'q')
-      .leftJoinAndSelect('q.subject', 's')
-      .leftJoinAndSelect('a.selectedOption', 'so')
-      .where('a.exam_id = :eid', { eid: examId })
-      .orderBy('a.answered_at', 'ASC')
-      .getMany();
-
-    // "Correct option label" lookup — we don't have a direct relation
-    // exposed on the answer, so for each row we pull the question's
-    // options and pick the one marked correct. Cheaper as one batched
-    // query than N follow-ups.
-    const optionRows: Array<{
-      question_id: string;
+    // Dual-pool hydration: an answer's question_id / selected_option_id
+    // point into `questions`+`options` (past_paper pool) OR
+    // `pm_test_questions`+`pm_test_options` (pm_test pool). The old
+    // query joined only the past-paper tables, so every quiz answer
+    // rendered as "(question stem unavailable)" with an empty subject
+    // and a false "(skipped)" — the data was always there. Mirrors the
+    // student-side review query in exams.service.
+    const answers: Array<{
       id: string;
-      label: string;
-      is_correct: boolean;
+      question_id: string;
+      question_pool: string;
+      selected_option_id: string | null;
+      typed_answer: string | null;
+      is_correct: boolean | null;
+      time_spent_ms: number | null;
+      explanation_viewed: boolean;
+      answered_at: Date;
+      stem: string | null;
+      subject_name: string | null;
+      year: number | null;
+      sel_label: string | null;
+      sel_body: string | null;
+      cor_label: string | null;
+      cor_body: string | null;
     }> = await this.examsRepo.manager.query(
-      `select o.id, o.label, o.is_correct, o.question_id
-         from options o
-        where o.question_id = ANY($1::uuid[])`,
-      [answers.map((a) => a.questionId)],
+      `SELECT a.id, a.question_id, a.question_pool, a.selected_option_id,
+              a.typed_answer, a.is_correct, a.time_spent_ms,
+              a.explanation_viewed, a.answered_at,
+              coalesce(q1.body, q2.body)   AS stem,
+              coalesce(s1.name, s2.name)   AS subject_name,
+              q1.year                      AS year,
+              coalesce(so1.label, so2.label) AS sel_label,
+              coalesce(so1.body,  so2.body)  AS sel_body,
+              coalesce(co1.label, co2.label) AS cor_label,
+              coalesce(co1.body,  co2.body)  AS cor_body
+         FROM exam_answers a
+         LEFT JOIN questions q1         ON a.question_pool = 'past_paper' AND q1.id = a.question_id
+         LEFT JOIN pm_test_questions q2 ON a.question_pool = 'pm_test'    AND q2.id = a.question_id
+         LEFT JOIN subjects s1          ON s1.id = q1.subject_id
+         LEFT JOIN subjects s2          ON s2.id = q2.subject_id
+         LEFT JOIN options so1          ON a.question_pool = 'past_paper' AND so1.id = a.selected_option_id
+         LEFT JOIN pm_test_options so2  ON a.question_pool = 'pm_test'    AND so2.id = a.selected_option_id
+         LEFT JOIN options co1          ON a.question_pool = 'past_paper' AND co1.question_id = q1.id AND co1.is_correct
+         LEFT JOIN pm_test_options co2  ON a.question_pool = 'pm_test'    AND co2.question_id = q2.id AND co2.is_correct
+        WHERE a.exam_id = $1
+        ORDER BY a.answered_at ASC`,
+      [examId],
     );
-    const correctLabelByQ = new Map<string, string>();
-    for (const r of optionRows) {
-      if (r.is_correct) correctLabelByQ.set(r.question_id, r.label);
+
+    // Exam-level subject names: the session's own filter first, the
+    // answers' subjects as fallback (older rows may predate the filter).
+    const filterIds = Array.isArray(
+      (exam.subjectFilter as { subjectIds?: unknown })?.subjectIds,
+    )
+      ? ((exam.subjectFilter as { subjectIds: string[] }).subjectIds ?? [])
+      : [];
+    let subjectNames: string[] = [];
+    if (filterIds.length > 0) {
+      const rows: Array<{ name: string }> = await this.examsRepo.manager.query(
+        `SELECT name FROM subjects WHERE id = ANY($1::uuid[]) ORDER BY name`,
+        [filterIds],
+      );
+      subjectNames = rows.map((r) => r.name);
+    }
+    if (subjectNames.length === 0) {
+      subjectNames = [
+        ...new Set(
+          answers.map((a) => a.subject_name).filter((n): n is string => !!n),
+        ),
+      ].sort();
     }
 
+    const optionText = (
+      label: string | null,
+      body: string | null,
+    ): string | null => {
+      if (!label && !body) return null;
+      const snippet = body ? body.slice(0, 120) : '';
+      return label && snippet
+        ? `${label}. ${snippet}`
+        : (label ?? snippet);
+    };
+
     const answered = answers.length;
-    const correct = answers.filter((a) => a.isCorrect === true).length;
+    const correct = answers.filter((a) => a.is_correct === true).length;
     const minutesSpent = exam.completedAt
       ? Math.max(
           0,
@@ -717,7 +769,7 @@ export class AdminService {
     // for spotting suspiciously low engagement (e.g. 50 questions in 2
     // active minutes → likely auto-skipped).
     const activeStudyMs = answers.reduce(
-      (sum, a) => sum + (a.timeSpentMs ?? 0),
+      (sum, a) => sum + (a.time_spent_ms ?? 0),
       0,
     );
 
@@ -739,27 +791,25 @@ export class AdminService {
         activeStudyMinutes: Math.round(activeStudyMs / 60_000),
         answeredCount: answered,
         correctCount: correct,
+        subjectNames,
         accuracy:
           answered > 0 ? Number(((correct / answered) * 100).toFixed(1)) : 0,
       },
       answers: answers.map((a) => ({
         id: a.id,
-        questionId: a.questionId,
-        questionPool: a.questionPool,
-        // PM-Test questions live in a separate table and aren't
-        // joined here — null stem is honest, the admin Practice
-        // Made section is the right place to inspect those.
-        stem: a.question?.body ?? null,
-        subjectName: a.question?.subject?.name ?? null,
-        year: a.question?.year ?? null,
-        selectedOptionId: a.selectedOptionId,
-        selectedOptionLabel: a.selectedOption?.label ?? null,
-        correctOptionLabel: correctLabelByQ.get(a.questionId) ?? null,
-        typedAnswer: a.typedAnswer,
-        isCorrect: a.isCorrect,
-        timeSpentMs: a.timeSpentMs,
-        explanationViewed: a.explanationViewed,
-        answeredAt: a.answeredAt.toISOString(),
+        questionId: a.question_id,
+        questionPool: a.question_pool,
+        stem: a.stem,
+        subjectName: a.subject_name,
+        year: a.year,
+        selectedOptionId: a.selected_option_id,
+        selectedOptionLabel: optionText(a.sel_label, a.sel_body),
+        correctOptionLabel: optionText(a.cor_label, a.cor_body),
+        typedAnswer: a.typed_answer,
+        isCorrect: a.is_correct,
+        timeSpentMs: a.time_spent_ms,
+        explanationViewed: a.explanation_viewed,
+        answeredAt: new Date(a.answered_at).toISOString(),
       })),
     };
   }
