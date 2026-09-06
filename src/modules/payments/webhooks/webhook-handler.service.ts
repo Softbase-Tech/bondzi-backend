@@ -1094,9 +1094,9 @@ export class WebhookHandlerService {
 
     const expectedGhs = isOneTime
       ? Number(plan.monthlyPrice)
-      : interval === 'monthly'
+      : interval === BillingInterval.MONTHLY
         ? Number(plan.monthlyPrice)
-        : interval === 'six_month'
+        : interval === BillingInterval.SIX_MONTH
           ? Number(plan.sixMonthPrice)
           : Number(plan.annualPrice);
     const expectedMinor = Math.round(expectedGhs * 100);

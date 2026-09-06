@@ -129,9 +129,8 @@ describe('WebhookHandlerService', () => {
     const mail = { send: jest.fn().mockResolvedValue(undefined) };
     const { User } = await import('../../users/entities/user.entity');
     const { MailService } = await import('../../mail/mail.service');
-    const { AdminAlertService } = await import(
-      '../../mail/admin-alert.service'
-    );
+    const { AdminAlertService } =
+      await import('../../mail/admin-alert.service');
 
     const moduleRef = await Test.createTestingModule({
       providers: [
