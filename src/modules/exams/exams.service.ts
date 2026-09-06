@@ -673,6 +673,12 @@ export class ExamsService {
             select: { id: true, isCorrect: true },
           });
         const declaredPool = exam.questionPool;
+        // The pool the answer row is PERSISTED with. Starts as the
+        // exam's declared pool and flips if the fallback finds the
+        // options in the other table — the row's discriminator must
+        // describe where selected_option_id actually points, because
+        // every read (admin detail, AI review) joins through it.
+        let resolvedPool = declaredPool;
         let allOptions: OptLite[] =
           declaredPool === QuestionPool.PM_TEST
             ? await fetchPm()
@@ -687,6 +693,10 @@ export class ExamsService {
               `[exam.submit] exam=${examId} q=${dto.questionId} declared pool=${declaredPool} but options found in the OTHER table — using fallback.`,
             );
             allOptions = fallback;
+            resolvedPool =
+              declaredPool === QuestionPool.PM_TEST
+                ? QuestionPool.PAST_PAPER
+                : QuestionPool.PM_TEST;
           }
         }
         const correctOption = allOptions.find((o) => o.isCorrect);
@@ -719,6 +729,11 @@ export class ExamsService {
         const answer = answersRepo.create({
           examId,
           questionId: dto.questionId,
+          // Was previously omitted, so the column default ('past_paper')
+          // stamped EVERY answer — quiz answers included — breaking any
+          // read that joins through the discriminator. Migration 2330
+          // repairs the historical rows.
+          questionPool: resolvedPool,
           selectedOptionId: dto.selectedOptionId ?? null,
           typedAnswer: dto.typedAnswer ?? null,
           isCorrect,
@@ -1091,14 +1106,14 @@ export class ExamsService {
               coalesce(c1.body, c2.body)            AS correct,
               coalesce(t.title, st.title)           AS topic_title
          FROM exam_answers a
-         LEFT JOIN questions q1         ON a.question_pool = 'past_paper' AND q1.id = a.question_id
-         LEFT JOIN pm_test_questions q2 ON a.question_pool = 'pm_test'   AND q2.id = a.question_id
+         LEFT JOIN questions q1         ON q1.id = a.question_id
+         LEFT JOIN pm_test_questions q2 ON q2.id = a.question_id
          LEFT JOIN topics t             ON t.id = q1.topic_id
          LEFT JOIN syllabus_topics st   ON st.id = q2.syllabus_topic_id
-         LEFT JOIN options o1           ON a.question_pool = 'past_paper' AND o1.id = a.selected_option_id
-         LEFT JOIN pm_test_options o2   ON a.question_pool = 'pm_test'   AND o2.id = a.selected_option_id
-         LEFT JOIN options c1           ON a.question_pool = 'past_paper' AND c1.question_id = q1.id AND c1.is_correct
-         LEFT JOIN pm_test_options c2   ON a.question_pool = 'pm_test'   AND c2.question_id = q2.id AND c2.is_correct
+         LEFT JOIN options o1           ON o1.id = a.selected_option_id
+         LEFT JOIN pm_test_options o2   ON o2.id = a.selected_option_id
+         LEFT JOIN options c1           ON c1.question_id = q1.id AND c1.is_correct
+         LEFT JOIN pm_test_options c2   ON c2.question_id = q2.id AND c2.is_correct
         WHERE a.exam_id = $1 AND a.is_correct = false
         ORDER BY a.answered_at ASC
         LIMIT 3`,
