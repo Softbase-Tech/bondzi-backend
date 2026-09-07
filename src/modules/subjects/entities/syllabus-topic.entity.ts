@@ -46,6 +46,15 @@ export class SyllabusTopic {
   @Column({ name: 'is_active', type: 'bool', default: true })
   isActive: boolean;
 
+  /**
+   * True when an admin owns the title (renamed by hand, or set from a
+   * textbook section title). The syllabus→topics sync refresh keeps
+   * converging description/form/sort for such rows but never touches
+   * the title. False = title still tracks the source CS statement.
+   */
+  @Column({ name: 'is_title_custom', type: 'bool', default: false })
+  isTitleCustom: boolean;
+
   @Column({ name: 'sort_order', type: 'int', default: 0 })
   sortOrder: number;
 

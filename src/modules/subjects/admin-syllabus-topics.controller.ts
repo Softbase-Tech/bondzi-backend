@@ -24,6 +24,7 @@ import { SyllabusTopicsService } from './syllabus-topics.service';
 import {
   BulkSyllabusTopicDto,
   CreateSyllabusTopicDto,
+  RetitleFromMaterialsDto,
   UpdateSyllabusTopicDto,
 } from './dto/syllabus-topic.dto';
 
@@ -72,6 +73,16 @@ export class AdminSyllabusTopicsController {
   })
   async softDelete(@Param('id', new ParseUUIDPipe()) id: string) {
     await this.service.softDelete(id);
+  }
+
+  @Post('retitle-from-materials')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Retitle a subject's bridged topics from the textbook section titles of their linked learning-material chunks. Retitled topics are marked custom so the syllabus sync never reverts them.",
+  })
+  retitleFromMaterials(@Body() dto: RetitleFromMaterialsDto) {
+    return this.service.retitleFromMaterials(dto.subjectId);
   }
 
   @Post('bulk')
