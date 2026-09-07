@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { UserRole } from '../../common/types/enums';
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -119,10 +120,20 @@ export class TokensService {
     const accessJti = randomUUID();
     const refreshJti = randomUUID();
 
-    const accessExpiryMs = parseExpiryMs(
-      this.config.get<string>('jwt.accessExpiry') ?? '15m',
-      15 * 60 * 1000,
-    );
+    // Admins authenticate with the access token alone (no refresh
+    // rotation in the admin panel or the ops scripts), so their token
+    // lives longer; students keep the short expiry + refresh flow.
+    const isAdmin =
+      user.role === UserRole.ADMIN || user.role === UserRole.SUPERADMIN;
+    const accessExpiryMs = isAdmin
+      ? parseExpiryMs(
+          this.config.get<string>('jwt.adminAccessExpiry') ?? '12h',
+          12 * 60 * 60 * 1000,
+        )
+      : parseExpiryMs(
+          this.config.get<string>('jwt.accessExpiry') ?? '15m',
+          15 * 60 * 1000,
+        );
     const refreshExpiryMs = parseExpiryMs(
       this.config.get<string>('jwt.refreshExpiry') ?? '30d',
       30 * 24 * 60 * 60 * 1000,
