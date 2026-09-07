@@ -313,38 +313,65 @@ export class LearningMaterialService {
     }
   }
 
-  /** Embed chunks in batches of 16; best-effort per batch. */
+  /**
+   * Embed chunks in batches of 16. A failed batch falls back to
+   * one-by-one so a single poison text (e.g. one exceeding the
+   * embedder's input cap) can't sink its 15 batch-mates — that exact
+   * failure left whole books unsearchable before. Input is truncated
+   * to 28K chars (Titan V2 caps at ~8K tokens); the stored bodyMd is
+   * never touched.
+   */
   private async embedChunks(ids: string[]): Promise<number> {
     let embedded = 0;
     for (let i = 0; i < ids.length; i += 16) {
       const slice = ids.slice(i, i + 16);
       const rows: Array<{ id: string; text: string }> =
         await this.dataSource.query(
-          `SELECT id, section_title || E'\\n' || body_md AS text
+          `SELECT id, left(section_title || E'\\n' || body_md, 28000) AS text
              FROM learning_material_chunks
             WHERE id = ANY($1::uuid[])`,
           [slice],
         );
       if (!rows.length) continue;
-      try {
-        const { vectors, model } = await this.ai.embed(rows.map((r) => r.text));
-        for (let j = 0; j < rows.length; j++) {
-          const vec = vectors[j];
-          if (!vec?.length) continue;
-          await this.dataSource.query(
-            `UPDATE learning_material_chunks
-                SET embedding = $1::vector, embedding_model = $2, embedded_at = now()
-              WHERE id = $3`,
-            [`[${vec.join(',')}]`, model, rows[j].id],
-          );
-          embedded += 1;
-        }
-      } catch (err) {
-        this.logger.warn(
-          `[learning-material] embed batch failed (${slice.length} chunks): ${(err as Error).message}`,
-        );
-      }
+      embedded += await this.embedRows(rows, true);
     }
     return embedded;
+  }
+
+  private async embedRows(
+    rows: Array<{ id: string; text: string }>,
+    retrySingly: boolean,
+  ): Promise<number> {
+    try {
+      const { vectors, model } = await this.ai.embed(rows.map((r) => r.text));
+      let n = 0;
+      for (let j = 0; j < rows.length; j++) {
+        const vec = vectors[j];
+        if (!vec?.length) continue;
+        await this.dataSource.query(
+          `UPDATE learning_material_chunks
+              SET embedding = $1::vector, embedding_model = $2, embedded_at = now()
+            WHERE id = $3`,
+          [`[${vec.join(',')}]`, model, rows[j].id],
+        );
+        n += 1;
+      }
+      return n;
+    } catch (err) {
+      if (!retrySingly || rows.length === 1) {
+        this.logger.warn(
+          `[learning-material] embed failed (${rows.length} chunk${rows.length === 1 ? ` id=${rows[0].id}` : 's'}): ${(err as Error).message}`,
+        );
+        return 0;
+      }
+      this.logger.warn(
+        `[learning-material] embed batch failed (${rows.length} chunks) — retrying one by one: ${(err as Error).message}`,
+      );
+      let n = 0;
+      for (const row of rows) {
+        n += await this.embedRows([row], false);
+      }
+      return n;
+    }
   }
 }
