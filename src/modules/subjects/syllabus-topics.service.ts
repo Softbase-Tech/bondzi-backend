@@ -126,7 +126,12 @@ export class SyllabusTopicsService {
   ): Promise<SyllabusTopic> {
     const row = await this.repo.findOne({ where: { id } });
     if (!row) throw new NotFoundException('Syllabus topic not found');
-    if (dto.title !== undefined) row.title = dto.title.trim();
+    if (dto.title !== undefined && dto.title.trim() !== row.title) {
+      row.title = dto.title.trim();
+      // An admin-chosen title is a display label the sync refresh must
+      // never revert to the CS statement.
+      row.isTitleCustom = true;
+    }
     if (dto.description !== undefined) {
       row.description = dto.description?.trim() || null;
     }
@@ -155,6 +160,153 @@ export class SyllabusTopicsService {
     if (!row.isActive) return; // already off, no-op
     row.isActive = false;
     await this.repo.save(row);
+  }
+
+  /**
+   * Retitle a subject's bridged topics from the textbook section titles
+   * of their linked learning-material chunks. The CS statement a topic
+   * is born with ("Demonstrate knowledge and understanding of ...") is
+   * a teacher objective; students recognise the textbook name for the
+   * same material ("Nature and Functions of Accounting"), so once a
+   * book is ingested and its chunks are topic-linked, this pass makes
+   * the picker speak the book's language.
+   *
+   * Per topic: votes come from the topic's linked chunks, but only
+   * those from its largest source book (by the book's total chunks for
+   * the subject) — the main textbook names material better than a
+   * single-topic booklet that also maps there. Within that book the
+   * dominant sectionTitle wins. A retitled topic is marked
+   * is_title_custom so the syllabus sync refresh never reverts it.
+   * Skipped (and reported) when a topic has no linked chunks, when two
+   * topics in the same form resolve to the same title (the one with
+   * more chunks wins), or when the title is already taken by another
+   * active topic.
+   */
+  async retitleFromMaterials(subjectId: string): Promise<{
+    retitled: number;
+    skippedNoMaterial: number;
+    skippedDuplicate: number;
+    skippedCollision: number;
+    changes: Array<{ id: string; from: string; to: string }>;
+  }> {
+    const votes: Array<{
+      id: string;
+      title: string;
+      form_level: number;
+      sort_order: number;
+      section_title: string;
+      source_pdf: string;
+      n: string;
+      book_size: string;
+    }> = await this.dataSource.query(
+      `
+      SELECT t.id, t.title, t.form_level, t.sort_order,
+             c.section_title, c.source_pdf, count(*)::int AS n,
+             (SELECT count(*) FROM learning_material_chunks b
+               WHERE b.subject_id = $1 AND b.source_pdf = c.source_pdf
+             )::int AS book_size
+      FROM syllabus_topics t
+      JOIN learning_material_chunks c ON c.syllabus_topic_id = t.id
+      WHERE t.subject_id = $1 AND t.is_active = true
+        AND c.section_title IS NOT NULL AND c.section_title <> ''
+      GROUP BY t.id, t.title, t.form_level, t.sort_order,
+               c.section_title, c.source_pdf
+      ORDER BY t.form_level, t.sort_order
+      `,
+      [subjectId],
+    );
+
+    const allActive: Array<{ id: string; form_level: number; title: string }> =
+      await this.dataSource.query(
+        `SELECT id, form_level, title FROM syllabus_topics
+          WHERE subject_id = $1 AND is_active = true`,
+        [subjectId],
+      );
+    const totalTopics = new Set(allActive.map((t) => t.id)).size;
+
+    // Per topic: prefer the biggest source book, then the dominant
+    // section title within it.
+    const best = new Map<
+      string,
+      {
+        title: string;
+        form: number;
+        sort: number;
+        to: string;
+        n: number;
+        bookSize: number;
+      }
+    >();
+    for (const v of votes) {
+      const cur = best.get(v.id);
+      const bookSize = Number(v.book_size);
+      const n = Number(v.n);
+      if (
+        !cur ||
+        bookSize > cur.bookSize ||
+        (bookSize === cur.bookSize && n > cur.n)
+      ) {
+        best.set(v.id, {
+          title: v.title,
+          form: v.form_level,
+          sort: v.sort_order,
+          to: v.section_title.trim(),
+          n,
+          bookSize,
+        });
+      }
+    }
+
+    let skippedDuplicate = 0;
+    let skippedCollision = 0;
+    const changes: Array<{ id: string; from: string; to: string }> = [];
+
+    // Within one form, a proposed title may only be used once — the
+    // topic with the most linked chunks (then lowest sortOrder) wins.
+    const claimed = new Map<string, { id: string; n: number; sort: number }>();
+    const entries = [...best.entries()].sort(
+      (a, b) => b[1].n - a[1].n || a[1].sort - b[1].sort,
+    );
+    for (const [id, e] of entries) {
+      if (e.to === e.title) continue; // already the book's name
+      const key = `${e.form}::${e.to}`;
+      if (claimed.has(key)) {
+        skippedDuplicate += 1;
+        continue;
+      }
+      const taken = allActive.some(
+        (t) => t.id !== id && t.form_level === e.form && t.title === e.to,
+      );
+      if (taken) {
+        skippedCollision += 1;
+        continue;
+      }
+      claimed.set(key, { id, n: e.n, sort: e.sort });
+      changes.push({ id, from: e.title, to: e.to });
+    }
+
+    for (const c of changes) {
+      await this.dataSource.query(
+        `UPDATE syllabus_topics
+            SET title = $1, is_title_custom = true
+          WHERE id = $2`,
+        [c.to, c.id],
+      );
+    }
+
+    const result = {
+      retitled: changes.length,
+      skippedNoMaterial: totalTopics - best.size,
+      skippedDuplicate,
+      skippedCollision,
+      changes,
+    };
+    this.logger.log(
+      `[syllabus-topics] retitle-from-materials subject=${subjectId}: ` +
+        `${result.retitled} retitled, ${result.skippedNoMaterial} without material, ` +
+        `${skippedDuplicate} duplicate titles, ${skippedCollision} collisions`,
+    );
+    return result;
   }
 
   // ------------------------- bulk import -------------------------

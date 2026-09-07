@@ -128,3 +128,9 @@ export class ListSyllabusTopicsQueryDto {
   @Max(3)
   formLevel?: number;
 }
+
+export class RetitleFromMaterialsDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID('4')
+  subjectId!: string;
+}

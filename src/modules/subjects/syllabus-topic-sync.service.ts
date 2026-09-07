@@ -56,10 +56,12 @@ export class SyllabusTopicSyncService {
 
     // Refresh topics whose source CS changed since they were bridged —
     // a re-extraction that fixes a CS statement (the topic's title)
-    // must converge here too, not leave the stale title forever. The
-    // NOT EXISTS guard skips a refresh that would collide with another
-    // active topic of the same title (same rule as the insert's
-    // ON CONFLICT), leaving that row for admin review.
+    // must converge here too, not leave the stale title forever. Two
+    // guards: an admin-owned title (is_title_custom) is never touched
+    // (description/form/sort still converge), and a title refresh that
+    // would collide with another active topic of the same title is
+    // skipped (same rule as the insert's ON CONFLICT), leaving that
+    // row for admin review.
     const refreshResult: Array<{ n: number }> = await this.dataSource.query(
       `
       WITH src AS (
@@ -82,14 +84,18 @@ export class SyllabusTopicSyncService {
       ),
       upd AS (
         UPDATE syllabus_topics t
-        SET title = s.new_title, description = s.new_desc,
+        SET title = CASE WHEN t.is_title_custom THEN t.title
+                         ELSE s.new_title END,
+            description = s.new_desc,
             form_level = s.new_form, sort_order = s.new_sort
         FROM src s
         WHERE t.id = s.topic_id
-          AND (t.title IS DISTINCT FROM s.new_title
-               OR t.description IS DISTINCT FROM s.new_desc
-               OR t.form_level IS DISTINCT FROM s.new_form)
-          AND NOT EXISTS (
+          AND (
+            (NOT t.is_title_custom AND t.title IS DISTINCT FROM s.new_title)
+            OR t.description IS DISTINCT FROM s.new_desc
+            OR t.form_level IS DISTINCT FROM s.new_form
+          )
+          AND (t.is_title_custom OR NOT EXISTS (
             SELECT 1 FROM syllabus_topics t2
             WHERE t2.subject_id = s.subject_id
               AND t2.exam_type = s.exam_type
@@ -97,7 +103,7 @@ export class SyllabusTopicSyncService {
               AND t2.title = s.new_title
               AND t2.is_active = true
               AND t2.id <> t.id
-          )
+          ))
         RETURNING t.id
       )
       SELECT count(*)::int AS n FROM upd

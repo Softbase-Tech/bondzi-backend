@@ -169,6 +169,36 @@ describe('SyllabusTopicsService', () => {
     });
   });
 
+  describe('update — custom titles', () => {
+    it('marks the title custom when an admin renames it', async () => {
+      const row = {
+        id: 't-1',
+        title: 'Demonstrate knowledge of X.',
+        isTitleCustom: false,
+      };
+      repo.findOne.mockResolvedValueOnce(row as never);
+      await service.update('t-1', { title: 'Nature of Accounting' } as never);
+      expect(row.title).toBe('Nature of Accounting');
+      expect(row.isTitleCustom).toBe(true);
+    });
+
+    it('does not mark custom when the title is unchanged', async () => {
+      const row = {
+        id: 't-1',
+        title: 'Nature of Accounting',
+        isTitleCustom: false,
+        sortOrder: 0,
+      };
+      repo.findOne.mockResolvedValueOnce(row as never);
+      await service.update('t-1', {
+        title: 'Nature of Accounting',
+        sortOrder: 3,
+      } as never);
+      expect(row.isTitleCustom).toBe(false);
+      expect(row.sortOrder).toBe(3);
+    });
+  });
+
   describe('softDelete', () => {
     it('throws NotFound on unknown id', async () => {
       repo.findOne.mockResolvedValueOnce(null);
