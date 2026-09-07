@@ -114,6 +114,21 @@ export function validateSyllabusExtraction(
         detail: 'a content standard is missing code/statement',
       };
     }
+    // A CS statement becomes the syllabus_topics.title of its bridged
+    // topic, and the partial unique index on that table caps btree
+    // index rows at ~2.7KB. An oversized statement is always an
+    // extraction bug (cell-continuation junk glued onto the sentence)
+    // — reject it here with a readable reason instead of letting the
+    // topic sync die on an opaque index error.
+    if (cs.statement.length > 2000) {
+      return {
+        ok: false,
+        reason: 'malformed_indicator',
+        detail: `content standard ${String(cs.code)} statement is ${
+          cs.statement.length
+        } chars — over the 2000-char cap (extraction junk?)`,
+      };
+    }
     const indicators = Array.isArray(cs.indicators)
       ? (cs.indicators as Array<Record<string, unknown>>)
       : [];
