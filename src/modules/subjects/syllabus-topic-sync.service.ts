@@ -6,6 +6,9 @@ import { SyllabusTopic } from './entities/syllabus-topic.entity';
 export interface TopicSyncResult {
   /** New topic rows inserted from CS on this run. */
   inserted: number;
+  /** Existing synced topics whose title/description/form was refreshed
+   *  because their source CS changed (re-extraction converges). */
+  refreshed: number;
   /** CS rows that couldn't insert because their title collided with an
    *  existing hand-authored topic. Logged for admin review; the CS
    *  simply stays unbridged until the admin renames the collision. */
@@ -50,6 +53,58 @@ export class SyllabusTopicSyncService {
   async syncAll(opts: { subjectId?: string } = {}): Promise<TopicSyncResult> {
     const filter = opts.subjectId ? `AND subj.id = $1::uuid` : '';
     const params: string[] = opts.subjectId ? [opts.subjectId] : [];
+
+    // Refresh topics whose source CS changed since they were bridged —
+    // a re-extraction that fixes a CS statement (the topic's title)
+    // must converge here too, not leave the stale title forever. The
+    // NOT EXISTS guard skips a refresh that would collide with another
+    // active topic of the same title (same rule as the insert's
+    // ON CONFLICT), leaving that row for admin review.
+    const refreshResult: Array<{ n: number }> = await this.dataSource.query(
+      `
+      WITH src AS (
+        SELECT t.id AS topic_id, cs.statement AS new_title,
+               strand.form_level AS new_form, cs.sort_order AS new_sort,
+               (
+                 SELECT string_agg(li.statement, E'\n\n' ORDER BY li.sort_order)
+                 FROM syllabus_indicators li
+                 WHERE li.content_standard_id = cs.id
+               ) AS new_desc,
+               t.subject_id, t.exam_type
+        FROM syllabus_topics t
+        JOIN syllabus_content_standards cs
+          ON cs.id = t.source_content_standard_id
+        JOIN syllabus_sub_strands sub ON sub.id = cs.sub_strand_id
+        JOIN syllabus_strands strand ON strand.id = sub.strand_id
+        JOIN subjects subj ON subj.id = strand.subject_id
+        WHERE true
+        ${filter}
+      ),
+      upd AS (
+        UPDATE syllabus_topics t
+        SET title = s.new_title, description = s.new_desc,
+            form_level = s.new_form, sort_order = s.new_sort
+        FROM src s
+        WHERE t.id = s.topic_id
+          AND (t.title IS DISTINCT FROM s.new_title
+               OR t.description IS DISTINCT FROM s.new_desc
+               OR t.form_level IS DISTINCT FROM s.new_form)
+          AND NOT EXISTS (
+            SELECT 1 FROM syllabus_topics t2
+            WHERE t2.subject_id = s.subject_id
+              AND t2.exam_type = s.exam_type
+              AND t2.form_level = s.new_form
+              AND t2.title = s.new_title
+              AND t2.is_active = true
+              AND t2.id <> t.id
+          )
+        RETURNING t.id
+      )
+      SELECT count(*)::int AS n FROM upd
+      `,
+      params,
+    );
+    const refreshed = refreshResult[0]?.n ?? 0;
 
     // Backfill missing topics. Mirrors migration 2220… so re-running
     // it after new CS rows land converges the topic table.
@@ -138,12 +193,22 @@ export class SyllabusTopicSyncService {
     );
     const questionsRepointed = repointResult[0]?.n ?? 0;
 
-    if (inserted || questionsRepointed || skippedForTitleCollision) {
+    if (
+      inserted ||
+      refreshed ||
+      questionsRepointed ||
+      skippedForTitleCollision
+    ) {
       this.logger.log(
-        `[syllabus-topics] sync: +${inserted} topics, ${questionsRepointed} questions repointed, ${skippedForTitleCollision} title collisions${opts.subjectId ? ` (subject=${opts.subjectId})` : ''}`,
+        `[syllabus-topics] sync: +${inserted} topics, ${refreshed} refreshed, ${questionsRepointed} questions repointed, ${skippedForTitleCollision} title collisions${opts.subjectId ? ` (subject=${opts.subjectId})` : ''}`,
       );
     }
 
-    return { inserted, skippedForTitleCollision, questionsRepointed };
+    return {
+      inserted,
+      refreshed,
+      skippedForTitleCollision,
+      questionsRepointed,
+    };
   }
 }

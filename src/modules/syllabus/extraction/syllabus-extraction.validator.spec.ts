@@ -93,6 +93,16 @@ describe('validateSyllabusExtraction', () => {
     expect(r.reason).toBe('malformed_indicator');
   });
 
+  it('rejects an oversized CS statement (would break the topics index)', () => {
+    const bad = JSON.parse(OK);
+    bad.contentStandards[0].statement = 'x'.repeat(2001);
+    const r = validateSyllabusExtraction(JSON.stringify(bad));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe('malformed_indicator');
+    expect(r.detail).toContain('2000-char cap');
+  });
+
   it('clamps out-of-range DoK levels into 1–4', () => {
     const bad = JSON.parse(OK);
     bad.contentStandards[0].indicators[0].assessmentItems = [
