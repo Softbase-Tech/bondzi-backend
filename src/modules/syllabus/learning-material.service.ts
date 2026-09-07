@@ -136,6 +136,54 @@ export class LearningMaterialService {
     return { inserted, embedded, topicLinked };
   }
 
+  /** True while a background embed-missing pass runs (single-flight). */
+  private embedMissingRunning = false;
+
+  /**
+   * Embed every chunk still missing its vector, in the BACKGROUND.
+   *
+   * Ingest embeds inline, but a large book outlives the gateway timeout
+   * and a failed embed batch is best-effort — either leaves chunks
+   * stored-but-unembedded (invisible to vector search). Re-ingesting
+   * the book re-embeds everything (paying for vectors that already
+   * exist); this pass heals exactly the gap instead. Poll the coverage
+   * endpoint to watch it converge.
+   */
+  async startEmbedMissing(subjectId?: string): Promise<{
+    started: boolean;
+    candidates: number;
+    alreadyRunning: boolean;
+  }> {
+    const rows: Array<{ id: string }> = await this.dataSource.query(
+      `SELECT id FROM learning_material_chunks
+        WHERE embedding IS NULL${subjectId ? ' AND subject_id = $1' : ''}`,
+      subjectId ? [subjectId] : [],
+    );
+    if (!rows.length || this.embedMissingRunning) {
+      return {
+        started: false,
+        candidates: rows.length,
+        alreadyRunning: this.embedMissingRunning,
+      };
+    }
+    this.embedMissingRunning = true;
+    void (async () => {
+      try {
+        const n = await this.embedChunks(rows.map((r) => r.id));
+        this.logger.log(
+          `[learning-material] embed-missing pass: ${n}/${rows.length} embedded`,
+        );
+      } catch (err) {
+        this.logger.error(
+          `[learning-material] embed-missing pass failed: ${(err as Error).message}`,
+        );
+      } finally {
+        this.embedMissingRunning = false;
+      }
+    })();
+    return { started: true, candidates: rows.length, alreadyRunning: false };
+  }
+
   /** Admin list with filters — powers the reviewer view. */
   async list(params: {
     subjectId?: string;

@@ -116,6 +116,13 @@ export class LearningMaterialAdminController {
     });
   }
 
+  @Post('embed-missing')
+  embedMissing(@Body() body: { subjectId?: string } = {}) {
+    // Background pass over chunks with no vector yet (optionally one
+    // subject). Returns immediately; watch the coverage endpoint.
+    return this.service.startEmbedMissing(body?.subjectId);
+  }
+
   @Get()
   list(
     @Query('subjectId') subjectId?: string,
