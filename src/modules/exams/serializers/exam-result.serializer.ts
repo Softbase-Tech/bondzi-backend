@@ -35,6 +35,22 @@ export interface ExamResultResponse {
     yourAnswer: string | null;
     correctAnswer: string;
   }>;
+  /**
+   * Post-exam AI breakdown snapshot — null when none has been
+   * generated for this exam yet. Present so the client can render the
+   * "Read your AI breakdown" vs "Generate breakdown" affordance
+   * without a second round-trip against POST /exams/:id/breakdown.
+   * The narrative itself is deliberately inlined (not lazy-fetched)
+   * because generation is idempotent + cached server-side, and once
+   * it exists it's the same shape every subsequent call would
+   * return.
+   */
+  aiBreakdown: {
+    narrative: string;
+    recommendations: Array<Record<string, unknown>>;
+    generatedAt: string;
+    model: string;
+  } | null;
 }
 
 function deriveGrade(percent: number): string {
@@ -114,6 +130,16 @@ export function toExamResultResponse(
         )
       : 0;
 
+  const aiBreakdown =
+    exam.aiBreakdown && exam.aiBreakdownGeneratedAt
+      ? {
+          narrative: exam.aiBreakdown,
+          recommendations: exam.aiBreakdownRecommendations ?? [],
+          generatedAt: exam.aiBreakdownGeneratedAt.toISOString(),
+          model: exam.aiBreakdownModel ?? 'unknown',
+        }
+      : null;
+
   return {
     examId: exam.id,
     score: scoreRatio,
@@ -127,5 +153,6 @@ export function toExamResultResponse(
     streakMaintained: true,
     byTopic,
     wrongAnswers,
+    aiBreakdown,
   };
 }
