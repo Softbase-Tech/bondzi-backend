@@ -70,7 +70,10 @@ async function main() {
   await repo
     .createQueryBuilder()
     .update(Exam)
-    .set({ status: ExamStatus.ABANDONED, completedAt: now })
+    // `completedAt` is kept for backward compatibility with anything
+    // already reading it on these rows; `abandonedAt` is the honest
+    // timestamp, and reporting keys completion off `status`.
+    .set({ status: ExamStatus.ABANDONED, completedAt: now, abandonedAt: now })
     .whereInIds(targets.map((e) => e.id))
     .execute();
 

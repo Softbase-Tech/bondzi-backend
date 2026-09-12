@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
 import { AccountDeletionsService } from '../modules/account-deletions/account-deletions.service';
+import { LockKey } from './advisory-lock-keys';
 
 /**
  * Daily account-deletion sweep: schedule inactive accounts, cancel the ones
@@ -15,7 +16,7 @@ import { AccountDeletionsService } from '../modules/account-deletions/account-de
 @Injectable()
 export class AccountDeletionJob {
   private readonly logger = new Logger(AccountDeletionJob.name);
-  private static readonly LOCK_KEY = 17_009;
+  private static readonly LOCK_KEY = LockKey.ACCOUNT_DELETION;
 
   constructor(
     private readonly dataSource: DataSource,

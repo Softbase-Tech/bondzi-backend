@@ -16,6 +16,7 @@ import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
 import { Winner } from '../leaderboard/entities/winner.entity';
 import { AuthLoginEvent } from '../auth/entities/auth-login-event.entity';
 import { UserRole } from '../../common/types/enums';
+import { SubscriptionMetricsService } from '../subscriptions/metrics/subscription-metrics.service';
 
 /**
  * `authAnalytics()` is a growth-reporting surface, and the property that
@@ -112,6 +113,20 @@ describe('AdminService.authAnalytics — student-only scoping', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         AdminService,
+        {
+          provide: SubscriptionMetricsService,
+          useValue: {
+            mrr: jest.fn().mockResolvedValue({
+              mrrGhs: 0,
+              pendingChurnGhs: 0,
+              payingRecurringSubs: 0,
+              cancelledStillEntitled: 0,
+            }),
+            entitledPro: jest
+              .fn()
+              .mockResolvedValue({ paying: 0, totalEntitled: 0 }),
+          },
+        },
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: getRepositoryToken(Subscription), useValue: empty() },
         { provide: getRepositoryToken(Exam), useValue: empty() },
@@ -213,6 +228,20 @@ describe('AdminService.authAnalytics — student-only scoping', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         AdminService,
+        {
+          provide: SubscriptionMetricsService,
+          useValue: {
+            mrr: jest.fn().mockResolvedValue({
+              mrrGhs: 0,
+              pendingChurnGhs: 0,
+              payingRecurringSubs: 0,
+              cancelledStillEntitled: 0,
+            }),
+            entitledPro: jest
+              .fn()
+              .mockResolvedValue({ paying: 0, totalEntitled: 0 }),
+          },
+        },
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: getRepositoryToken(Subscription), useValue: empty() },
         { provide: getRepositoryToken(Exam), useValue: empty() },

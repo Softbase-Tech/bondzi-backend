@@ -73,6 +73,8 @@ export const envValidationSchema = Joi.object({
   AI_EXPLANATION_MODEL: Joi.string().allow('').default(''),
   AI_FAST_MODEL: Joi.string().allow('').default(''),
   AI_DAILY_BUDGET_USD: Joi.number().positive().default(50),
+  // Forecast ceiling for the monthly report (§3.4). Advisory, not enforced.
+  AI_MONTHLY_BUDGET_USD: Joi.number().positive().default(30),
   AI_PER_USER_DAILY_LIMIT: Joi.number().integer().positive().default(50),
   AI_MAX_JOB_COST_USD: Joi.number().positive().default(500),
   // Jobs whose estimated cost exceeds this threshold land in

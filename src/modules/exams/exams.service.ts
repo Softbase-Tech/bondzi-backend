@@ -928,6 +928,7 @@ export class ExamsService {
     if (!exam) throw new NotFoundException('Exam not found');
     if (exam.userId !== userId) throw new ForbiddenException('Not your exam');
     exam.status = ExamStatus.ABANDONED;
+    exam.abandonedAt = new Date();
     await this.examsRepo.save(exam);
   }
 

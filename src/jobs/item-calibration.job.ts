@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
 import { AdminAlertService } from '../modules/mail/admin-alert.service';
+import { LockKey } from './advisory-lock-keys';
 
 /**
  * Live item calibration from real student answers (premium plan §7.6).
@@ -24,7 +25,7 @@ import { AdminAlertService } from '../modules/mail/admin-alert.service';
  *
  * Disable with AI_ITEM_CALIBRATION_ENABLED=false.
  */
-const LOCK_KEY = 17_010;
+const LOCK_KEY = LockKey.ITEM_CALIBRATION;
 const MIN_N_STATS = 30;
 const MIN_N_FLAG = 50;
 const P_FLOOR = 0.15;
