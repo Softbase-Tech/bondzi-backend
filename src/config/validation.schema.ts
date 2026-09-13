@@ -75,6 +75,17 @@ export const envValidationSchema = Joi.object({
   AI_DAILY_BUDGET_USD: Joi.number().positive().default(50),
   // Forecast ceiling for the monthly report (§3.4). Advisory, not enforced.
   AI_MONTHLY_BUDGET_USD: Joi.number().positive().default(30),
+
+  // Reporting. Recipients are validated as loose strings rather than a
+  // comma-separated email list: the config parser already drops anything
+  // without an "@", and failing container boot over a typo'd address in
+  // an operational report would be a worse outcome than sending to one
+  // fewer inbox.
+  REPORT_ENABLED: Joi.boolean().default(true),
+  REPORT_RECIPIENTS_DAILY: Joi.string().allow('').default(''),
+  REPORT_RECIPIENTS_WEEKLY: Joi.string().allow('').default(''),
+  REPORT_RECIPIENTS_MONTHLY: Joi.string().allow('').default(''),
+  REPORT_HEARTBEAT_URL: Joi.string().uri().allow('').default(''),
   AI_PER_USER_DAILY_LIMIT: Joi.number().integer().positive().default(50),
   AI_MAX_JOB_COST_USD: Joi.number().positive().default(500),
   // Jobs whose estimated cost exceeds this threshold land in
