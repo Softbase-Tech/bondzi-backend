@@ -5,6 +5,7 @@ import { DataSource, Repository } from 'typeorm';
 import { User } from '../modules/users/entities/user.entity';
 import { NotificationsService } from '../modules/notifications/notifications.service';
 import { NotificationChannel } from '../common/types/enums';
+import { LockKey } from './advisory-lock-keys';
 
 /**
  * Monday 09:00 Accra — announce the fresh weekly leaderboard on push.
@@ -25,7 +26,7 @@ import { NotificationChannel } from '../common/types/enums';
 @Injectable()
 export class WeeklyLeaderboardPushJob {
   private readonly logger = new Logger(WeeklyLeaderboardPushJob.name);
-  private static readonly LOCK_KEY = 17_004;
+  private static readonly LOCK_KEY = LockKey.WEEKLY_LEADERBOARD_PUSH;
 
   constructor(
     @InjectRepository(User) private readonly usersRepo: Repository<User>,

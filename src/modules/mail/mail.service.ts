@@ -14,6 +14,7 @@ import {
 import { EmailAuditService } from './email-audit.service';
 import { MailQueueService } from './mail-queue.service';
 import { buildWelcomeEmail } from './templates/welcome';
+import { buildOpsReport } from './templates/ops-report';
 import { buildEmailOtp } from './templates/email-otp';
 import { buildAccountCredited } from './templates/account-credited';
 import { buildWinnerAnnouncement } from './templates/winner-announcement';
@@ -408,6 +409,13 @@ export class MailService implements OnModuleInit {
         return buildAdminAccountDeletionDigest(
           payload as MailPayloadByEvent[MailEvent.ADMIN_ACCOUNT_DELETION_DIGEST],
           this.webUrl,
+        );
+      // Pass-through: the reports module renders subject/html/text
+      // together and hands over the finished email. No `webUrl` — an
+      // operational report carries no brand chrome or unsubscribe link.
+      case MailEvent.OPS_REPORT:
+        return buildOpsReport(
+          payload as MailPayloadByEvent[MailEvent.OPS_REPORT],
         );
       case MailEvent.PARTNER_AGREEMENT:
         return buildPartnerAgreement(

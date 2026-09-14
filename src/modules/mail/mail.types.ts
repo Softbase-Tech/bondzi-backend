@@ -91,6 +91,12 @@ export enum MailEvent {
   ACCOUNT_DELETED = 'account_deleted',
   /** Daily internal digest of scheduled + deleted accounts (to admins). */
   ADMIN_ACCOUNT_DELETION_DIGEST = 'admin_account_deletion_digest',
+  /**
+   * Scheduled operational report (daily / weekly / monthly) to the
+   * founder's inbox. Fully pre-rendered by `modules/reports` — see
+   * `templates/ops-report.ts` for why this one is a pass-through.
+   */
+  OPS_REPORT = 'ops_report',
 
   // ----- Partner portal --------------------------------------------------
   /**
@@ -418,6 +424,25 @@ export interface AccountDeletedPayload extends BasePayload {
   deletedOnDate: string;
 }
 
+/**
+ * A fully-rendered operational report. Unlike every other payload in this
+ * file these are not *inputs* to a template — they are the finished email.
+ * `recipientName` is inherited from BasePayload and deliberately unused:
+ * reports are addressed to a role, not a person.
+ */
+export interface OpsReportPayload extends BasePayload {
+  /** Carries the headline numbers; triage-able from a phone notification. */
+  subject: string;
+  html: string;
+  /**
+   * Required, not optional. `BuiltMail.text` allows undefined and falls
+   * back to stripped HTML, but for reports the plain-text part is the
+   * version that gets read on a slow connection — it is authored, not
+   * derived, and a missing one is a bug rather than a degradation.
+   */
+  text: string;
+}
+
 export interface AdminAccountDeletionDigestPayload extends BasePayload {
   /** Day the digest covers (YYYY-MM-DD, Accra). */
   dateKey: string;
@@ -451,6 +476,7 @@ export interface MailPayloadByEvent {
   [MailEvent.ACCOUNT_DELETION_WARNING]: AccountDeletionWarningPayload;
   [MailEvent.ACCOUNT_DELETED]: AccountDeletedPayload;
   [MailEvent.ADMIN_ACCOUNT_DELETION_DIGEST]: AdminAccountDeletionDigestPayload;
+  [MailEvent.OPS_REPORT]: OpsReportPayload;
   [MailEvent.PARTNER_AGREEMENT]: PartnerAgreementPayload;
   [MailEvent.PARTNER_APPROVED]: PartnerApprovedPayload;
   [MailEvent.PARTNER_PAYOUT_PAID]: PartnerPayoutPaidPayload;

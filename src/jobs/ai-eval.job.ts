@@ -14,6 +14,7 @@ import { isQuantitativeSubject } from '../common/utils/quantitative-subject.util
 import { looksLikeCalcQuestion } from '../common/utils/looks-like-calc.util';
 import { AiAction } from '../common/types/enums';
 import { accraDateIso } from '../common/utils/timezone.util';
+import { LockKey } from './advisory-lock-keys';
 
 /**
  * Nightly golden-set evaluation (premium plan §7.3 / remediation 2.1).
@@ -38,7 +39,7 @@ import { accraDateIso } from '../common/utils/timezone.util';
  * Gated OFF by default (AI_EVAL_ENABLED=true to enable) so enabling
  * nightly spend is a deliberate act.
  */
-const LOCK_KEY = 17_011;
+const LOCK_KEY = LockKey.AI_EVAL;
 
 @Injectable()
 export class AiEvalJob {

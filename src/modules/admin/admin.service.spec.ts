@@ -16,6 +16,7 @@ import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
 import { Winner } from '../leaderboard/entities/winner.entity';
 import { AuthLoginEvent } from '../auth/entities/auth-login-event.entity';
+import { SubscriptionMetricsService } from '../subscriptions/metrics/subscription-metrics.service';
 
 /**
  * AdminService is mostly admin-only read paths + a handful of write paths
@@ -100,6 +101,20 @@ describe('AdminService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         AdminService,
+        {
+          provide: SubscriptionMetricsService,
+          useValue: {
+            mrr: jest.fn().mockResolvedValue({
+              mrrGhs: 0,
+              pendingChurnGhs: 0,
+              payingRecurringSubs: 0,
+              cancelledStillEntitled: 0,
+            }),
+            entitledPro: jest
+              .fn()
+              .mockResolvedValue({ paying: 0, totalEntitled: 0 }),
+          },
+        },
         { provide: getRepositoryToken(User), useValue: usersRepo },
         { provide: getRepositoryToken(Subscription), useValue: subsRepo },
         { provide: getRepositoryToken(Exam), useValue: examsRepo },

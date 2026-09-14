@@ -13,6 +13,9 @@ import { User } from '../modules/users/entities/user.entity';
 import { PlansService } from '../modules/subscriptions/plans/plans.service';
 import { MailService } from '../modules/mail/mail.service';
 import { MailEvent } from '../modules/mail/mail.types';
+import { LockKey } from './advisory-lock-keys';
+import { FinancialAuditService } from '../modules/payments/financial-audit.service';
+import { FinancialEventType } from '../modules/payments/entities/financial-event.entity';
 
 const CADENCE_LABEL: Record<BillingInterval, string> = {
   [BillingInterval.MONTHLY]: 'monthly',
@@ -37,7 +40,7 @@ const CADENCE_LABEL: Record<BillingInterval, string> = {
 export class SubscriptionRenewalJob {
   private readonly logger = new Logger(SubscriptionRenewalJob.name);
   /** Stable lock key — same value across replicas, different per cron. */
-  private static readonly LOCK_KEY = 17_001;
+  private static readonly LOCK_KEY = LockKey.SUBSCRIPTION_RENEWAL;
 
   constructor(
     @InjectRepository(Subscription)
@@ -48,6 +51,7 @@ export class SubscriptionRenewalJob {
     private readonly notifications: NotificationsService,
     private readonly plans: PlansService,
     private readonly mail: MailService,
+    private readonly financialAudit: FinancialAuditService,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -91,6 +95,25 @@ export class SubscriptionRenewalJob {
         sub.status = SubscriptionStatus.EXPIRED;
         await this.subsRepo.save(sub);
         this.logger.log(`[subs] expired sub=${sub.id} status=${sub.status}`);
+        // `FinancialEventType.EXPIRATION` was defined but written by
+        // nothing, leaving lapse — the other half of churn — absent
+        // from the ledger while voluntary cancellation was recorded.
+        // This is the only transition to EXPIRED in the codebase, so
+        // stamping it here captures every lapse.
+        //
+        // The candidate query above filters to ACTIVE|TRIAL|
+        // XP_CREDITED, so a CANCELLED row is never swept into EXPIRED:
+        // cancellation and lapse stay distinguishable, and this event
+        // cannot double-count a cancellation.
+        await this.financialAudit.record({
+          eventType: FinancialEventType.EXPIRATION,
+          userId: sub.userId,
+          subscriptionId: sub.id,
+          source: 'job',
+          metadata: {
+            expiredAt: (sub.expiresAt ?? now).toISOString(),
+          },
+        });
         await this.notifications
           .send({
             userId: sub.userId,

@@ -8,6 +8,7 @@ import { MailService } from '../modules/mail/mail.service';
 import { MailEvent } from '../modules/mail/mail.types';
 import { NotificationChannel } from '../common/types/enums';
 import { accraDateIso } from '../common/utils/timezone.util';
+import { LockKey } from './advisory-lock-keys';
 
 /**
  * Daily practice reminder push. Fires at 10:00 Africa/Accra — late
@@ -33,7 +34,7 @@ import { accraDateIso } from '../common/utils/timezone.util';
 @Injectable()
 export class DailyReminderJob {
   private readonly logger = new Logger(DailyReminderJob.name);
-  private static readonly LOCK_KEY = 17_003;
+  private static readonly LOCK_KEY = LockKey.DAILY_REMINDER;
 
   constructor(
     @InjectRepository(User) private readonly usersRepo: Repository<User>,

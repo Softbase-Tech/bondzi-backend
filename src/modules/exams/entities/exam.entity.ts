@@ -89,6 +89,17 @@ export class Exam {
   completedAt: Date | null;
 
   /**
+   * When the session was abandoned.
+   *
+   * Read `status` — not `completedAt` — to decide whether a session
+   * finished: `src/scripts/abandon-stale-exams.ts` stamps `completedAt`
+   * on the rows it abandons, so `completed_at IS NOT NULL` is true for
+   * abandoned sessions too and would overstate any completion rate.
+   */
+  @Column({ name: 'abandoned_at', type: 'timestamptz', nullable: true })
+  abandonedAt: Date | null;
+
+  /**
    * Post-exam AI breakdown — dormant until a tier row in
    * `tier_services` flips `post_exam_ai_breakdown` to enabled=true.
    * Migration 2010 added the columns; the endpoint lives in

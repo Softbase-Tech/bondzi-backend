@@ -7,6 +7,7 @@ import { MailService } from '../modules/mail/mail.service';
 import { MailEvent } from '../modules/mail/mail.types';
 import { NotificationsService } from '../modules/notifications/notifications.service';
 import { NotificationChannel } from '../common/types/enums';
+import { LockKey } from './advisory-lock-keys';
 
 /**
  * Cron: daily nudge to users whose streak is about to break.
@@ -14,7 +15,7 @@ import { NotificationChannel } from '../common/types/enums';
 @Injectable()
 export class StreakAtRiskJob {
   private readonly logger = new Logger(StreakAtRiskJob.name);
-  private static readonly LOCK_KEY = 17_002;
+  private static readonly LOCK_KEY = LockKey.STREAK_AT_RISK;
 
   constructor(
     @InjectRepository(User) private readonly usersRepo: Repository<User>,

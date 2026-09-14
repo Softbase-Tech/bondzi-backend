@@ -28,6 +28,7 @@ import { ReferralEvent } from '../referrals/entities/referral-event.entity';
 import { PmTestQuestion } from '../pm-test/entities/pm-test-question.entity';
 import { Winner } from '../leaderboard/entities/winner.entity';
 import { AuthLoginEvent } from '../auth/entities/auth-login-event.entity';
+import { SubscriptionMetricsService } from '../subscriptions/metrics/subscription-metrics.service';
 import {
   PaginationDto,
   PaginatedResult,
@@ -63,6 +64,7 @@ export class AdminService {
     @InjectRepository(Winner) private readonly winnersRepo: Repository<Winner>,
     @InjectRepository(AuthLoginEvent)
     private readonly loginEventsRepo: Repository<AuthLoginEvent>,
+    private readonly subMetrics: SubscriptionMetricsService,
   ) {}
 
   async dashboard() {
@@ -115,11 +117,14 @@ export class AdminService {
         .where('a.created_at >= :start', { start: startOfDay })
         .getRawOne<{ total: string }>(),
       this.flagsRepo.count({ where: { isResolved: false } }),
-      this.subsRepo
-        .createQueryBuilder('s')
-        .select('COALESCE(SUM(s.amount_ghs),0)', 'total')
-        .where('s.status = :st', { st: SubscriptionStatus.ACTIVE })
-        .getRawOne<{ total: string }>(),
+      // Was `SUM(amount_ghs) WHERE status = 'active'`, which counted an
+      // annual subscription at 12x its monthly value, kept lifetime Plus
+      // purchases in the total forever, and included admin comps and
+      // XP-credited grants that carry no cash behind them. Now normalised
+      // through `subscription_plan.monthly_price` by the shared service
+      // the reporting module also calls, so this tile and the monthly
+      // report cannot disagree. See SubscriptionMetricsService.
+      this.subMetrics.mrr(),
       this.usersRepo
         .createQueryBuilder('u')
         .select('COALESCE(SUM(u.spendable_xp),0)', 'total')
@@ -228,7 +233,7 @@ export class AdminService {
     return {
       totalUsers: users,
       activeSubscriptions: activeSubs,
-      mrrGhs: parseFloat(mrrGhs?.total ?? '0'),
+      mrrGhs: mrrGhs.mrrGhs,
       questionsAnsweredToday: answersToday,
       aiCostUsdToday: parseFloat(aiSpendToday?.total ?? '0'),
       pendingFlags,
