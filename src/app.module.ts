@@ -18,6 +18,7 @@ import mailConfig from './config/mail.config';
 import firebaseConfig from './config/firebase.config';
 import throttleConfig from './config/throttle.config';
 import observabilityConfig from './config/observability.config';
+import reportsConfig from './modules/reports/reports.config';
 import { envValidationSchema } from './config/validation.schema';
 
 import { DatabaseModule } from './database/database.module';
@@ -44,6 +45,7 @@ import { ProgressModule } from './modules/progress/progress.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { EntitlementsModule } from './modules/entitlements/entitlements.module';
+import { ReportsModule } from './modules/reports/reports.module';
 import { RequiresServiceGuard } from './modules/entitlements/requires-service.guard';
 import { HealthModule } from './modules/health/health.module';
 import { JobsModule } from './jobs/jobs.module';
@@ -87,6 +89,7 @@ import { FaqModule } from './modules/faq/faq.module';
         firebaseConfig,
         throttleConfig,
         observabilityConfig,
+        reportsConfig,
       ],
     }),
 
@@ -171,6 +174,7 @@ import { FaqModule } from './modules/faq/faq.module';
     PromoCodesModule,
     PartnersModule,
     EntitlementsModule,
+    ReportsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

@@ -16,6 +16,7 @@ import { SubscriptionsController } from './subscriptions.controller';
 import { SubscriptionsService } from './subscriptions.service';
 import { EntitlementsAdminController } from './entitlements-admin.controller';
 import { EntitlementsAdminService } from './entitlements-admin.service';
+import { SubscriptionMetricsService } from './metrics/subscription-metrics.service';
 
 @Module({
   imports: [
@@ -42,9 +43,15 @@ import { EntitlementsAdminService } from './entitlements-admin.service';
     PlansAdminController,
     EntitlementsAdminController,
   ],
-  providers: [SubscriptionsService, PlansService, EntitlementsAdminService],
+  providers: [
+    SubscriptionsService,
+    PlansService,
+    EntitlementsAdminService,
+    SubscriptionMetricsService,
+  ],
   exports: [
     SubscriptionsService,
+    SubscriptionMetricsService,
     PlansService,
     EntitlementsAdminService,
     TypeOrmModule,

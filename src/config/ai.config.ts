@@ -29,6 +29,16 @@ export default registerAs('ai', () => ({
     process.env.AI_FAST_MODEL ??
     'eu.anthropic.claude-haiku-4-5-20251001-v1:0',
   dailyBudgetUsd: parseFloat(process.env.AI_DAILY_BUDGET_USD ?? '50'),
+  /**
+   * Ceiling the monthly spend *forecast* is measured against.
+   *
+   * Unlike `dailyBudgetUsd` this is not enforced by `checkBudget()` — it is
+   * the denominator for the reporting forecast
+   * (`mtd / days_elapsed * days_in_month`), which is what tells you on day
+   * 8 that the month will overshoot on day 26. A daily budget can only ever
+   * stop today; it cannot see a trend.
+   */
+  monthlyBudgetUsd: parseFloat(process.env.AI_MONTHLY_BUDGET_USD ?? '30'),
   perUserDailyLimit: parseInt(process.env.AI_PER_USER_DAILY_LIMIT ?? '50', 10),
   maxJobCostUsd: parseFloat(process.env.AI_MAX_JOB_COST_USD ?? '500'),
   // Jobs over this estimated cost wait in PENDING_APPROVAL for a second

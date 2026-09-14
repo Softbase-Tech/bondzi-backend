@@ -108,6 +108,21 @@ export class Subscription {
   @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
   expiresAt: Date | null;
 
+  /**
+   * When the user (or an admin, or a provider webhook) cancelled.
+   *
+   * Distinct from `expiresAt`: a cancelled subscription keeps its access
+   * until the paid term ends, so `cancelledAt <= expiresAt` is the normal
+   * shape. Needed because `updatedAt` is overwritten by any later write to
+   * the row, which would erase the moment churn actually happened.
+   *
+   * NULL for rows cancelled before the column existed is impossible —
+   * migration 2360000000000 backfills those from `updatedAt` — but NULL on
+   * a non-cancelled row is expected and meaningful.
+   */
+  @Column({ name: 'cancelled_at', type: 'timestamptz', nullable: true })
+  cancelledAt: Date | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

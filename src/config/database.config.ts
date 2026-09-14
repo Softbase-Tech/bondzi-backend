@@ -19,6 +19,23 @@ export default registerAs('database', (): TypeOrmModuleOptions => {
     extra: {
       min: parseInt(process.env.DATABASE_POOL_MIN ?? '5', 10),
       max: parseInt(process.env.DATABASE_POOL_MAX ?? '20', 10),
+      /**
+       * Pin the session timezone to UTC.
+       *
+       * `created_at::date` on a `timestamptz` is an *implicit*
+       * `AT TIME ZONE current_setting('TimeZone')`. Without this the
+       * session TZ is whatever the server or container defaults to —
+       * today that happens to be UTC, so every daily aggregate is right
+       * by luck rather than by construction. A future image carrying a
+       * `TZ` env, or a managed Postgres with a non-UTC default, would
+       * shift every day boundary silently and corrupt reporting history
+       * that is already persisted as immutable daily snapshots.
+       *
+       * Ghana is UTC+0 year-round with no DST, so pinning UTC also keeps
+       * these casts numerically identical to the Accra wall-clock dates
+       * used by `user_service_usage.day` and `users.last_study_date`.
+       */
+      options: '-c timezone=UTC',
     },
   };
 });

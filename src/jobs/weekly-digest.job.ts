@@ -7,6 +7,7 @@ import { ExamAnswer } from '../modules/exams/entities/exam-answer.entity';
 import { XpTransaction } from '../modules/xp-economy/entities/xp-transaction.entity';
 import { MailService } from '../modules/mail/mail.service';
 import { MailEvent } from '../modules/mail/mail.types';
+import { LockKey } from './advisory-lock-keys';
 
 /**
  * Cron: Sunday-morning weekly digest. Aggregates the last 7 days of
@@ -15,7 +16,7 @@ import { MailEvent } from '../modules/mail/mail.types';
 @Injectable()
 export class WeeklyDigestJob {
   private readonly logger = new Logger(WeeklyDigestJob.name);
-  private static readonly LOCK_KEY = 17_003;
+  private static readonly LOCK_KEY = LockKey.WEEKLY_DIGEST;
 
   constructor(
     @InjectRepository(User) private readonly usersRepo: Repository<User>,

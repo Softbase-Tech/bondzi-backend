@@ -42,4 +42,8 @@ export default new DataSource({
   migrationsTableName: 'typeorm_migrations',
   synchronize: false,
   logging: process.env.DATABASE_LOGGING === 'true',
+  // Match the runtime datasource (src/config/database.config.ts). A
+  // migration that backfills a date column must bucket days exactly the
+  // way the app's queries will later read them back.
+  extra: { options: '-c timezone=UTC' },
 });

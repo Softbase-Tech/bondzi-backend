@@ -24,6 +24,7 @@ import { AdminController } from './admin.controller';
 import { PaymentsModule } from '../payments/payments.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { QUEUE_AI_GENERATION, QUEUE_NOTIFICATIONS } from '../ai/ai.queues';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   imports: [
@@ -50,6 +51,10 @@ import { QUEUE_AI_GENERATION, QUEUE_NOTIFICATIONS } from '../ai/ai.queues';
     ),
     PaymentsModule,
     NotificationsModule,
+    // For SubscriptionMetricsService — the corrected MRR the dashboard
+    // tile reads, shared with the reporting module so the two cannot
+    // disagree.
+    SubscriptionsModule,
   ],
   controllers: [AdminController],
   providers: [

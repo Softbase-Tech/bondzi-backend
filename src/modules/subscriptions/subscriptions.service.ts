@@ -1567,8 +1567,31 @@ export class SubscriptionsService {
       }
     }
     sub.status = SubscriptionStatus.CANCELLED;
+    // The moment of churn. `updatedAt` cannot serve here — a later write
+    // to this row (a re-subscribe that reuses it, an admin correction)
+    // would overwrite it and the cancellation date would be lost.
+    sub.cancelledAt = new Date();
     await this.subsRepo.save(sub);
     await this.invalidateCache(userId);
+
+    // Close the ledger gap: until now only the provider-webhook path
+    // (`subscription.disable`) wrote a CANCELLATION row, so a user who
+    // cancelled in-app left no financial event at all — which made
+    // voluntary churn invisible to any ledger-based report. Best-effort by
+    // design: `record()` swallows its own errors, and failing to write an
+    // audit row must never block the cancellation the user asked for.
+    await this.financialAudit.record({
+      eventType: FinancialEventType.CANCELLATION,
+      userId: sub.userId,
+      subscriptionId: sub.id,
+      source: 'user',
+      metadata: {
+        cancelledAt: sub.cancelledAt.toISOString(),
+        // Access usually continues to the end of the paid term; recording
+        // it makes "cancelled but still entitled" reconstructable.
+        expiresAt: sub.expiresAt ? sub.expiresAt.toISOString() : null,
+      },
+    });
 
     // Cancellation confirmation email. Best-effort; mail.send swallows
     // errors. Only emails recurring (Pro) cancellations — Plus is
