@@ -16,6 +16,7 @@ import { SnapshotService } from './snapshot/snapshot.service';
 import { DailyRenderer } from './render/daily.renderer';
 import { ReportDeliveryService } from './delivery/report-delivery.service';
 import { ReportJob } from './delivery/report.job';
+import { MetricsAggregatorService } from './aggregate/metrics-aggregator.service';
 import { SubscriptionMetricsService } from '../subscriptions/metrics/subscription-metrics.service';
 import { MailService } from '../mail/mail.service';
 import { RedisService } from '../../common/redis/redis.service';
@@ -53,6 +54,7 @@ describe('ReportsModule wiring', () => {
         DailyRenderer,
         ReportDeliveryService,
         ReportJob,
+        MetricsAggregatorService,
         { provide: DataSource, useValue: ds },
         { provide: getDataSourceToken(), useValue: ds },
         { provide: getRepositoryToken(ReportDailySnapshot), useValue: {} },
@@ -83,6 +85,7 @@ describe('ReportsModule wiring', () => {
       DailyRenderer,
       ReportDeliveryService,
       ReportJob,
+      MetricsAggregatorService,
     ]) {
       expect(m.get(token)).toBeDefined();
     }
