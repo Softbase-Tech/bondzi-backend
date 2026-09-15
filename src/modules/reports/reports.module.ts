@@ -15,6 +15,7 @@ import { DailyRenderer } from './render/daily.renderer';
 import { ReportDeliveryService } from './delivery/report-delivery.service';
 import { ReportJob } from './delivery/report.job';
 import { ReportsController } from './reports.controller';
+import { MetricsAggregatorService } from './aggregate/metrics-aggregator.service';
 import { MailModule } from '../mail/mail.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import {
@@ -60,7 +61,8 @@ import {
     DailyRenderer,
     ReportDeliveryService,
     ReportJob,
+    MetricsAggregatorService,
   ],
-  exports: [SnapshotService, ReportJob],
+  exports: [SnapshotService, ReportJob, MetricsAggregatorService],
 })
 export class ReportsModule {}

@@ -129,3 +129,34 @@ export function resolveRange(type: ReportType, now: Date): DateRange {
     end: utcDateIso(lastOfPrev),
   };
 }
+
+/**
+ * The period a *viewer* is asking for, anchored on a chosen date.
+ *
+ * Distinct from `resolveRange`, which always yields the last COMPLETED
+ * period for a scheduled report. Here the anchor is explicit and the
+ * period contains it, because an operator looking at the admin page
+ * means "the week this date falls in", including today.
+ */
+export function periodRangeFor(
+  period: 'day' | 'week' | 'month',
+  anchorIso: string,
+): DateRange {
+  if (period === 'day') return { start: anchorIso, end: anchorIso };
+
+  if (period === 'week') {
+    const d = new Date(`${anchorIso}T00:00:00.000Z`);
+    // Monday-start ISO week: Sunday (getUTCDay 0) is day 7, not day 0.
+    const daysSinceMonday = (d.getUTCDay() + 6) % 7;
+    const monday = shiftIso(anchorIso, -daysSinceMonday);
+    return { start: monday, end: shiftIso(monday, 6) };
+  }
+
+  const y = parseInt(anchorIso.slice(0, 4), 10);
+  const m = parseInt(anchorIso.slice(5, 7), 10);
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return {
+    start: `${anchorIso.slice(0, 7)}-01`,
+    end: `${anchorIso.slice(0, 7)}-${String(lastDay).padStart(2, '0')}`,
+  };
+}

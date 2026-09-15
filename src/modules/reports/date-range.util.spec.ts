@@ -1,5 +1,6 @@
 import {
   activationCohortFor,
+  periodRangeFor,
   dayBounds,
   daysInclusive,
   eachDay,
@@ -152,5 +153,42 @@ describe('report date ranges', () => {
         '2026-09-10',
       );
     });
+  });
+});
+
+describe('periodRangeFor (viewer-anchored, includes the anchor)', () => {
+  it('day is the anchor itself', () => {
+    expect(periodRangeFor('day', '2026-09-10')).toEqual({
+      start: '2026-09-10',
+      end: '2026-09-10',
+    });
+  });
+
+  it('week is the Monday-start week CONTAINING the anchor', () => {
+    // Unlike resolveRange, which returns the previous completed week: an
+    // operator asking for "this week" means the one they are in.
+    expect(periodRangeFor('week', '2026-09-10')).toEqual({
+      start: '2026-09-07',
+      end: '2026-09-13',
+    });
+  });
+
+  it('a Sunday anchor belongs to the week that started on Monday', () => {
+    const r = periodRangeFor('week', '2026-09-13');
+    expect(r).toEqual({ start: '2026-09-07', end: '2026-09-13' });
+    expect(new Date(`${r.start}T00:00:00Z`).getUTCDay()).toBe(1);
+  });
+
+  it('month spans the whole calendar month containing the anchor', () => {
+    expect(periodRangeFor('month', '2026-09-10')).toEqual({
+      start: '2026-09-01',
+      end: '2026-09-30',
+    });
+  });
+
+  it('gets month lengths right, including a leap February', () => {
+    expect(periodRangeFor('month', '2024-02-15').end).toBe('2024-02-29');
+    expect(periodRangeFor('month', '2026-02-15').end).toBe('2026-02-28');
+    expect(periodRangeFor('month', '2026-12-31').end).toBe('2026-12-31');
   });
 });
